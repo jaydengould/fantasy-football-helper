@@ -197,3 +197,49 @@ def test_inactive_and_irrelevant_positions_excluded():
               "active": True, "injury_status": None},
     }
     assert set(build_players(raw, {})) == {"1"}
+
+
+from ffhelper.data import LeagueSettings, apply_projections, score_stats
+
+# Josh Allen's real 2026 projection, inlined. One record for a golden value is
+# de minimis; the bulk dataset is never committed.
+ALLEN_STATS = {
+    "pass_yd": 3650.0, "pass_td": 27.0, "pass_int": 10.0, "pass_2pt": 1.0,
+    "rush_yd": 535.0, "rush_td": 11.0, "rush_2pt": 1.0, "fum_lost": 3.0,
+    "pts_ppr": 361.5,
+}
+# The league's real scoring: full PPR with SIX-point passing TDs.
+LEAGUE_SCORING = {
+    "pass_yd": 0.04, "pass_td": 6.0, "pass_int": -1.0, "pass_2pt": 2.0,
+    "rush_yd": 0.1, "rush_td": 6.0, "rush_2pt": 2.0, "fum_lost": -2.0,
+    "rec": 1.0, "rec_yd": 0.1, "rec_td": 6.0,
+}
+
+
+def test_custom_scoring_golden_value():
+    """6-pt passing TDs put Allen at 415.5, not Sleeper's canned 361.5."""
+    assert round(score_stats(ALLEN_STATS, LEAGUE_SCORING), 1) == 415.5
+
+
+def test_scoring_ignores_non_scoring_stat_keys():
+    """pts_ppr, gp, cmp_pct etc. appear in stats but are not scoring categories."""
+    noisy = dict(ALLEN_STATS, gp=18.0, cmp_pct=66.03, pass_att=474.0)
+    assert round(score_stats(noisy, LEAGUE_SCORING), 1) == 415.5
+
+
+def test_full_ppr_skill_players_match_canned_pts_ppr():
+    """RB/WR/TE scoring is standard here, so custom must equal canned."""
+    gibbs = {"rush_yd": 1251.0, "rush_td": 12.0, "rec": 63.0, "rec_yd": 533.0,
+             "rec_td": 3.0, "fum_lost": 1.0, "rush_2pt": 1.0}
+    assert round(score_stats(gibbs, LEAGUE_SCORING), 1) == 331.4
+
+
+def test_apply_projections_sets_points_and_skips_unknown_ids():
+    players = {"9221": Player("9221", "Jahmyr Gibbs", "RB", "DET")}
+    proj = [
+        {"player_id": "9221", "stats": {"rush_yd": 1000.0, "rush_td": 10.0}},
+        {"player_id": "0000", "stats": {"rush_yd": 500.0}},   # not in our pool
+        {"player_id": "9221", "stats": None},                  # malformed, ignore
+    ]
+    apply_projections(players, proj, LEAGUE_SCORING)
+    assert players["9221"].proj_pts == 160.0

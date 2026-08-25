@@ -176,3 +176,84 @@ def load_players(cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | No
     raw = fetch_json(SLEEPER_PLAYERS_URL, "sleeper_players", cache_dir=cache_dir, fetcher=fetcher)
     crosswalk = load_crosswalk(cache_dir=cache_dir, fetcher=fetcher)
     return build_players(raw, crosswalk)
+
+
+SLEEPER_LEAGUE_URL = "https://api.sleeper.app/v1/league/{league_id}"
+SLEEPER_PROJ_URL = (
+    "https://api.sleeper.com/projections/nfl/{season}"
+    "?season_type=regular&position[]={pos}&order_by=pts_ppr"
+)
+
+
+@dataclass(frozen=True)
+class LeagueSettings:
+    num_teams: int
+    scoring: dict[str, float]
+    roster_slots: dict[str, int]   # e.g. {"QB":1,"RB":2,"WR":2,"TE":1,"FLEX":2,"K":1,"DEF":1}
+    rounds: int
+    draft_id: str | None = None
+
+
+def score_stats(stats: dict[str, float], scoring: dict[str, float]) -> float:
+    """Dot product of a raw stat line against league scoring settings.
+
+    Only keys present in `scoring` contribute, so descriptive stats in the
+    payload (pts_ppr, gp, cmp_pct, adp_*) are ignored by construction.
+    """
+    return sum(
+        weight * stats[key]
+        for key, weight in scoring.items()
+        if key in stats and isinstance(stats[key], (int, float))
+    )
+
+
+def apply_projections(
+    players: dict[str, Player], projections: list[dict], scoring: dict[str, float]
+) -> None:
+    """Score projections onto players IN PLACE, joined on sleeper player_id."""
+    for row in projections:
+        pid = row.get("player_id")
+        stats = row.get("stats")
+        if not pid or not stats or pid not in players:
+            continue
+        players[pid].proj_pts = score_stats(stats, scoring)
+
+
+def load_sleeper_settings(
+    league_id: str, cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
+) -> LeagueSettings:
+    raw = fetch_json(
+        SLEEPER_LEAGUE_URL.format(league_id=league_id),
+        f"league_{league_id}",
+        ttl_seconds=3600,
+        cache_dir=cache_dir,
+        fetcher=fetcher,
+    )
+    positions = raw.get("roster_positions", [])
+    slots: dict[str, int] = {}
+    for slot in positions:
+        if slot != "BN":
+            slots[slot] = slots.get(slot, 0) + 1
+    return LeagueSettings(
+        num_teams=raw.get("total_rosters", 12),
+        scoring={k: float(v) for k, v in (raw.get("scoring_settings") or {}).items()},
+        roster_slots=slots,
+        rounds=len(positions),
+        draft_id=raw.get("draft_id"),
+    )
+
+
+def load_projections(
+    season: str, cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
+) -> list[dict]:
+    rows: list[dict] = []
+    for pos in ("QB", "RB", "WR", "TE", "K", "DEF"):
+        rows.extend(
+            fetch_json(
+                SLEEPER_PROJ_URL.format(season=season, pos=pos),
+                f"proj_{season}_{pos}",
+                cache_dir=cache_dir,
+                fetcher=fetcher,
+            )
+        )
+    return rows
