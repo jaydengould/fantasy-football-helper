@@ -1,0 +1,11 @@
+[project]
+name = "ffhelper"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["requests>=2.32", "yfpy>=17.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
