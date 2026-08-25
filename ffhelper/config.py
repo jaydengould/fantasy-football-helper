@@ -12,6 +12,7 @@ class League:
     draft_slot: int | None = None    # 1-indexed; None means read from platform
     adp_format: str | None = None    # None means derive from league scoring
     adp_teams: int | None = None     # None means derive from league size
+    settings: dict | None = None     # hand-entered [league.settings]; first-class, not a fallback
 
 
 @dataclass(frozen=True)
