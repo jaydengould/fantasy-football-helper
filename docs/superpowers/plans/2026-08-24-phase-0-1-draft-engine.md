@@ -1793,9 +1793,60 @@ Suggested message: `feat: assemble the ranked draft board`
 
 **Interfaces:**
 - Consumes: everything above
-- Produces: `render(board: list[Row], limit: int, stale_seconds: float, my_roster: list[Player], runs: dict[str, int]) -> str`; `load_board_inputs(league, tunables, season) -> tuple[dict[str, Player], LeagueSettings]`; `main(argv: list[str] | None = None) -> int`
+- Produces: `render(board: list[Row], limit: int, stale_seconds: float, my_roster: list[Player], runs: dict[str, int]) -> str`; `resolve_settings(league, season) -> LeagueSettings`; `league_settings_from_config(raw: dict) -> LeagueSettings`; `load_board_inputs(league, tunables, season) -> tuple[dict[str, Player], LeagueSettings]`; `main(argv: list[str] | None = None) -> int`
+- Also modifies: `ffhelper/config.py` — `League` gains `settings: dict | None = None`
 
 Subcommands: `run --league NAME`, `preflight --league NAME`.
+
+### Manual league settings are a first-class path
+
+`League` gains an optional `settings` field carrying a hand-entered
+`[league.settings]` block. This is **not** a workaround for the pending Yahoo API
+approval — it is the base capability:
+
+- Yahoo's API needs per-developer approval that can be denied outright.
+- ESPN has no official API; CBS and NFL.com have none worth using.
+- Anyone cloning this repo has no Yahoo access, so for them manual entry is the
+  only mode that works at all.
+
+API sync is therefore an optimisation for platforms that permit it, layered on
+top of a manual path that must be equally well tested and documented. Do not
+label it "fallback" in code comments, docstrings, or the README.
+
+`config.toml` shape:
+
+```toml
+[[league]]
+name = "yahoo-main"
+platform = "yahoo"
+league_id = "123456"
+draft_slot = 4
+
+  [league.settings]
+  num_teams = 10
+  bench = 5
+  roster_slots = { QB = 1, RB = 2, WR = 2, TE = 1, FLEX = 2, K = 1, DEF = 1 }
+
+  [league.settings.scoring]
+  pass_cmp = 0.25
+  pass_yd = 0.04
+  pass_td = 6
+  pass_int = -2
+  rush_yd = 0.1
+  rush_td = 6
+  rec = 0.5
+  rec_yd = 0.1
+  rec_td = 6
+  fum_lost = -2
+```
+
+Precedence: platform API when one exists and is reachable, else the config block,
+else a clear `ValueError` naming the league and pointing at the README. A league
+that later gains API access starts syncing with **no config change**.
+
+Tests must cover: a config-only league produces a correct board; missing
+`roster_slots` or `scoring` raises with a useful message; a Sleeper league still
+prefers the API even when a `[league.settings]` block is present.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1912,15 +1963,50 @@ def render(
     return "\n".join(lines)
 
 
+def resolve_settings(league: League, season: str = SEASON) -> LeagueSettings:
+    """Return the league's settings, preferring the platform API where one exists.
+
+    Manual settings are a FIRST-CLASS path, not a fallback. Yahoo's API requires
+    per-developer approval, ESPN has no official API, and CBS/NFL.com have none
+    worth using — so for most leagues and most users of this repo, hand-entered
+    settings are the ONLY way the tool works. API sync is an optimisation for the
+    platforms that permit it, not the baseline.
+
+    Precedence: platform API when reachable, else the config block. A league that
+    later gains API access starts syncing with no config change.
+    """
+    if league.platform == "sleeper":
+        return load_sleeper_settings(league.league_id)
+    if league.settings is not None:
+        return league_settings_from_config(league.settings)
+    raise ValueError(
+        f"league {league.name!r} on platform {league.platform!r} has no API support "
+        f"and no [league.settings] block in config.toml. Add one — see README."
+    )
+
+
+def league_settings_from_config(raw: dict) -> LeagueSettings:
+    """Build LeagueSettings from a hand-entered config block."""
+    slots = {k: int(v) for k, v in (raw.get("roster_slots") or {}).items()}
+    scoring = {k: float(v) for k, v in (raw.get("scoring") or {}).items()}
+    if not slots:
+        raise ValueError("[league.settings] needs roster_slots")
+    if not scoring:
+        raise ValueError("[league.settings] needs a scoring table")
+    return LeagueSettings(
+        num_teams=int(raw["num_teams"]),
+        scoring=scoring,
+        roster_slots=slots,
+        rounds=int(raw.get("rounds", sum(slots.values()) + int(raw.get("bench", 0)))),
+        draft_id=raw.get("draft_id"),
+    )
+
+
 def load_board_inputs(
     league: League, tunables: Tunables, season: str = SEASON
 ) -> tuple[dict[str, Player], LeagueSettings]:
     """Cold start: fetch everything, join by ID, then enrich with FFC."""
-    if league.platform != "sleeper":
-        raise NotImplementedError(
-            "Yahoo settings arrive in Phase 2; run Phase 0's scripts/yahoo_auth.py first"
-        )
-    settings = load_sleeper_settings(league.league_id)
+    settings = resolve_settings(league, season)
     players = load_players()
     projections = load_projections(season)
 
@@ -2053,6 +2139,62 @@ Expected: prints 12 teams, the roster slots, `pass_td=6.0`, a real `draft_id`, s
 
 Files: `ffhelper/cli.py`, `tests/test_cli.py`
 Suggested message: `feat: add terminal draft board with preflight`
+
+---
+
+### Task 12b: Manual mark-drafted mode
+
+**Files:**
+- Modify: `ffhelper/cli.py`
+- Test: `tests/test_cli.py`
+
+**Interfaces:**
+- Consumes: `Player`, `norm_name` from `ffhelper.data`
+- Produces: `find_players(pool: dict[str, Player], query: str) -> list[Player]`;
+  `MarkDrafted` — a small state object with `mark(player_id)`, `undo()`, and a
+  `drafted: set[str]` view
+
+Task 12 threads a `manual_gone: set[str]` through the render loop but nothing
+writes to it. This task supplies the input path.
+
+**Why this is a first-class feature, not a stopgap.** It is the only way to use
+the tool on a platform with no pick feed — which today means Yahoo (API approval
+pending, possibly never granted), ESPN, CBS, and any friend's league. It is also
+the recovery path when a live feed dies mid-draft, and the way to run the board
+against a mock draft on any site. Build and test it accordingly.
+
+**Requirements:**
+- **Partial-name search.** Typing `gibbs` matches Jahmyr Gibbs. Match against the
+  same normalised form used elsewhere (`norm_name`), so accents and generational
+  suffixes behave — `pineiro` must match "Eddy Piñeiro", `harrison` must match
+  "Marvin Harrison Jr.".
+- **Disambiguation is mandatory on multiple matches.** Never silently pick the
+  first. `robinson` matches both Bijan and Brian Robinson; choosing wrong removes
+  the wrong player from the board and every downstream number is quietly wrong.
+  Present the candidates with position and team and require a choice.
+- **Undo.** Mistyped entries must be reversible; `MarkDrafted.undo()` restores the
+  last marked player to the pool. Under a pick clock, an unrecoverable mistake is
+  worse than a slow one.
+- **Non-blocking.** The board must keep refreshing while awaiting input. Do not
+  block the render loop on `input()`. A simple, dependency-free approach is
+  acceptable — a `select`-based poll on stdin, or reading input on a daemon
+  thread that pushes onto a queue the loop drains each tick. Do NOT add curses,
+  prompt_toolkit, or any new dependency.
+- Marked players must be excluded from the board exactly as feed-reported picks
+  are — the board must not care which source removed them.
+
+**Tests:**
+- `find_players` matches on partial name, is case-insensitive, and handles
+  accents and suffixes via `norm_name`.
+- A query matching two players returns both, in a stable order — never one.
+- Marking removes the player from the available pool; `undo` restores exactly
+  that player and nothing else.
+- `undo` on an empty history is a no-op and does not raise.
+- Marking an already-marked player is idempotent.
+- A query matching nothing returns an empty list and does not raise.
+
+**Constraints:** stdlib only; no new dependency; no module-level mutable state;
+`ffhelper/value.py` and `ffhelper/data.py` unmodified.
 
 ---
 
