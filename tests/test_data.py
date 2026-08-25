@@ -390,14 +390,21 @@ def test_ffc_unique_key_still_matches_despite_ambiguity_guard():
     assert players["9221"].bye == 6
 
 
-def test_ffc_ambiguous_key_adds_or_drops_no_player():
+def test_ffc_ambiguous_def_team_matches_neither():
+    """Two DEF entries sharing a team code must both be skipped, not have one
+    silently overwritten. Both retain their pre-existing ID-keyed adp/adp_stdev,
+    and the FFC row is reported with the AMBIGUOUS prefix."""
     players = {
-        "5052": Player("5052", "Ronald Jones", "RB", None, adp=200.0),
-        "4955": Player("4955", "Ronald Jones", "RB", None, adp=210.0),
+        "SEA": Player("SEA", "", "DEF", "SEA", adp=45.0, adp_stdev=5.0),
+        "SEA_ALT": Player("SEA_ALT", "", "DEF", "SEA", adp=50.0, adp_stdev=6.0),
     }
-    before = len(players)
-    apply_ffc_adp(players, [
-        {"name": "Ronald Jones", "position": "RB", "team": "",
-         "adp": 5.0, "stdev": 1.0, "bye": 9},
+    unmatched = apply_ffc_adp(players, [
+        {"name": "Seattle Defense", "position": "DEF", "team": "SEA",
+         "adp": 20.0, "stdev": 2.0, "bye": 8}
     ])
-    assert len(players) == before, "ambiguity must never add or drop a player"
+    assert unmatched == ["AMBIGUOUS: Seattle Defense"]
+    # Neither player is touched -- pre-existing ID-keyed values survive intact.
+    assert players["SEA"].adp == 45.0
+    assert players["SEA"].adp_stdev == 5.0
+    assert players["SEA_ALT"].adp == 50.0
+    assert players["SEA_ALT"].adp_stdev == 6.0

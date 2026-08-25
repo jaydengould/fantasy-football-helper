@@ -330,16 +330,24 @@ def apply_ffc_adp(players: dict[str, Player], ffc_rows: list[dict]) -> list[str]
     for p in players.values():
         by_key.setdefault(p.match_key, []).append(p)
     # Sleeper DEF entries have full_name == "" and player_id == team code, so name
-    # matching can never work for them; join on team code instead (32 teams, one
-    # DEF each -- no collision surface, so this branch needs no ambiguity guard).
-    by_def_team = {p.team: p for p in players.values() if p.position == "DEF" and p.team}
+    # matching can never work for them; join on team code instead. Group by team
+    # and apply the same ambiguity guard: a team code shared by 2+ DEF entries
+    # is ambiguous and is excluded from matching entirely.
+    by_def_team: dict[str, list[Player]] = {}
+    for p in players.values():
+        if p.position == "DEF" and p.team:
+            by_def_team.setdefault(p.team, []).append(p)
     unmatched: list[str] = []
     for row in ffc_rows:
         position = norm_position(row.get("position", ""))
         team = row.get("team", "") or ""
         name = row.get("name", "<unnamed>")
         if position == "DEF":
-            target = by_def_team.get(team)
+            candidates = by_def_team.get(team, [])
+            if len(candidates) > 1:
+                unmatched.append(f"{_AMBIGUOUS_PREFIX}{name}")
+                continue
+            target = candidates[0] if candidates else None
         else:
             key = f"{norm_name(row.get('name',''))}|{position}|{team}"
             candidates = by_key.get(key, [])
