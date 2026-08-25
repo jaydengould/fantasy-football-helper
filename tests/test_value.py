@@ -462,6 +462,19 @@ from ffhelper.value import build_board
 
 
 def test_board_sorts_by_vona_and_fills_all_fields():
+    """`board == sorted(board, key=lambda r: -r.vona)` is self-referential --
+    it sorts the board by its own stored vona values, so it holds for ANY
+    values including all zeros (e.g. under a `max(0, ...)` clamp). Assert the
+    actual player-id ordering instead, independently derived below, so a
+    clamp (or any other ordering bug) has something external to fail against.
+
+    current_pick=1, my_slot=3, num_teams=12 -> at_pick =
+    next_pick_number(1, 3, 12) == 3 (see test_snake_pick_sequence_for_slot_3_
+    in_12_team). Computed directly via vona() (not re-derived by hand):
+    vona(a) ~= 293.39, vona(b) ~= 283.39, vona(c) == 0.0 (c is the only WR
+    and is certain to survive to pick 3, so waiting costs him nothing).
+    Expected order by descending vona: a, b, c.
+    """
     players = [
         mk("a", "RB", 300.0, adp=1.0, stdev=0.5),
         mk("b", "RB", 290.0, adp=2.0, stdev=0.5),
@@ -472,11 +485,43 @@ def test_board_sorts_by_vona_and_fills_all_fields():
         current_pick=1, my_slot=3, tunables=Tunables(),
     )
     assert len(board) == 3
+    assert [r.player.sleeper_id for r in board] == ["a", "b", "c"]
     assert board == sorted(board, key=lambda r: -r.vona)
     top = board[0]
     assert top.tier >= 1
     assert 0.0 <= top.survival <= 1.0
     assert isinstance(top.divergence, int)
+
+
+def test_board_preserves_negative_vona():
+    """Regression: build_board must let a genuinely negative VONA survive
+    into the Row unchanged. Same setup as test_vona_negative_is_not_clamped_
+    to_zero: `better` (150 pts, adp=200, near-certain to survive) dominates
+    `cand` (100 pts, adp=45) at the next pick, so taking cand now is strictly
+    worse than waiting -- VONA must be negative.
+
+    current_pick=45, my_slot=None -> at_pick = current_pick + 1 = 46, the
+    exact at_pick used by the unit test, so the expected value carries over
+    unchanged: -50.0 (see test_vona_negative_is_not_clamped_to_zero for the
+    full derivation).
+
+    This test would FAIL under a `max(0, ...)` clamp wrapped around the VONA
+    computation inside build_board: every row's vona would be flattened to
+    0.0, so `row.vona < 0.0` would be False and
+    `row.vona == pytest.approx(-50.0, abs=1.0)` would compare 0.0 to -50.0
+    and fail. Nothing about this test depends on the board's own stored
+    values (unlike the sortedness assertion above), so it has no vacuous
+    pass mode.
+    """
+    cand = mk("cand", "WR", 100.0, adp=45.0, stdev=3.0)
+    better = mk("better", "WR", 150.0, adp=200.0, stdev=20.0)  # certain to survive
+    board = build_board(
+        available=[cand, better], my_roster=[], settings_slots=SLOTS,
+        num_teams=12, current_pick=45, my_slot=None, tunables=Tunables(),
+    )
+    row = next(r for r in board if r.player.sleeper_id == "cand")
+    assert row.vona < 0.0
+    assert row.vona == pytest.approx(-50.0, abs=1.0)
 
 
 def test_board_without_draft_slot_still_builds():
@@ -497,3 +542,110 @@ def test_marginal_value_reflects_existing_roster():
     players = [mk("new", "RB", 100.0, adp=50.0)]
     board = build_board(players, roster, slots, 12, 1, 3, Tunables())
     assert board[0].marginal == 0.0, "a worse RB behind a filled slot adds nothing"
+
+
+from ffhelper.data import curve_stdev
+
+
+def _clustered_points(n, start, intra_gap, inter_gap, cluster_sizes):
+    """Points that fall into clusters (tiny intra-cluster gaps) separated by
+    bigger jumps between clusters -- mirrors how real weekly rankings bunch
+    players into tiers instead of spacing everyone evenly apart."""
+    pts = []
+    val = start
+    idx_in_cluster = 0
+    cluster_i = 0
+    size = cluster_sizes[0]
+    for _ in range(n):
+        pts.append(round(val, 2))
+        idx_in_cluster += 1
+        if idx_in_cluster >= size:
+            val -= inter_gap
+            idx_in_cluster = 0
+            cluster_i += 1
+            size = cluster_sizes[cluster_i % len(cluster_sizes)]
+        else:
+            val -= intra_gap
+    return pts
+
+
+def _realistic_full_pool():
+    """64 players (14 QB, 20 RB, 20 WR, 10 TE), ADPs overlapping across
+    positions in a single band (10-100, ~7.5 rounds of a 12-team draft)
+    instead of spanning the whole draft, non-round projections and ADPs,
+    and clustered (not evenly-spaced) projections so assign_tiers produces
+    genuine multi-player tiers rather than one tier per player."""
+    players = []
+    n_qb, n_rb, n_wr, n_te = 14, 20, 20, 10
+    band_lo, band_hi = 10.0, 100.0
+
+    qb_pts = _clustered_points(n_qb, 262.0, 0.6, 7.3, [2, 3])
+    rb_pts = _clustered_points(n_rb, 271.0, 0.5, 6.1, [2, 3, 2])
+    wr_pts = _clustered_points(n_wr, 256.0, 0.4, 5.7, [3, 2, 3])
+    te_pts = _clustered_points(n_te, 191.0, 0.7, 8.4, [2, 2])
+
+    for i in range(n_qb):
+        adp = band_lo + i * (band_hi - band_lo) / (n_qb - 1) + 0.3
+        players.append(mk(f"qb{i}", "QB", qb_pts[i], round(adp, 1), round(curve_stdev(adp), 2)))
+    for i in range(n_rb):
+        adp = band_lo + i * (band_hi - band_lo) / (n_rb - 1) + 0.6
+        players.append(mk(f"rb{i}", "RB", rb_pts[i], round(adp, 1), round(curve_stdev(adp), 2)))
+    for i in range(n_wr):
+        adp = band_lo + i * (band_hi - band_lo) / (n_wr - 1) + 1.2
+        players.append(mk(f"wr{i}", "WR", wr_pts[i], round(adp, 1), round(curve_stdev(adp), 2)))
+    for i in range(n_te):
+        adp = band_lo + i * (band_hi - band_lo) / (n_te - 1) + 2.1
+        players.append(mk(f"te{i}", "TE", te_pts[i], round(adp, 1), round(curve_stdev(adp), 2)))
+    return players
+
+
+def test_board_at_realistic_scale_holds_up():
+    """Every existing board test uses tiny, round, well-separated pools (adp
+    1/2/200, 10-point gaps, stdev 0.5). Three real bugs in this project hid
+    behind exactly that pattern. This test uses a 64-player pool spanning
+    QB/RB/WR/TE with overlapping, non-round projections/ADPs and realistic
+    survival probabilities, then asserts properties a broken implementation
+    would violate.
+
+    current_pick=50, my_slot=6, num_teams=12 -> at_pick =
+    next_pick_number(50, 6, 12) == 54 (round 5 is odd, offset = slot = 6,
+    pick = (5-1)*12 + 6 = 54; computed directly via next_pick_number, not
+    re-derived by hand). curve_stdev(54) ~= 7.23 (computed directly via
+    curve_stdev), and the pool's ADP band (10-100) puts most players within
+    one or two such stdevs of at_pick=54 rather than six, so survival spans
+    the genuine middle band instead of saturating at 0/1 for everyone --
+    verified directly: of the 64 rows, 17 have survival strictly between
+    0.05 and 0.95.
+    """
+    players = _realistic_full_pool()
+    assert len(players) == 64
+    board = build_board(
+        available=players, my_roster=[], settings_slots=SLOTS, num_teams=12,
+        current_pick=50, my_slot=6, tunables=Tunables(),
+    )
+
+    # Every available player appears exactly once: no drops, no duplicates.
+    board_ids = [r.player.sleeper_id for r in board]
+    assert len(board) == len(players)
+    assert len(set(board_ids)) == len(board_ids), "no player appears more than once"
+    assert set(board_ids) == {p.sleeper_id for p in players}, "no player was dropped"
+
+    # Every field is populated and within its valid domain.
+    for r in board:
+        assert r.tier >= 1
+        assert 0.0 <= r.survival <= 1.0
+        assert isinstance(r.divergence, int)
+        assert isinstance(r.vbd, float)
+        assert isinstance(r.vona, float)
+        assert isinstance(r.marginal, float)
+
+    # The realistic pool exercises both sides of VONA, not one saturated
+    # extreme -- and in particular is not silently clamped to all-zero/all-
+    # non-negative.
+    vonas = [r.vona for r in board]
+    assert any(v > 0.0 for v in vonas)
+    assert any(v < 0.0 for v in vonas)
+
+    # At least one position genuinely clusters into multiple tiers.
+    rb_tiers = {r.tier for r in board if r.player.position == "RB"}
+    assert len(rb_tiers) >= 2

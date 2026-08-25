@@ -232,7 +232,7 @@ def build_board(
 
     at_pick = (
         next_pick_number(current_pick, my_slot, num_teams)
-        if my_slot
+        if my_slot is not None
         else current_pick + 1
     )
     ranks = replacement_ranks(settings_slots, num_teams, tunables.flex_share)
