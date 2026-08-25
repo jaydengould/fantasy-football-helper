@@ -31,11 +31,17 @@ def load_config(path: Path) -> tuple[list[League], Tunables]:
     leagues = [League(**entry) for entry in raw.get("league", [])]
     tun_raw = raw.get("tunables", {})
     defaults = Tunables()
+    # Scalar tunables: whole-value fallback (existing correct behavior).
+    # Dict-valued tunables: per-key merge so partial edits inherit unspecified keys.
+    flex_share_raw = tun_raw.get("flex_share", {})
+    flex_share_merged = {**defaults.flex_share, **flex_share_raw}
+    poll_seconds_raw = tun_raw.get("poll_seconds", {})
+    poll_seconds_merged = {**defaults.poll_seconds, **poll_seconds_raw}
     tun = Tunables(
         tier_break_sigma=tun_raw.get("tier_break_sigma", defaults.tier_break_sigma),
         divergence_flag_slots=tun_raw.get("divergence_flag_slots", defaults.divergence_flag_slots),
-        flex_share=tun_raw.get("flex_share", defaults.flex_share),
-        poll_seconds=tun_raw.get("poll_seconds", defaults.poll_seconds),
+        flex_share=flex_share_merged,
+        poll_seconds=poll_seconds_merged,
     )
     return leagues, tun
 
