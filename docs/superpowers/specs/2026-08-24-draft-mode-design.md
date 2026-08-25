@@ -130,6 +130,24 @@ Pipeline, all inside a pure `value.py`:
 5. **VONA** — `proj(p) − E[best available at p.position at my next pick]`.
 6. **Marginal lineup fit** — `lineup_value(roster + p) − lineup_value(roster)`.
 7. **Run detection** — position distribution over the last 8 picks.
+8. **ADP divergence flag** — `projection_rank − adp_rank`, surfaced when the gap
+   exceeds `divergence_flag_slots` (default 25).
+
+### ADP divergence is a flag, never a blend
+
+ADP already is a crowd consensus — FFC aggregates thousands of real drafts — and
+consensus and point projections systematically disagree because they measure
+different things. A ranking absorbs injury risk, role security, and offensive
+continuity that a pure projection undersells.
+
+Surfacing the gap is free and needs no new source: a player Rotowire ranks 40
+slots above the market is either the edge or the error, and either way is the row
+to examine.
+
+**The two ranks must never be averaged into one number.** Blending pulls the
+board toward the field, and a board that tracks consensus produces consensus
+results — which destroys the reason the tool exists. The flag preserves the edge
+while catching outliers; a blend quietly removes it.
 
 ### Custom scoring is correct but marginal — do not oversell it
 
@@ -228,8 +246,15 @@ This decides whether the tool is useful at 7:04 PM on Sept 6.
 3. **Feed failure degrades, does not stop.** The board keeps rendering off the
    last known picks with a `⚠ FEED STALE 45s` banner. Stale advice you know is
    stale beats a traceback.
-4. **SQLite log every iteration** → restart resumes mid-draft.
-5. **`preflight` command.** Fetches everything, validates all joins, prints
+4. **Manual mark-drafted mode.** `--manual`, or available at any time: type a
+   name and the player leaves the pool. This is what makes the degraded path
+   operable rather than merely non-crashing, and it is the universal fallback —
+   it covers the Yahoo adapter not being ready by Sept 1, any feed dying
+   mid-draft, and platforms with no integration at all. Honest limit: nobody
+   types all 180 picks while drafting, but only players near the top of the board
+   matter, which is 20–30 entries over three hours.
+5. **SQLite log every iteration** → restart resumes mid-draft.
+6. **`preflight` command.** Fetches everything, validates all joins, prints
    unmatched FFC players, confirms auth, confirms the `draft_id` is reachable and
    roster settings parse. Run the morning of each draft. Highest-value
    operational feature in the build.
@@ -266,6 +291,21 @@ real leagues and do not expose a `league_key`. The only pre-draft Yahoo test is 
 settings read plus an empty `draft_results` against the real league. This is why
 Phase 2 targets Aug 29–30 with a deliberate buffer day.
 
+### The Yahoo risk is confined to draft day
+
+The risk is not that Yahoo is hard — it is that a draft is unrepeatable. In-season
+Yahoo has none of those properties: weekly cadence rather than a 120-second clock,
+a break on Tuesday fixed on Wednesday, and continuous testing against live data
+with no deadline. Yahoo in-season is *lower* risk than Sleeper draft mode.
+
+Two consequences. **Phase 0 is never wasted work** — the OAuth handshake is a
+season-mode prerequisite regardless of what happens on Sept 1, and doing it now
+means it is thoroughly exercised by the time season mode depends on it. And
+**the tool is useful for the Yahoo draft even with no Yahoo feed**: projections,
+custom scoring, VBD, tiers, ADP, and survival are all platform-independent. The
+feed supplies only *who is already gone*, which manual mark-drafted mode covers.
+The floor for Sept 1 is therefore a working board, not nothing.
+
 One test file (`test_value.py`) plus `preflight`. No mocking of the network — the
 pure core does not need it.
 
@@ -298,7 +338,7 @@ repo. Same reasoning that ruled out FantasyPros.
 | Phase | What | By |
 | --- | --- | --- |
 | **0** | Yahoo OAuth handshake; confirm league access, size, and settings | Aug 25 |
-| **1** | `data.py` (disk cache, injury flags) + `value.py` (incl. `lineup_value`) + `cli.py`, Sleeper feed, multi-league config | Aug 28 |
+| **1** | `data.py` (disk cache, injury flags) + `value.py` (incl. `lineup_value`, ADP divergence flag) + `cli.py` (incl. manual mark-drafted), Sleeper feed, multi-league config | Aug 28 |
 | **2** | Yahoo feed adapter (backoff, 10–15s poll) + SQLite draft log | **Aug 29–30** |
 | **3** | Dash UI | Sept 5 |
 | **3.5** | Opponent roster needs, bye clustering, on-the-clock notification, manual player overrides | Sept 5 |
@@ -310,9 +350,13 @@ drafts are free — it is the test harness that de-risks the Yahoo adapter.
 
 ## Deferred, with reasons
 
-- **Blending multiple projection sources.** Single-source Rotowire is a genuine
-  weakness — consensus beats one projector — but free alternatives are thin and
-  each adds an entity-resolution surface. Offseason.
+- **Adding a second projection source.** ESPN does expose undocumented
+  projection endpoints and `espn-api` exists, so this is real rather than
+  impossible. Deferred for two reasons: fantasy projections correlate heavily
+  (all built from pace, target share, and historical usage), so the ensemble gain
+  is far smaller than in genuinely independent forecasting; and each source adds
+  another entity-resolution surface. The ADP divergence flag captures most of the
+  benefit at zero integration cost. FantasyPros stays out on price and ToU.
 - **Playoff strength of schedule.** Weak predictive power in August.
 - **Auto-pick.** Advice only. No tool drafts on the user's behalf.
 - **Waiver notify-bot.** Dead on arrival given FAAB with scheduled processing.
