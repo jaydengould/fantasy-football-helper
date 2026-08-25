@@ -1,0 +1,25 @@
+[tunables]
+tier_break_sigma = 1.0
+divergence_flag_slots = 25
+
+[tunables.flex_share]
+RB = 0.5
+WR = 0.5
+TE = 0.0
+
+[tunables.poll_seconds]
+sleeper = 5
+yahoo = 12
+
+[[league]]
+name = "sleeper-main"
+platform = "sleeper"
+league_id = "1395959490938966016"
+# draft_slot: Sleeper draft_order had 11 of 12 slots at design time.
+# Set this manually once the draft order is final. Never trust the API for it.
+# draft_slot = 3
+
+[[league]]
+name = "yahoo-main"
+platform = "yahoo"
+league_id = "REPLACE_AFTER_TASK_1"
