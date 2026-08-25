@@ -1,10 +1,12 @@
+import queue
 import time
 
 import pytest
 
 from ffhelper.cli import (
-    _preflight, _run, load_board_inputs, league_settings_from_config, main, render,
-    resolve_settings,
+    MarkDrafted, _handle_command, _lookup_roster_id, _my_roster_from_picks, _preflight,
+    _render_tick, _run, find_players, load_board_inputs, league_settings_from_config, main,
+    render, resolve_settings,
 )
 from ffhelper.config import League, Tunables
 from ffhelper.data import LeagueSettings, Player
@@ -334,3 +336,208 @@ def test_run_propagates_keyboard_interrupt_from_feed(monkeypatch):
     # KeyboardInterrupt should propagate out, not be caught internally.
     with pytest.raises(KeyboardInterrupt):
         _run(_loop_league(), Tunables(), limit=10, max_iterations=1)
+
+
+# --- Manual mark-drafted: find_players + MarkDrafted. ---
+
+
+def _pool():
+    return {
+        "bijan": Player("bijan", "Bijan Robinson", "RB", "ATL"),
+        "brian": Player("brian", "Brian Robinson", "RB", "ATL"),
+        "gibbs": Player("gibbs", "Jahmyr Gibbs", "RB", "DET"),
+        "pineiro": Player("pineiro", "Eddy Piñeiro", "K", "CAR"),
+        "harrison": Player("harrison", "Marvin Harrison Jr.", "WR", "ARI"),
+    }
+
+
+def test_find_players_partial_name_case_insensitive():
+    # Discriminates against exact-match-only or case-sensitive search.
+    assert [p.sleeper_id for p in find_players(_pool(), "GiBbS")] == ["gibbs"]
+
+
+def test_find_players_accent_and_suffix_via_norm_name():
+    # Discriminates against a hand-rolled normaliser that doesn't fold accents
+    # or strip generational suffixes the way norm_name does.
+    assert [p.sleeper_id for p in find_players(_pool(), "pineiro")] == ["pineiro"]
+    assert [p.sleeper_id for p in find_players(_pool(), "harrison")] == ["harrison"]
+
+
+def test_find_players_ambiguous_query_returns_both_in_stable_order():
+    """The Bijan/Brian Robinson case: silently returning one is the exact bug
+    disambiguation exists to prevent (the wrong player leaves the board)."""
+    result = find_players(_pool(), "robinson")
+    assert {p.sleeper_id for p in result} == {"bijan", "brian"}
+    assert len(result) == 2
+    assert [p.sleeper_id for p in result] == [p.sleeper_id for p in find_players(_pool(), "robinson")]
+
+
+def test_find_players_no_match_returns_empty_list_not_raise():
+    assert find_players(_pool(), "zzz_nobody_by_this_name") == []
+
+
+def test_mark_drafted_removes_from_pool_and_undo_restores_exactly_that_player():
+    pool = _pool()
+    state = MarkDrafted()
+    state.mark("bijan")
+    state.mark("gibbs")
+
+    available_ids = {pid for pid in pool if pid not in state.drafted}
+    assert available_ids == {"brian", "pineiro", "harrison"}
+
+    state.undo()  # undoes gibbs, the most recently marked
+    available_ids = {pid for pid in pool if pid not in state.drafted}
+    assert "gibbs" in available_ids       # restored
+    assert "bijan" not in available_ids   # still gone -- undo only touches the last mark
+
+
+def test_mark_drafted_undo_on_empty_history_is_noop_and_does_not_raise():
+    state = MarkDrafted()
+    state.undo()
+    assert state.drafted == set()
+    state.mark("bijan")
+    state.undo()
+    state.undo()  # second undo: history is already empty
+    assert state.drafted == set()
+
+
+def test_mark_drafted_marking_already_marked_player_is_idempotent():
+    """Discriminates against a mark() that pushes a duplicate history entry
+    for an id already marked -- if it did, a single undo would not fully
+    clear the id."""
+    state = MarkDrafted()
+    state.mark("bijan")
+    state.mark("bijan")
+    assert state.drafted == {"bijan"}
+    state.undo()
+    assert state.drafted == set()
+
+
+def test_handle_command_single_match_marks_directly():
+    pool = _pool()
+    state = MarkDrafted()
+    pending, status = _handle_command("gibbs", pool, state, [])
+    assert pending == []
+    assert state.drafted == {"gibbs"}
+    assert "Jahmyr Gibbs" in status
+
+
+def test_handle_command_multiple_matches_opens_disambiguation_then_selects():
+    pool = _pool()
+    state = MarkDrafted()
+    pending, status = _handle_command("robinson", pool, state, [])
+    assert state.drafted == set()  # nothing marked yet -- ambiguous query alone never marks
+    assert len(pending) == 2
+
+    pending2, status2 = _handle_command("1", pool, state, pending)
+    assert state.drafted == {pending[0].sleeper_id}
+    assert pending2 == []
+
+
+def test_handle_command_undo_via_u_or_undo():
+    pool = _pool()
+    state = MarkDrafted()
+    _handle_command("gibbs", pool, state, [])
+    _handle_command("undo", pool, state, [])
+    assert state.drafted == set()
+
+
+# --- Wiring my_roster from slot_to_roster_id so MARG is truthful. ---
+
+
+def test_lookup_roster_id_is_none_when_draft_slot_unset():
+    # Never guesses: no draft_slot means no lookup at all.
+    assert _lookup_roster_id(_loop_league(draft_slot=None), _loop_settings()) is None
+
+
+def test_lookup_roster_id_maps_configured_slot_to_roster_id(monkeypatch):
+    league = _loop_league(draft_slot=3)
+    settings = _loop_settings()
+    monkeypatch.setattr(
+        "ffhelper.cli.fetch_json",
+        lambda url, key, **kw: {"slot_to_roster_id": {"3": 7, "1": 2}},
+    )
+    assert _lookup_roster_id(league, settings) == 7
+
+
+def test_lookup_roster_id_degrades_to_none_on_fetch_failure(monkeypatch):
+    league = _loop_league(draft_slot=3)
+    settings = _loop_settings()
+
+    def boom(*a, **kw):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("ffhelper.cli.fetch_json", boom)
+    assert _lookup_roster_id(league, settings) is None
+
+
+def test_my_roster_from_picks_filters_by_roster_id():
+    players = _loop_players()
+    players["2"] = Player("2", "B", "WR", "ATL", proj_pts=50.0)
+    picks = [Pick(pick_no=1, sleeper_id="1", roster_id=5), Pick(pick_no=2, sleeper_id="2", roster_id=9)]
+
+    roster = _my_roster_from_picks(picks, players, roster_id=5)
+
+    assert [p.sleeper_id for p in roster] == ["1"]
+
+
+def test_my_roster_from_picks_empty_when_roster_id_none():
+    picks = [Pick(pick_no=1, sleeper_id="1", roster_id=5)]
+    assert _my_roster_from_picks(picks, _loop_players(), roster_id=None) == []
+
+
+def test_render_tick_wires_my_roster_and_marg_reflects_it(monkeypatch):
+    """CLI-level regression guard for the hardcoded-[] bug: with a full QB
+    slot already on the user's roster, a high-projection QB candidate's
+    marginal value must land strictly below his raw projection. Against the
+    old `my_roster: list[Player] = []` hardcode this fails, because marginal
+    would equal the raw 300.0 projection instead of 250.0.
+    """
+    players = {
+        "qb1": Player("qb1", "Roster QB", "QB", "SF", proj_pts=50.0, adp=50.0, adp_stdev=5.0),
+        "qb2": Player("qb2", "Candidate QB", "QB", "KC", proj_pts=300.0, adp=1.0, adp_stdev=1.0),
+    }
+    picks = [Pick(pick_no=1, sleeper_id="qb1", roster_id=5)]
+    settings = LeagueSettings(num_teams=10, scoring={}, roster_slots={"QB": 1}, rounds=1, draft_id="d1")
+    league = _loop_league(draft_slot=3)
+
+    captured = {}
+
+    def spy_render(board, *a, **kw):
+        captured["board"] = board
+        return "ok"
+
+    monkeypatch.setattr("ffhelper.cli.render", spy_render)
+
+    _render_tick(
+        picks, time.time(), players, settings, league, Tunables(), 10,
+        manual_gone=set(), roster_id=5,
+    )
+
+    rows = {r.player.sleeper_id: r for r in captured["board"]}
+    assert rows["qb2"].marginal == 250.0
+    assert rows["qb2"].marginal < players["qb2"].proj_pts
+
+
+def test_run_wires_manual_marks_into_the_board(monkeypatch, capsys):
+    """Manual marks reach the board through the same `drafted` exclusion as
+    feed picks -- `input_queue` is passed directly so no real stdin/thread is
+    involved and nothing sleeps or blocks. If `_run` stopped draining the
+    queue into `_handle_command`/`MarkDrafted`, this status line would never
+    appear and the player would still show up on the board.
+    """
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+
+    q: queue.Queue = queue.Queue()
+    q.put("A")  # matches the sole player in _loop_players(), id "1"
+
+    result = _run(_loop_league(), Tunables(), limit=10, max_iterations=2, input_queue=q)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "marked A (RB ATL)" in out
+    # the board itself is empty now -- "A" was excluded, not just narrated
+    assert "1   A " not in out

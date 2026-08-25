@@ -3,15 +3,17 @@ identical either way.
 """
 import argparse
 import logging
+import queue
 import sys
+import threading
 import time
 from pathlib import Path
 
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import (
     LeagueSettings, Player, adp_format_for, apply_ffc_adp, apply_projections,
-    apply_sleeper_adp, load_ffc_adp, load_players, load_projections,
-    load_sleeper_settings,
+    apply_sleeper_adp, fetch_json, load_ffc_adp, load_players, load_projections,
+    load_sleeper_settings, norm_name,
 )
 from ffhelper.feeds import PickFeed, SleeperFeed
 from ffhelper.value import Row, build_board, detect_run, next_pick_number
@@ -19,6 +21,107 @@ from ffhelper.value import Row, build_board, detect_run, next_pick_number
 log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
 SEASON = "2026"
+SLEEPER_DRAFT_URL = "https://api.sleeper.app/v1/draft/{draft_id}"
+
+
+def find_players(pool: dict[str, Player], query: str) -> list[Player]:
+    """Partial, case-insensitive name search over `pool`.
+
+    Uses `norm_name` -- the SAME normalisation the FFC join uses -- so accent
+    folding and generational-suffix stripping come for free: "pineiro"
+    matches "Eddy Pineiro" and "harrison" matches "Marvin Harrison Jr.".
+
+    Returns ALL matches in a stable (name, id) order. Never returns just the
+    first: "robinson" matches both Bijan and Brian Robinson, and picking one
+    silently would remove the wrong player from the board.
+    """
+    q = norm_name(query)
+    if not q:
+        return []
+    return sorted(
+        (p for p in pool.values() if q in norm_name(p.name)),
+        key=lambda p: (p.name, p.sleeper_id),
+    )
+
+
+class MarkDrafted:
+    """Manual mark-drafted state: player_ids hand-marked gone, plus a
+    one-level-deep undo of the most recent mark.
+
+    Only ids are tracked -- the pool itself lives in `players` and is
+    filtered by `drafted` exactly like feed-reported picks are, so the board
+    never has to know which source removed a player.
+    """
+
+    def __init__(self) -> None:
+        self._history: list[str] = []
+        self._marked: set[str] = set()
+
+    def mark(self, player_id: str) -> None:
+        if player_id in self._marked:
+            return                          # already marked: idempotent, no-op
+        self._marked.add(player_id)
+        self._history.append(player_id)
+
+    def undo(self) -> None:
+        if not self._history:
+            return                          # nothing to undo: no-op, never raises
+        self._marked.discard(self._history.pop())
+
+    @property
+    def drafted(self) -> set[str]:
+        return set(self._marked)
+
+
+def _handle_command(
+    line: str, pool: dict[str, Player], mark_state: MarkDrafted, pending: list[Player],
+) -> tuple[list[Player], str]:
+    """Process one line of manual input; pure and stdin-free so it is directly
+    testable. `pending` is the disambiguation list left open by the previous
+    command (empty when none is open). Returns the new pending list plus a
+    status line for the caller to print.
+
+    Protocol: "u"/"undo" undoes the last mark; a bare number, while a
+    disambiguation list is open, selects from it; anything else is a name
+    search. A search with exactly one match marks it directly -- that is not
+    "picking the first" because there is only one candidate. A search with
+    several matches opens the disambiguation list instead of guessing.
+    """
+    line = line.strip()
+    if not line:
+        return pending, ""
+    if line.lower() in ("u", "undo"):
+        mark_state.undo()
+        return [], "undid last mark"
+    if pending and line.isdigit():
+        idx = int(line)
+        if 1 <= idx <= len(pending):
+            chosen = pending[idx - 1]
+            mark_state.mark(chosen.sleeper_id)
+            return [], f"marked {chosen.name} ({chosen.position} {chosen.team})"
+        return pending, f"choose 1-{len(pending)}, or type a new search"
+    matches = find_players(pool, line)
+    if not matches:
+        return [], f"no match for {line!r}"
+    if len(matches) == 1:
+        p = matches[0]
+        mark_state.mark(p.sleeper_id)
+        return [], f"marked {p.name} ({p.position} {p.team})"
+    listing = "; ".join(f"{i}:{p.name} {p.position}-{p.team}" for i, p in enumerate(matches, 1))
+    return matches, f"multiple matches, type a number -- {listing}"
+
+
+def _stdin_reader(q: "queue.Queue[str]") -> None:
+    """Daemon-thread target: blocks reading stdin lines so the render loop
+    never has to. Runs in its own thread; any failure (stdin unavailable,
+    closed, or captured e.g. under a test runner) just ends the thread --
+    the queue simply stays empty, same as no input at all.
+    """
+    try:
+        for raw_line in sys.stdin:
+            q.put(raw_line.strip())
+    except Exception:                                   # noqa: BLE001
+        pass
 
 
 def render(
@@ -114,9 +217,50 @@ def load_board_inputs(
     return {pid: p for pid, p in players.items() if p.proj_pts > 0}, settings
 
 
+def _lookup_roster_id(league: League, settings: LeagueSettings) -> int | None:
+    """Resolve the user's Sleeper roster_id from the configured draft_slot via
+    the draft object's `slot_to_roster_id` map, fetched through the existing
+    cached `fetch_json` (no new HTTP path, no reimplemented caching).
+
+    Never guesses: returns None -- and callers must leave my_roster empty --
+    when draft_slot isn't configured, the platform has no such mapping
+    (anything but Sleeper today), or the lookup fails for any reason.
+    """
+    if league.draft_slot is None or league.platform != "sleeper" or not settings.draft_id:
+        return None
+    try:
+        raw = fetch_json(
+            SLEEPER_DRAFT_URL.format(draft_id=settings.draft_id),
+            f"draft_{settings.draft_id}",
+        )
+    except Exception as exc:                      # noqa: BLE001 - degrade, don't fabricate
+        log.warning("could not resolve my_roster (slot_to_roster_id unavailable): %s", exc)
+        return None
+    roster_id = (raw.get("slot_to_roster_id") or {}).get(str(league.draft_slot))
+    return int(roster_id) if roster_id is not None else None
+
+
+def _my_roster_from_picks(
+    picks: list, players: dict[str, Player], roster_id: int | None,
+) -> list[Player]:
+    """Picks carrying the user's roster_id are the user's own players.
+
+    Manually marked players carry no roster_id (there may be no feed at all
+    in manual mode, and a hand-marked pick could belong to any team), so they
+    are never folded in here -- doing so would be a guess, not a lookup.
+    """
+    if roster_id is None:
+        return []
+    return [
+        players[p.sleeper_id] for p in picks
+        if p.roster_id == roster_id and p.sleeper_id in players
+    ]
+
+
 def _render_tick(
     picks: list, last_ok: float, players: dict[str, Player], settings: LeagueSettings,
     league: League, tunables: Tunables, limit: int, manual_gone: set[str],
+    roster_id: int | None, status: str = "",
 ) -> None:
     """Build and print one frame of the draft board from the current picks.
 
@@ -125,7 +269,7 @@ def _render_tick(
     """
     drafted = {p.sleeper_id for p in picks} | manual_gone
     available = [p for pid, p in players.items() if pid not in drafted]
-    my_roster: list[Player] = []                  # wired via slot_to_roster_id in a later task
+    my_roster = _my_roster_from_picks(picks, players, roster_id)
     recent = [players[p.sleeper_id].position for p in picks[-8:] if p.sleeper_id in players]
 
     board = build_board(
@@ -138,11 +282,15 @@ def _render_tick(
         nxt = next_pick_number(len(picks) + 1, league.draft_slot, settings.num_teams)
         print(f"\npick {len(picks) + 1}   your next pick: {nxt} "
               f"({nxt - len(picks) - 1} away)")
+    print("\ntype part of a name to mark drafted, a number to disambiguate, 'u' to undo")
+    if status:
+        print(status)
     print("\n(ctrl-c to stop; run `preflight` before the draft)")
 
 
 def _run(
     league: League, tunables: Tunables, limit: int, max_iterations: int | None = None,
+    input_queue: "queue.Queue[str] | None" = None,
 ) -> int:
     """Poll the feed and redraw the board forever (or `max_iterations` times).
 
@@ -152,6 +300,12 @@ def _run(
     either is logged and the loop moves on to the next tick. `max_iterations`
     exists only so tests can drive a bounded number of ticks without a real
     `while True` or a blocking `time.sleep`.
+
+    Manual mark-drafted input is read on a daemon thread onto `input_queue`
+    (a plain stdlib Queue) and drained here once per tick -- never blocking
+    the redraw on `input()`. A daemon thread was chosen over a select() poll
+    on stdin because it needs no platform-specific fd handling and is
+    trivially testable: pass `input_queue` directly and skip the thread.
     """
     players, settings = load_board_inputs(league, tunables)
     if not settings.draft_id:
@@ -159,7 +313,15 @@ def _run(
         return 1
 
     feed: PickFeed = SleeperFeed(settings.draft_id)
-    manual_gone: set[str] = set()
+    roster_id = _lookup_roster_id(league, settings)
+    mark_state = MarkDrafted()
+    pending: list[Player] = []
+    status = ""
+
+    if input_queue is None:
+        input_queue = queue.Queue()
+        threading.Thread(target=_stdin_reader, args=(input_queue,), daemon=True).start()
+
     picks: list = []
     last_ok = time.time()
     interval = tunables.poll_seconds.get(league.platform, 5)
@@ -167,6 +329,9 @@ def _run(
 
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
+        while not input_queue.empty():
+            pending, status = _handle_command(input_queue.get_nowait(), players, mark_state, pending)
+
         try:
             picks = feed.get_picks()
             last_ok = time.time()
@@ -174,7 +339,8 @@ def _run(
             log.warning("poll failed: %s", exc)
 
         try:
-            _render_tick(picks, last_ok, players, settings, league, tunables, limit, manual_gone)
+            _render_tick(picks, last_ok, players, settings, league, tunables, limit,
+                         mark_state.drafted, roster_id, status)
         except Exception as exc:                      # noqa: BLE001 - loop must never die
             log.error("draft tick failed: %s", exc, exc_info=True)
 
