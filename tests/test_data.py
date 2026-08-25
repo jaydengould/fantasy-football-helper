@@ -32,6 +32,24 @@ def test_falls_back_to_stale_cache_on_failure(tmp_path: Path):
     assert got == {"v": 1}
 
 
+def test_stale_ok_false_raises_even_though_a_usable_cache_exists(tmp_path: Path):
+    """Live data (the pick feed) must FAIL LOUDLY rather than silently serve the
+    last good answer -- a frozen pick list looks perfectly healthy and makes
+    every survival and VONA number on the board wrong.
+
+    Against the pre-fix code (no `stale_ok` at all) this returns {"v": 1} from
+    the stale cache and never raises, so this test fails.
+    """
+    fetch_json("http://x/y", "k", cache_dir=tmp_path, fetcher=lambda url: json.dumps({"v": 1}))
+
+    def boom(url: str) -> str:
+        raise ConnectionError("network down")
+
+    with pytest.raises(ConnectionError):
+        fetch_json("http://x/y", "k", ttl_seconds=0, cache_dir=tmp_path,
+                   fetcher=boom, stale_ok=False)
+
+
 def test_raises_when_no_cache_and_fetch_fails(tmp_path: Path):
     def boom(url: str) -> str:
         raise ConnectionError("network down")
@@ -96,6 +114,28 @@ def test_no_leftover_temp_files_after_successful_fetch(tmp_path: Path):
     assert files[0].name == "k.json", f"expected k.json, found {files[0].name}"
 
 
+def test_failed_cache_write_leaves_no_temp_file_behind(tmp_path: Path, monkeypatch):
+    """The success case above passes with or without the cleanup handler --
+    os.replace consumes the temp file either way, so it asserts steady state,
+    not atomicity. This drives the path the handler exists for: os.replace
+    fails, and the mkstemp file must be unlinked rather than accumulating one
+    orphan per failed write for the life of the .cache directory.
+
+    Delete the handler in `_write_cache_atomic` and this test fails; the one
+    above still passes.
+    """
+    def boom(src, dst):
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr("ffhelper.data.os.replace", boom)
+
+    with pytest.raises(OSError):
+        fetch_json("http://x/y", "k", cache_dir=tmp_path,
+                   fetcher=lambda url: json.dumps({"v": 1}))
+
+    assert list(tmp_path.iterdir()) == []
+
+
 CROSSWALK_CSV = "sleeper_id,yahoo_id\n1,100\n2,200\n"
 
 
@@ -136,17 +176,8 @@ def test_load_crosswalk_corrupt_cache_with_failing_fetcher_raises_fetch_error(tm
         load_crosswalk(cache_dir=tmp_path, fetcher=boom)
 
 
-def test_load_crosswalk_no_leftover_temp_files(tmp_path: Path):
-    """After a successful load_crosswalk, cache dir should contain only crosswalk.json."""
-
-    def fetcher(url: str) -> str:
-        return CROSSWALK_CSV
-
-    load_crosswalk(cache_dir=tmp_path, fetcher=fetcher)
-
-    files = list(tmp_path.iterdir())
-    assert len(files) == 1, f"expected 1 file, found {len(files)}: {files}"
-    assert files[0].name == "crosswalk.json", f"expected crosswalk.json, found {files[0].name}"
+# (A duplicate "no leftover temp files after load_crosswalk" test lived here.
+#  Both callers share `_write_cache_atomic`, so the two tests above cover it.)
 
 
 from ffhelper.data import Player, norm_name, build_players

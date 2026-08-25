@@ -22,6 +22,19 @@ def row(pid: str, name: str, pos: str, vona: float, surv: float, div: int = 0,
                survival=surv, divergence=div)
 
 
+def test_divergence_flag_threshold_comes_from_tunables_not_a_hardcoded_25():
+    """`tunables.divergence_flag_slots` was loaded, defaulted, and never read --
+    turning the knob did nothing. Against that code the first assertion fails:
+    a divergence of 10 stays unflagged no matter what threshold is passed."""
+    r = [row("a", "Jahmyr Gibbs", "RB", 50.0, 0.2, div=10)]
+    loose = render(r, limit=10, stale_seconds=0.0, my_roster=[], runs={},
+                   divergence_flag_slots=5)
+    tight = render(r, limit=10, stale_seconds=0.0, my_roster=[], runs={},
+                   divergence_flag_slots=25)
+    assert "MODEL+10" in loose
+    assert "MODEL+10" not in tight
+
+
 def test_render_includes_players_and_headers():
     out = render([row("a", "Jahmyr Gibbs", "RB", 50.0, 0.2)], limit=10,
                  stale_seconds=0.0, my_roster=[], runs={})
@@ -1006,3 +1019,78 @@ def test_run_action_status_shows_on_its_tick_and_is_gone_the_next(monkeypatch, c
 
     assert result == 0
     assert out.count("marked A (RB ATL)") == 1
+
+
+def test_current_pick_follows_the_feeds_highest_pick_no_not_the_row_count(capsys):
+    """`parse_sleeper_picks` drops malformed rows, so counting surviving picks
+    permanently shifts the draft horizon back by one for every row dropped --
+    every survival and VONA number is then computed against the wrong pick.
+
+    Two picks arrive numbered 1 and 3 (pick 2's row was malformed and skipped).
+    The board is on pick 4. Against the count-only code it says pick 3.
+    """
+    _render_tick(
+        picks=[Pick(pick_no=1, sleeper_id="1"), Pick(pick_no=3, sleeper_id="2")],
+        last_ok=time.time(), players=_two_robinsons(), settings=_loop_settings(),
+        league=_loop_league(draft_slot=1), tunables=Tunables(), limit=5,
+        manual_gone=set(), manual_mine=set(), roster_id=None,
+    )
+    assert "pick 4 " in capsys.readouterr().out
+
+
+def _two_robinsons():
+    return {
+        "1": Player("1", "Bijan Robinson", "RB", "ATL", proj_pts=300.0, adp=2.0, adp_stdev=1.0),
+        "2": Player("2", "Brian Robinson", "RB", "WAS", proj_pts=180.0, adp=60.0, adp_stdev=8.0),
+    }
+
+
+def test_superscript_digit_at_a_disambiguation_prompt_does_not_kill_the_loop(monkeypatch):
+    """`str.isdigit()` is True for '²' but `int('²')` raises ValueError.
+
+    Against the pre-fix code the drain sits outside both try blocks, so that
+    ValueError propagates straight out of `_run` on the first tick -- the user
+    loses the board mid-draft with their pick clock running. This test fails
+    with that ValueError instead of observing a clean return.
+    """
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_two_robinsons(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+
+    q: queue.Queue = queue.Queue()
+    q.put("robinson")   # ambiguous -> opens the disambiguation list
+    q.put("²")     # isdigit() True, int() raises
+
+    assert _run(_loop_league(), Tunables(), limit=10, max_iterations=2, input_queue=q) == 0
+
+
+def test_a_raising_command_leaves_the_rest_of_the_queue_drainable(monkeypatch, capsys):
+    """The drain's guard must not abandon the queue: a later valid command on
+    the same tick still has to be processed."""
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_two_robinsons(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+
+    calls = {"n": 0}
+    real = _handle_command
+
+    def flaky(line, pool, mark_state, pending, pending_mine=False):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return real(line, pool, mark_state, pending, pending_mine)
+
+    monkeypatch.setattr("ffhelper.cli._handle_command", flaky)
+
+    q: queue.Queue = queue.Queue()
+    q.put("bijan")
+    q.put("brian")
+
+    result = _run(_loop_league(), Tunables(), limit=10, max_iterations=1, input_queue=q)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert calls["n"] == 2
+    assert "marked Brian Robinson" in out

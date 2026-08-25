@@ -47,8 +47,9 @@ def _stale_fallback(path: Path, exc: Exception, label: str) -> Any:
     raise exc
 
 
-def _write_cache_atomic(path: Path, cache_dir: Path, text: str) -> None:
+def _write_cache_atomic(path: Path, text: str) -> None:
     """tempfile.mkstemp + os.replace so a reader never sees a partial cache file."""
+    cache_dir = path.parent
     cache_dir.mkdir(parents=True, exist_ok=True)
     fd = None
     tmp_path = None
@@ -72,11 +73,17 @@ def fetch_json(
     ttl_seconds: int = 86_400,
     cache_dir: Path = CACHE_DIR,
     fetcher: Callable[[str], str] | None = None,
+    stale_ok: bool = True,
 ) -> Any:
     """Fetch JSON with a write-through disk cache and stale-on-failure fallback.
 
     Draft night depends on this: a failed refresh must degrade to stale data,
     never to an exception, whenever any cached copy exists.
+
+    `stale_ok=False` turns that off for live data, where a silently-stale answer
+    is WORSE than an error: the pick list must raise on a failed poll so the
+    caller can show the feed is dead. Returning yesterday's picks looks healthy
+    and is wrong -- the same class of bug as a frozen pick counter.
     """
     fetcher = fetcher or _requests_get
     cache_dir = Path(cache_dir)
@@ -89,9 +96,11 @@ def fetch_json(
     try:
         text = fetcher(url)
     except Exception as exc:
+        if not stale_ok:
+            raise
         return _stale_fallback(path, exc, cache_key)
 
-    _write_cache_atomic(path, cache_dir, text)
+    _write_cache_atomic(path, text)
     return json.loads(text)
 
 
@@ -192,7 +201,7 @@ def load_crosswalk(cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | 
         for r in rows
         if r.get("sleeper_id", "").strip() and r.get("yahoo_id", "").strip() not in ("", "NA")
     }
-    _write_cache_atomic(path, cache_dir, json.dumps(mapping))
+    _write_cache_atomic(path, json.dumps(mapping))
     return mapping
 
 

@@ -115,7 +115,10 @@ def _handle_command(
     if line.lower() in ("u", "undo"):
         mark_state.undo()
         return [], False, "undid last mark"
-    if pending and line.isdigit():
+    # isdecimal(), not isdigit(): isdigit() is True for superscripts ('²') and
+    # other numeric forms that int() then refuses. isdecimal() is exactly the
+    # set int() accepts.
+    if pending and line.isdecimal():
         idx = int(line)
         if 1 <= idx <= len(pending):
             chosen = pending[idx - 1]
@@ -158,7 +161,7 @@ def _stdin_reader(q: "queue.Queue[str]") -> None:
 
 def render(
     board: list[Row], limit: int, stale_seconds: float | None,
-    my_roster: list[Player], runs: dict[str, int],
+    my_roster: list[Player], runs: dict[str, int], divergence_flag_slots: int = 25,
 ) -> str:
     lines: list[str] = []
     if stale_seconds is None:
@@ -181,7 +184,7 @@ def render(
         flags = []
         if r.player.injury_status:
             flags.append(r.player.injury_status)
-        if abs(r.divergence) >= 25:
+        if abs(r.divergence) >= divergence_flag_slots:
             flags.append(f"{'MODEL' if r.divergence > 0 else 'MARKET'}+{abs(r.divergence)}")
         if r.player.bye:
             flags.append(f"bye{r.player.bye}")
@@ -360,8 +363,14 @@ def _render_tick(
     # must be derived from that SAME set so the board can't disagree with
     # itself about who's off the board. Set union means a player reported by
     # both the feed and a manual mark is counted once, not twice.
+    #
+    # The count alone is not enough either: `parse_sleeper_picks` skips
+    # malformed rows, so one bad row would shift the horizon down by one for
+    # the rest of the draft. The feed's own highest pick_no is authoritative
+    # where it exists, so take whichever is further along.
     drafted = {p.sleeper_id for p in picks} | manual_gone
-    current_pick = len(drafted) + 1
+    highest = max((p.pick_no for p in picks), default=0)
+    current_pick = max(len(drafted), highest) + 1
     available = [p for pid, p in players.items() if pid not in drafted]
     feed_roster = _my_roster_from_picks(picks, players, roster_id)
     my_roster = _combine_my_roster(feed_roster, manual_mine, players)
@@ -373,7 +382,8 @@ def _render_tick(
     )
     print("\033[2J\033[H", end="")                # clear screen
     stale_seconds = None if last_ok is None else time.time() - last_ok
-    print(render(board, limit, stale_seconds, my_roster, detect_run(recent)))
+    print(render(board, limit, stale_seconds, my_roster, detect_run(recent),
+                 tunables.divergence_flag_slots))
     if league.draft_slot:
         nxt = next_pick_number(current_pick, league.draft_slot, settings.num_teams)
         print(f"\npick {current_pick}   your next pick: {nxt} "
@@ -435,9 +445,17 @@ def _run(
         # subsequent tick forever, since nothing else ever overwrites it.
         status = ""
         while not input_queue.empty():
-            pending, pending_mine, status = _handle_command(
-                input_queue.get_nowait(), players, mark_state, pending, pending_mine
-            )
+            # Guarded per COMMAND, not per drain: one bad line must not discard
+            # the rest of the queue. This is the third per-tick statement and
+            # obeys the same rule as the other two -- nothing here propagates.
+            line = input_queue.get_nowait()
+            try:
+                pending, pending_mine, status = _handle_command(
+                    line, players, mark_state, pending, pending_mine
+                )
+            except Exception as exc:                  # noqa: BLE001 - loop must never die
+                log.warning("command %r failed: %s", line, exc)
+                status = f"could not handle {line!r} -- try again"
 
         try:
             picks = feed.get_picks()

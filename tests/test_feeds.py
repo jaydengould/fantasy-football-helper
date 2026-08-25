@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from ffhelper.feeds import Pick, SleeperFeed, parse_sleeper_picks
 
 
@@ -99,6 +101,29 @@ def test_sleeper_feed_never_serves_picks_from_cache(tmp_path: Path):
     feed.get_picks()
 
     assert len(calls) == 2
+
+
+def test_sleeper_feed_raises_on_a_failed_poll_instead_of_replaying_the_cache(tmp_path: Path):
+    """A dead feed must reach the caller as an exception so the STALE banner can
+    fire. Serving the previous poll's picks is indistinguishable from a healthy
+    draft where nobody has picked yet.
+
+    Against the pre-fix code -- `fetch_json` with its default stale-on-failure
+    fallback -- the second call returns the first call's picks and this test
+    fails with no exception raised.
+    """
+    calls = []
+
+    def flaky(url: str) -> str:
+        calls.append(url)
+        if len(calls) == 1:
+            return json.dumps([{"pick_no": 1, "player_id": "9221", "roster_id": 10}])
+        raise ConnectionError("wifi dropped")
+
+    feed = SleeperFeed("draft123", fetcher=flaky, cache_dir=tmp_path)
+    assert len(feed.get_picks()) == 1
+    with pytest.raises(ConnectionError):
+        feed.get_picks()
 
 
 def test_sleeper_feed_empty_draft_returns_empty_list(tmp_path: Path):

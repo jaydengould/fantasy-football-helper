@@ -59,5 +59,6 @@ class SleeperFeed:
             ttl_seconds=0,          # live data; never serve from cache on success
             cache_dir=self.cache_dir,
             fetcher=self.fetcher,
+            stale_ok=False,         # a failed poll must raise so the STALE banner can fire
         )
         return parse_sleeper_picks(raw)
