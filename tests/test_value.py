@@ -251,6 +251,56 @@ def test_vona_is_large_when_nobody_survives():
     assert vona([cand, other], cand, at_pick=50) > 190.0
 
 
+def test_vona_near_zero_when_candidate_himself_likely_survives():
+    """Regression guard for the exclusion bug: if the candidate is both the
+    best point-scorer at his position AND overwhelmingly likely to still be
+    there at the next pick, waiting costs ~nothing -- the "next available"
+    player at that future pick is very likely him.
+
+    A better player (other, 150 pts) is drafted early and certainly gone
+    (adp=5, survival~0 at pick 46); the candidate (100 pts) has adp=150 so
+    he survives to pick 46 with probability ~1.
+
+    Discriminates: the old `p is not candidate` filter drops the candidate
+    from the walk entirely, leaving only `other` whose survival is ~0, so
+    expected~0 and vona = 100 - 0 = 100.0 (verified directly against the
+    pre-fix code). Under the fix the candidate re-enters the walk as the
+    dominant surviving player, expected~100, and vona collapses to ~0. This
+    test fails under the reverted exclusion logic (100.0 is not < 5.0).
+    """
+    cand = mk("cand", "TE", 100.0, adp=150.0, stdev=15.0)   # near-certain to survive
+    other = mk("other", "TE", 150.0, adp=5.0, stdev=2.0)    # near-certain to be gone
+    result = vona([cand, other], cand, at_pick=46)
+    assert result < 5.0
+    assert result == pytest.approx(0.0, abs=1.0)
+
+
+def test_vona_large_positive_with_steep_drop_behind_low_survival_candidate():
+    """Main-case check: candidate and the next-best player are both almost
+    certainly gone by the next pick; only a much weaker player (50 pts, deep
+    drop) is likely to survive. Waiting should cost close to the full gap
+    between the candidate and that survivor -- large and positive, and this
+    number is unaffected by the fix since the candidate's own survival is
+    ~0 either way (his inclusion/exclusion barely changes the sum)."""
+    cand = mk("cand", "RB", 200.0, adp=1.0, stdev=0.5)     # certain to be gone
+    rival = mk("rival", "RB", 190.0, adp=2.0, stdev=0.5)   # also certain to be gone
+    survivor = mk("survivor", "RB", 50.0, adp=100.0, stdev=10.0)  # steep drop, survives
+    result = vona([cand, rival, survivor], cand, at_pick=46)
+    assert result == pytest.approx(150.0, abs=1.0)
+
+
+def test_vona_negative_is_not_clamped_to_zero():
+    """If a much better player at the position is almost certain to survive
+    to the next pick, taking the (weaker) candidate now is strictly worse
+    than waiting -- VONA must be negative, not floored at 0. A clamp would
+    turn this -50 into 0.0 and this assertion would fail."""
+    cand = mk("cand", "WR", 100.0, adp=45.0, stdev=3.0)
+    better = mk("better", "WR", 150.0, adp=200.0, stdev=20.0)  # certain to survive
+    result = vona([cand, better], cand, at_pick=46)
+    assert result < 0.0
+    assert result == pytest.approx(-50.0, abs=1.0)
+
+
 def test_divergence_flags_projection_vs_market_gaps():
     # 'sleeper' is ranked 1st by projection but 3rd by ADP -> +2 divergence
     players = [

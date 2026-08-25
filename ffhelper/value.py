@@ -162,9 +162,13 @@ def vona(players: list[Player], candidate: Player, at_pick: int) -> float:
 
     Expected best-at-position at `at_pick`, computed as a survival-weighted
     walk down the position board: the best player is the first who survives.
+
+    The candidate himself is part of that walk -- if you wait, the best
+    player still there at `at_pick` might well be him. Excluding him would
+    overstate urgency for exactly the players most likely to survive.
     """
     same_pos = sorted(
-        (p for p in players if p.position == candidate.position and p is not candidate),
+        (p for p in players if p.position == candidate.position),
         key=lambda p: -p.proj_pts,
     )
     expected = 0.0
