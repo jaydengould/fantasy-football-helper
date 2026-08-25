@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ffhelper.data import fetch_json
+from ffhelper.data import fetch_json, load_crosswalk
 
 
 def test_fetches_and_caches(tmp_path: Path):
@@ -94,6 +94,59 @@ def test_no_leftover_temp_files_after_successful_fetch(tmp_path: Path):
     files = list(tmp_path.iterdir())
     assert len(files) == 1, f"expected 1 file, found {len(files)}: {files}"
     assert files[0].name == "k.json", f"expected k.json, found {files[0].name}"
+
+
+CROSSWALK_CSV = "sleeper_id,yahoo_id\n1,100\n2,200\n"
+
+
+def test_load_crosswalk_corrupt_cache_within_ttl_refetches(tmp_path: Path):
+    """Corrupt crosswalk cache within TTL should be skipped and fresh data fetched, not crash."""
+    call_count = [0]
+
+    def fetcher(url: str) -> str:
+        call_count[0] += 1
+        return CROSSWALK_CSV
+
+    result1 = load_crosswalk(cache_dir=tmp_path, fetcher=fetcher)
+    assert result1 == {"1": "100", "2": "200"}
+
+    cache_file = tmp_path / "crosswalk.json"
+    cache_file.write_text("{corrupted")
+
+    result2 = load_crosswalk(cache_dir=tmp_path, fetcher=fetcher)
+    assert result2 == {"1": "100", "2": "200"}, "should refetch when cache is corrupt, not raise"
+    assert call_count[0] == 2, "should have called fetcher twice"
+
+
+def test_load_crosswalk_corrupt_cache_with_failing_fetcher_raises_fetch_error(tmp_path: Path):
+    """Corrupt stale crosswalk cache + failed fetch should raise the fetch exception, not a JSON error."""
+
+    def ok(url: str) -> str:
+        return CROSSWALK_CSV
+
+    def boom(url: str) -> str:
+        raise ConnectionError("network down")
+
+    load_crosswalk(cache_dir=tmp_path, fetcher=ok)
+
+    cache_file = tmp_path / "crosswalk.json"
+    cache_file.write_text("{bad json")
+
+    with pytest.raises(ConnectionError, match="network down"):
+        load_crosswalk(cache_dir=tmp_path, fetcher=boom)
+
+
+def test_load_crosswalk_no_leftover_temp_files(tmp_path: Path):
+    """After a successful load_crosswalk, cache dir should contain only crosswalk.json."""
+
+    def fetcher(url: str) -> str:
+        return CROSSWALK_CSV
+
+    load_crosswalk(cache_dir=tmp_path, fetcher=fetcher)
+
+    files = list(tmp_path.iterdir())
+    assert len(files) == 1, f"expected 1 file, found {len(files)}: {files}"
+    assert files[0].name == "crosswalk.json", f"expected crosswalk.json, found {files[0].name}"
 
 
 from ffhelper.data import Player, norm_name, build_players
