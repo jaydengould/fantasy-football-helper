@@ -163,6 +163,7 @@ def _run(
     picks: list = []
     last_ok = time.time()
     interval = tunables.poll_seconds.get(league.platform, 5)
+    interval = max(interval, 1)  # ponytail: floor to 1s to prevent busy-loop / API rate limiting
 
     iterations = 0
     while max_iterations is None or iterations < max_iterations:

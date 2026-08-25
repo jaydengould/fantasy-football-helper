@@ -309,3 +309,28 @@ def test_main_keyboard_interrupt_exits_cleanly(monkeypatch):
     result = main(["run", "--league", "loop-league"])
 
     assert result == 0
+
+
+def test_run_propagates_keyboard_interrupt_from_feed(monkeypatch):
+    """KeyboardInterrupt from the feed must propagate out of _run, not be caught
+    by the inner `except Exception` handlers (which exist only for transient feed
+    or render failures). This test guards against a regression where an inner
+    handler is broadened to `except BaseException`.
+
+    If an inner handler caught BaseException (or bare `except:`), KeyboardInterrupt
+    would be caught and logged as a generic exception instead of propagating, and
+    this test would fail: _run would return 0 instead of raising KeyboardInterrupt.
+    """
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), _loop_settings()))
+
+    class _InterruptFeed:
+        def get_picks(self):
+            raise KeyboardInterrupt("user stop")
+
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _InterruptFeed())
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+
+    # KeyboardInterrupt should propagate out, not be caught internally.
+    with pytest.raises(KeyboardInterrupt):
+        _run(_loop_league(), Tunables(), limit=10, max_iterations=1)
