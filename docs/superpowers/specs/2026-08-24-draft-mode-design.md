@@ -268,10 +268,20 @@ against real draft data rather than designed cold in October.
 
 ## Testing
 
-`value.py` being pure makes this cheap — all logic tests with zero network. Live
-fixtures were captured 2026-08-24 (`players.json`, `proj.json`, `ffc.json`,
-`lg.json`); committing them is a Phase 1 task so tests run offline and
-deterministically.
+`value.py` being pure makes this cheap — all logic tests with zero network.
+
+**Bulk fixtures are not committed.** An earlier draft of this spec said to commit
+captured live data, which directly contradicts the rule against committing
+Rotowire projections to a public repo. Resolution:
+
+- `value.py` tests use **synthetic players**. The engine is pure arithmetic and
+  does not care whether the numbers are real.
+- Two tests hardcode a **single real record inline** where realism is the point:
+  Josh Allen's stat line for the scoring golden value, and the Bijan/Brian
+  Robinson pair for the join regression. Two records is de minimis, not a
+  redistribution of the dataset.
+- Validation against the full live dataset happens in `preflight`, which runs
+  against the network on purpose.
 
 - **Bijan/Brian regression** — the join must not merge them. A real bug hit
   during design, not a hypothetical.
