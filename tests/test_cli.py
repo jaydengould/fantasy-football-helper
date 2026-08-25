@@ -1,8 +1,14 @@
+import time
+
 import pytest
 
-from ffhelper.cli import load_board_inputs, league_settings_from_config, render, resolve_settings
+from ffhelper.cli import (
+    _preflight, _run, load_board_inputs, league_settings_from_config, main, render,
+    resolve_settings,
+)
 from ffhelper.config import League, Tunables
 from ffhelper.data import LeagueSettings, Player
+from ffhelper.feeds import Pick
 from ffhelper.value import Row, build_board
 
 
@@ -42,7 +48,14 @@ def test_render_flags_injuries():
 def test_render_shows_position_run():
     out = render([row("a", "A", "RB", 1.0, 0.5)], limit=5, stale_seconds=0.0,
                  my_roster=[], runs={"RB": 5, "WR": 3})
-    assert "RB" in out and "5" in out
+    # Match the run-summary LINE itself, not substrings ("RB" also appears in
+    # every row's POS column, and "5" inside "50%" in the SURV column -- both
+    # occur even if this summary line is deleted, which is why a plain
+    # substring check on "RB"/"5" would pass against a build with no summary
+    # line at all).
+    lines = out.splitlines()
+    summary_lines = [line for line in lines if line.startswith("last 8 picks:")]
+    assert summary_lines == ["last 8 picks:  RB 5  WR 3"]
 
 
 def test_render_empty_board_does_not_crash():
@@ -153,3 +166,146 @@ def test_load_board_inputs_keeps_ambiguous_prefix_visible(monkeypatch, capsys):
     load_board_inputs(league, Tunables(), season="2026")
 
     assert "AMBIGUOUS: Robinson" in capsys.readouterr().err
+
+
+# --- The draft loop: never dies, whatever a tick throws. ---
+
+
+class _FakeFeed:
+    """A PickFeed stand-in with no network -- returns fixed picks, or always
+    raises, depending on the test."""
+
+    def __init__(self, picks: list[Pick] | None = None, fail: bool = False):
+        self._picks = picks or []
+        self.fail = fail
+        self.calls = 0
+
+    def get_picks(self) -> list[Pick]:
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("feed unreachable")
+        return self._picks
+
+
+def _loop_league(draft_slot=None):
+    return League(name="loop-league", platform="sleeper", league_id="1", draft_slot=draft_slot)
+
+
+def _loop_settings():
+    return LeagueSettings(
+        num_teams=10, scoring={"pass_td": 6.0}, roster_slots={"QB": 1}, rounds=1,
+        draft_id="d1",
+    )
+
+
+def _loop_players():
+    return {"1": Player("1", "A", "RB", "ATL", proj_pts=100.0, adp=1.0, adp_stdev=1.0)}
+
+
+def test_run_survives_render_failure_and_keeps_going(monkeypatch):
+    """Regression guard for the CRITICAL fix: an exception from anywhere past
+    the feed poll (build_board, render, printing...) must not kill the loop.
+
+    Against the pre-fix code -- where only `feed.get_picks()` sat inside a
+    try/except and everything else, including `render`, ran unguarded -- this
+    RuntimeError propagates straight out of `_run` on the first iteration and
+    this test fails with that exception instead of observing a clean return.
+    """
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), _loop_settings()))
+    fake_feed = _FakeFeed(picks=[])
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: fake_feed)
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+
+    render_calls = {"n": 0}
+
+    def flaky_render(*args, **kwargs):
+        render_calls["n"] += 1
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("ffhelper.cli.render", flaky_render)
+
+    result = _run(_loop_league(), Tunables(), limit=10, max_iterations=3)
+
+    assert result == 0
+    assert render_calls["n"] == 3          # every iteration was attempted
+    assert fake_feed.calls == 3            # the loop kept polling too
+
+
+def test_run_survives_feed_failure_and_still_renders_with_stale_banner(monkeypatch, capsys):
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), _loop_settings()))
+    fake_feed = _FakeFeed(fail=True)
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: fake_feed)
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+
+    # Only the very first time.time() call (which seeds last_ok in _run) is
+    # faked, 30s into the past -- everything else (the stale calc, and the
+    # logging module's own internal clock reads for the "poll failed"
+    # warnings) keeps using the real clock. Since the feed always fails,
+    # last_ok never advances, so every render tick is already well past the
+    # 15s stale threshold.
+    real_time = time.time
+    seeded = {"done": False}
+
+    def fake_time():
+        if not seeded["done"]:
+            seeded["done"] = True
+            return real_time() - 30
+        return real_time()
+
+    monkeypatch.setattr("ffhelper.cli.time.time", fake_time)
+
+    result = _run(_loop_league(), Tunables(), limit=10, max_iterations=3)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert fake_feed.calls == 3            # loop kept polling despite failures
+    assert "A" in out                      # still rendered from last known (empty) picks
+    assert "FEED STALE" in out             # banner showed once the threshold passed
+
+
+def test_preflight_reports_ok_with_reachable_feed(monkeypatch, capsys):
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+
+    result = _preflight(_loop_league(draft_slot=3), Tunables())
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "PREFLIGHT OK" in out
+
+
+def test_main_dispatches_preflight_and_returns_its_exit_code(monkeypatch):
+    league = _loop_league()
+    monkeypatch.setattr("ffhelper.cli.load_config", lambda path: ([league], Tunables()))
+    monkeypatch.setattr("ffhelper.cli._preflight", lambda lg, tun: 7)
+
+    result = main(["preflight", "--league", "loop-league"])
+
+    assert result == 7
+
+
+def test_main_unknown_league_is_a_clear_error_not_a_traceback(monkeypatch, capsys):
+    monkeypatch.setattr("ffhelper.cli.load_config", lambda path: ([], Tunables()))
+
+    result = main(["preflight", "--league", "does-not-exist"])
+    err = capsys.readouterr().err
+
+    assert result == 1
+    assert "does-not-exist" in err
+
+
+def test_main_keyboard_interrupt_exits_cleanly(monkeypatch):
+    league = _loop_league()
+    monkeypatch.setattr("ffhelper.cli.load_config", lambda path: ([league], Tunables()))
+
+    def raise_interrupt(lg, tun, limit):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("ffhelper.cli._run", raise_interrupt)
+
+    result = main(["run", "--league", "loop-league"])
+
+    assert result == 0

@@ -114,7 +114,45 @@ def load_board_inputs(
     return {pid: p for pid, p in players.items() if p.proj_pts > 0}, settings
 
 
-def _run(league: League, tunables: Tunables, limit: int) -> int:
+def _render_tick(
+    picks: list, last_ok: float, players: dict[str, Player], settings: LeagueSettings,
+    league: League, tunables: Tunables, limit: int, manual_gone: set[str],
+) -> None:
+    """Build and print one frame of the draft board from the current picks.
+
+    Pulled out of `_run` so a single iteration's work can be wrapped in its
+    own try/except and driven a bounded number of times from tests.
+    """
+    drafted = {p.sleeper_id for p in picks} | manual_gone
+    available = [p for pid, p in players.items() if pid not in drafted]
+    my_roster: list[Player] = []                  # wired via slot_to_roster_id in a later task
+    recent = [players[p.sleeper_id].position for p in picks[-8:] if p.sleeper_id in players]
+
+    board = build_board(
+        available, my_roster, settings.roster_slots, settings.num_teams,
+        current_pick=len(picks) + 1, my_slot=league.draft_slot, tunables=tunables,
+    )
+    print("\033[2J\033[H", end="")                # clear screen
+    print(render(board, limit, time.time() - last_ok, my_roster, detect_run(recent)))
+    if league.draft_slot:
+        nxt = next_pick_number(len(picks) + 1, league.draft_slot, settings.num_teams)
+        print(f"\npick {len(picks) + 1}   your next pick: {nxt} "
+              f"({nxt - len(picks) - 1} away)")
+    print("\n(ctrl-c to stop; run `preflight` before the draft)")
+
+
+def _run(
+    league: League, tunables: Tunables, limit: int, max_iterations: int | None = None,
+) -> int:
+    """Poll the feed and redraw the board forever (or `max_iterations` times).
+
+    The loop must never die: a crash here during a live draft leaves the user
+    with nothing while their pick clock keeps running. Every iteration is two
+    independently-guarded steps -- poll, then render -- so a failure in
+    either is logged and the loop moves on to the next tick. `max_iterations`
+    exists only so tests can drive a bounded number of ticks without a real
+    `while True` or a blocking `time.sleep`.
+    """
     players, settings = load_board_inputs(league, tunables)
     if not settings.draft_id:
         print("league has no draft_id yet", file=sys.stderr)
@@ -126,30 +164,23 @@ def _run(league: League, tunables: Tunables, limit: int) -> int:
     last_ok = time.time()
     interval = tunables.poll_seconds.get(league.platform, 5)
 
-    while True:
+    iterations = 0
+    while max_iterations is None or iterations < max_iterations:
         try:
             picks = feed.get_picks()
             last_ok = time.time()
         except Exception as exc:                      # noqa: BLE001 - loop must never die
             log.warning("poll failed: %s", exc)
 
-        drafted = {p.sleeper_id for p in picks} | manual_gone
-        available = [p for pid, p in players.items() if pid not in drafted]
-        my_roster: list[Player] = []                  # populated in Phase 2 via roster_id
-        recent = [players[p.sleeper_id].position for p in picks[-8:] if p.sleeper_id in players]
+        try:
+            _render_tick(picks, last_ok, players, settings, league, tunables, limit, manual_gone)
+        except Exception as exc:                      # noqa: BLE001 - loop must never die
+            log.error("draft tick failed: %s", exc, exc_info=True)
 
-        board = build_board(
-            available, my_roster, settings.roster_slots, settings.num_teams,
-            current_pick=len(picks) + 1, my_slot=league.draft_slot, tunables=tunables,
-        )
-        print("\033[2J\033[H", end="")                # clear screen
-        print(render(board, limit, time.time() - last_ok, my_roster, detect_run(recent)))
-        if league.draft_slot:
-            nxt = next_pick_number(len(picks) + 1, league.draft_slot, settings.num_teams)
-            print(f"\npick {len(picks) + 1}   your next pick: {nxt} "
-                  f"({nxt - len(picks) - 1} away)")
-        print("\n(ctrl-c to stop; run `preflight` before the draft)")
-        time.sleep(interval)
+        iterations += 1
+        if max_iterations is None or iterations < max_iterations:
+            time.sleep(interval)
+    return 0
 
 
 def _preflight(league: League, tunables: Tunables) -> int:
@@ -192,7 +223,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     leagues, tunables = load_config(args.config)
-    league = get_league(leagues, args.league)
+    try:
+        league = get_league(leagues, args.league)
+    except KeyError as exc:
+        print(exc.args[0] if exc.args else str(exc), file=sys.stderr)
+        return 1
     if args.command == "preflight":
         return _preflight(league, tunables)
     try:
