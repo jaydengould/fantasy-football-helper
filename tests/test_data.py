@@ -288,6 +288,50 @@ def test_ffc_miss_is_reported_and_player_keeps_id_keyed_values():
     assert players["9221"].adp_stdev == 0.287
 
 
+def test_norm_name_strips_generational_suffix_tokens():
+    """Suffixes must be stripped as whole trailing tokens, so the suffixed and
+    unsuffixed forms of a name land on the same key."""
+    assert norm_name("Marvin Harrison Jr.") == norm_name("Marvin Harrison") == "marvinharrison"
+    assert norm_name("James Cook III") == norm_name("James Cook") == "jamescook"
+    # Negative case: ordinary names must not be mangled by the suffix stripper.
+    # Neither ends in a suffix TOKEN even though "Ridley" and "Calvin" both
+    # contain suffix-like letters ("v", "iv") mid-word.
+    assert norm_name("Trevor Lawrence") == "trevorlawrence"
+    assert norm_name("Calvin Ridley") == "calvinridley"
+
+
+def test_norm_name_folds_unicode_to_ascii():
+    """Accents must be folded, not deleted: Piñeiro -> Pineiro, not Pieiro."""
+    assert norm_name("Eddy Piñeiro") == norm_name("Eddy Pineiro") == "eddypineiro"
+
+
+def test_ffc_pk_position_matches_sleeper_kicker():
+    """FFC's 'PK' position code must join against Sleeper's 'K'."""
+    players = {"1": Player("1", "Justin Tucker", "K", "BAL")}
+    unmatched = apply_ffc_adp(players, [
+        {"name": "Justin Tucker", "position": "PK", "team": "BAL",
+         "adp": 120.0, "stdev": 15.0, "bye": 14}
+    ])
+    assert unmatched == []
+    assert players["1"].adp == 120.0
+    assert players["1"].adp_stdev == 15.0
+    assert players["1"].bye == 14
+
+
+def test_ffc_defense_matches_by_team_code_not_name():
+    """Sleeper DEF entries have full_name == '' and are keyed by team code, so
+    FFC's 'Seattle Defense' must join on team, never on name."""
+    players = {"SEA": Player("SEA", "", "DEF", "SEA")}
+    unmatched = apply_ffc_adp(players, [
+        {"name": "Seattle Defense", "position": "DEF", "team": "SEA",
+         "adp": 45.0, "stdev": 5.0, "bye": 8}
+    ])
+    assert unmatched == []
+    assert players["SEA"].adp == 45.0
+    assert players["SEA"].adp_stdev == 5.0
+    assert players["SEA"].bye == 8
+
+
 def test_ffc_does_not_merge_bijan_and_brian():
     players = {
         "8155": Player("8155", "Bijan Robinson", "RB", "ATL"),

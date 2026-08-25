@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -117,11 +118,34 @@ class Player:
     @property
     def match_key(self) -> str:
         """Key for the FFC fuzzy join ONLY. Never used for ID-keyed sources."""
-        return f"{norm_name(self.name)}|{self.position}|{self.team or ''}"
+        return f"{norm_name(self.name)}|{norm_position(self.position)}|{self.team or ''}"
+
+
+# Generational suffixes, stripped as whole trailing TOKENS (never substrings) so a
+# surname that merely ends in these letters (e.g. "Ridley") is left alone.
+_SUFFIX_TOKENS = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+# FFC position codes that differ from Sleeper's. PK->K is the real, measured bug
+# (every kicker failed to match); DST/D-ST are defensive since FFC's DEF rows
+# already match on team code, not this alias.
+_POSITION_ALIASES = {"PK": "K", "DST": "DEF", "D/ST": "DEF"}
+
+
+def norm_position(pos: str | None) -> str:
+    pos = (pos or "").upper()
+    return _POSITION_ALIASES.get(pos, pos)
 
 
 def norm_name(s: str) -> str:
-    return re.sub(r"[^a-z]", "", (s or "").lower())
+    # Fold accented characters to their ASCII base (Piñeiro -> Pineiro) instead of
+    # dropping them, then tokenize on letters so trailing suffix tokens can be
+    # detected and stripped without touching names that merely end in those letters.
+    folded = unicodedata.normalize("NFKD", (s or ""))
+    folded = "".join(c for c in folded if not unicodedata.combining(c))
+    tokens = re.findall(r"[a-z]+", folded.lower())
+    if tokens and tokens[-1] in _SUFFIX_TOKENS:
+        tokens = tokens[:-1]
+    return "".join(tokens)
 
 
 def build_players(raw: dict, crosswalk: dict[str, str]) -> dict[str, Player]:
@@ -296,10 +320,18 @@ def apply_ffc_adp(players: dict[str, Player], ffc_rows: list[dict]) -> list[str]
     the caller to print -- never silently dropped.
     """
     by_key = {p.match_key: p for p in players.values()}
+    # Sleeper DEF entries have full_name == "" and player_id == team code, so name
+    # matching can never work for them; join on team code instead.
+    by_def_team = {p.team: p for p in players.values() if p.position == "DEF" and p.team}
     unmatched: list[str] = []
     for row in ffc_rows:
-        key = f"{norm_name(row.get('name',''))}|{row.get('position','')}|{row.get('team','') or ''}"
-        target = by_key.get(key)
+        position = norm_position(row.get("position", ""))
+        team = row.get("team", "") or ""
+        if position == "DEF":
+            target = by_def_team.get(team)
+        else:
+            key = f"{norm_name(row.get('name',''))}|{position}|{team}"
+            target = by_key.get(key)
         if target is None:
             unmatched.append(row.get("name", "<unnamed>"))
             continue
