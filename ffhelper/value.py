@@ -153,7 +153,7 @@ def survival_prob(player: Player, at_pick: int) -> float:
     FFC's per-player stdev cannot be synthesized -- fitting it from ADP alone
     leaves 42.6% of the variance unexplained -- so the curve is only a fallback.
     """
-    stdev = player.adp_stdev or curve_stdev(player.adp)
+    stdev = player.adp_stdev if player.adp_stdev is not None else curve_stdev(player.adp)
     return 1.0 - NormalDist(player.adp, max(stdev, 0.1)).cdf(at_pick)
 
 
@@ -198,4 +198,6 @@ def divergence(players: list[Player], scores: dict[str, float]) -> dict[str, int
 
 def detect_run(recent_positions: list[str], window: int = 8) -> dict[str, int]:
     """Position counts over the last `window` picks."""
+    if window <= 0:
+        return {}
     return dict(Counter(recent_positions[-window:]))

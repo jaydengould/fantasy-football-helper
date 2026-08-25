@@ -234,8 +234,37 @@ def test_survival_at_adp_is_about_half():
 
 
 def test_survival_falls_back_to_curve_when_stdev_missing():
+    """Pin the actual value implied by curve_stdev, not just 0 < x < 1 (which
+    passes for nearly any formula). at_pick=20 == adp=20 would give 0.5
+    regardless of which stdev is used, so evaluate off-center (at_pick=25)
+    where the curve's stdev actually drives the number.
+
+    curve_stdev(20) = 0.287 * 20**0.809 = 3.239031... (see ffhelper/data.py).
+    survival = 1 - NormalDist(20, 3.239031).cdf(25) = 0.061334 (computed via
+    statistics.NormalDist directly, not re-derived from the implementation).
+    """
     p = Player("a", "A", "RB", "SF", proj_pts=200.0, adp=20.0, adp_stdev=None)
-    assert 0.0 < survival_prob(p, at_pick=20) < 1.0
+    assert survival_prob(p, at_pick=25) == pytest.approx(0.061334, abs=1e-4)
+
+
+def test_survival_uses_real_zero_stdev_not_curve_fallback():
+    """Regression guard for the truthiness bug: adp_stdev=0.0 is a real,
+    present value (certain to go at exactly his ADP) and must NOT trigger the
+    curve_stdev fallback, which only fires when the value is absent (None).
+
+    With the true stdev clamped to the 0.1 floor (0.0 itself would make
+    NormalDist degenerate), survival is a near step function around adp=50:
+    at pick 49 (before ADP) survival ~1.0; at pick 51 (after) survival ~0.0;
+    at pick 50 (exactly at ADP) survival is exactly 0.5 by symmetry.
+
+    If the old `or` fallback fired instead, adp_stdev=0.0 would route to
+    curve_stdev(50)=6.797, giving survival(at_pick=49) ~0.558 -- nowhere near
+    the ~1.0 this test requires. That's the discriminating case.
+    """
+    p = Player("a", "A", "RB", "SF", proj_pts=200.0, adp=50.0, adp_stdev=0.0)
+    assert survival_prob(p, at_pick=49) > 0.999999
+    assert survival_prob(p, at_pick=51) < 0.000001
+    assert survival_prob(p, at_pick=50) == pytest.approx(0.5, abs=1e-9)
 
 
 def test_vona_is_zero_when_an_equal_player_survives():
@@ -301,6 +330,105 @@ def test_vona_negative_is_not_clamped_to_zero():
     assert result == pytest.approx(-50.0, abs=1.0)
 
 
+def test_vona_mid_band_positive_but_less_than_full_points():
+    """Realistic middle-of-the-range case (the Colston Loveland-shaped bug):
+    candidate's own survival ~50%, with a meaningful drop to the next player
+    behind him. VONA must be materially positive (waiting is a real risk) but
+    strictly less than his own proj_pts (half the time he's still there).
+
+    Derivation (via statistics.NormalDist directly):
+    cand: proj_pts=200, adp=46, stdev=10. at_pick=46 == adp, so by symmetry
+    survival_prob(cand, 46) = 1 - cdf(46) = exactly 0.5, no computation needed.
+    backup: proj_pts=70, adp=120, stdev=15. z = (46-120)/15 = -4.93, survival
+    = 1 - NormalDist(120,15).cdf(46) = 0.9999995958 (computed directly),
+    indistinguishable from 1.0 at the precision used below.
+
+    expected = 0.5*200 + (1-0.5)*0.9999995958*70 = 100 + 34.99998... = 134.99999
+    vona = 200 - 134.99999 = 65.00001
+    """
+    cand = mk("cand", "RB", 200.0, adp=46.0, stdev=10.0)
+    backup = mk("backup", "RB", 70.0, adp=120.0, stdev=15.0)
+    result = vona([cand, backup], cand, at_pick=46)
+    assert result == pytest.approx(65.0, abs=0.01)
+    assert 0.0 < result < 200.0
+
+
+def test_vona_urgency_tracks_scarcity_not_just_value():
+    """Two candidates with nearly identical proj_pts (150 vs 150) but very
+    different survival (~29% vs ~90%) must produce strictly different VONA,
+    with the lower-survival player's being higher. Each is evaluated against
+    its own pool (itself plus a common, near-certain-to-survive filler at
+    70pts) so the comparison isolates survival as the driver, not points --
+    a shared pool would make the VONA delta collapse to just the ~0-point
+    proj_pts gap between the two candidates, which would not test this at all.
+
+    Derivation (via statistics.NormalDist directly):
+    low: adp=40, stdev=11 -> survival(at_pick=46) = 0.292720...
+    high: adp=60, stdev=11 -> survival(at_pick=46) = 0.898443...
+    filler: proj_pts=60, adp=140, stdev=15 -> survival(46) = 0.99999999982,
+      i.e. ~1.0 (essentially certain to still be on the board).
+
+    expected_low  = 0.292720*150 + (1-0.292720)*1.0*60 = 43.908 + 42.437 = 86.345
+    vona_low      = 150 - 86.345 = 63.655
+
+    expected_high = 0.898443*150 + (1-0.898443)*1.0*60 = 134.766 + 6.094 = 140.860
+    vona_high     = 150 - 140.860 = 9.140
+    """
+    low_surv = mk("low", "RB", 150.0, adp=40.0, stdev=11.0)
+    high_surv = mk("high", "RB", 150.0, adp=60.0, stdev=11.0)
+    filler = mk("filler", "RB", 60.0, adp=140.0, stdev=15.0)
+
+    vona_low = vona([low_surv, filler], low_surv, at_pick=46)
+    vona_high = vona([high_surv, filler], high_surv, at_pick=46)
+
+    assert vona_low == pytest.approx(63.655, abs=0.05)
+    assert vona_high == pytest.approx(9.140, abs=0.05)
+    assert vona_low > vona_high, "lower survival must mean strictly higher VONA"
+
+
+def test_vona_accumulates_across_multiple_mid_band_survivors():
+    """When several comparable players at the position ALL sit in the
+    realistic mid-band (survival roughly 40-70%), the survival-weighted walk
+    must genuinely accumulate contributions from more than just the first
+    term -- a suite that only ever puts one player in the mid-band can't see
+    a bug where the walk stops early or ignores later terms.
+
+    Four RBs, all with survival in [0.42, 0.66] at pick 46 (adp=44,46,48,50,
+    stdev=10 each): cand(140), p2(135), p3(130), p4(125).
+    survival(cand)=0.420740 (adp=44, off-center, needs NormalDist)
+    survival(p2)=0.5 exactly (adp=46 == at_pick, symmetric, no computation)
+    survival(p3)=0.579260, survival(p4)=0.655422 (both computed directly).
+
+    Bounds, derived from the walk arithmetic without needing p3/p4's exact
+    values:
+    - Upper bound on VONA: use only the first two terms (cand, p2) and drop
+      p3/p4, whose contributions can only ever be >= 0 and so can only push
+      expected up / VONA down. expected_2term = 0.420740*140 +
+      (1-0.420740)*0.5*135 = 58.904 + 39.100 = 98.004 -> VONA <= 140-98.004
+      = 41.996.
+    - Lower bound on VONA: cap the entire remaining (1-survival(cand)) mass
+      at the highest-value remaining player's points (p2=135) as if it were
+      certain to be there (survival=1), which over-estimates expected and so
+      under-estimates VONA: expected_cap = 0.420740*140 +
+      (1-0.420740)*135 = 58.904 + 78.200 = 137.104 -> VONA >= 140-137.104
+      = 2.896.
+
+    The true 4-term result (10.20, computed directly via NormalDist) falls
+    well inside (2.896, 41.996) -- and well below the single-term-only
+    estimate of 140*(1-0.420740)=81.10 that a walk which ignored the other
+    three players entirely would produce, showing the extra terms are doing
+    real work.
+    """
+    cand = mk("cand", "RB", 140.0, adp=44.0, stdev=10.0)
+    p2 = mk("p2", "RB", 135.0, adp=46.0, stdev=10.0)
+    p3 = mk("p3", "RB", 130.0, adp=48.0, stdev=10.0)
+    p4 = mk("p4", "RB", 125.0, adp=50.0, stdev=10.0)
+
+    result = vona([cand, p2, p3, p4], cand, at_pick=46)
+    assert 2.896 < result < 41.996
+    assert result == pytest.approx(10.20, abs=0.05)
+
+
 def test_divergence_flags_projection_vs_market_gaps():
     # 'sleeper' is ranked 1st by projection but 3rd by ADP -> +2 divergence
     players = [
@@ -319,3 +447,11 @@ def test_detect_run_counts_recent_positions():
     assert detect_run(["RB"] * 5 + ["WR"] * 3) == {"RB": 5, "WR": 3}
     assert detect_run(["QB"] + ["RB"] * 10, window=8)["RB"] == 8
     assert detect_run([]) == {}
+
+
+def test_detect_run_window_zero_or_negative_is_empty_not_everything():
+    """`recent_positions[-0:]` is `[0:]` -- the WHOLE list, not an empty
+    slice. window=0 must mean "count nothing", not "count everything"."""
+    positions = ["RB"] * 5 + ["WR"] * 3
+    assert detect_run(positions, window=0) == {}
+    assert detect_run(positions, window=-1) == {}
