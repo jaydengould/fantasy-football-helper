@@ -1,0 +1,106 @@
+import json
+from pathlib import Path
+
+from ffhelper.feeds import Pick, SleeperFeed, parse_sleeper_picks
+
+
+def test_parses_picks_in_order():
+    raw = [
+        {"pick_no": 2, "player_id": "8155", "roster_id": 4},
+        {"pick_no": 1, "player_id": "9221", "roster_id": 10},
+    ]
+    picks = parse_sleeper_picks(raw)
+    assert [p.pick_no for p in picks] == [1, 2]
+    assert picks[0] == Pick(pick_no=1, sleeper_id="9221", roster_id=10)
+
+
+def test_skips_picks_without_a_player():
+    """A pick object can exist before the player is assigned."""
+    raw = [
+        {"pick_no": 1, "player_id": "9221", "roster_id": 10},
+        {"pick_no": 2, "player_id": None, "roster_id": 4},
+    ]
+    assert len(parse_sleeper_picks(raw)) == 1
+
+
+def test_empty_draft_returns_empty_list():
+    assert parse_sleeper_picks([]) == []
+
+
+def test_skips_row_with_non_numeric_pick_no():
+    raw = [
+        {"pick_no": 1, "player_id": "9221", "roster_id": 10},
+        {"pick_no": "not-a-number", "player_id": "8155", "roster_id": 4},
+        {"pick_no": 2, "player_id": "3333", "roster_id": 6},
+    ]
+    picks = parse_sleeper_picks(raw)
+    assert [p.pick_no for p in picks] == [1, 2]
+
+
+def test_skips_row_with_missing_pick_no():
+    raw = [
+        {"player_id": "9221", "roster_id": 10},
+        {"pick_no": 1, "player_id": "3333", "roster_id": 6},
+    ]
+    picks = parse_sleeper_picks(raw)
+    assert [p.pick_no for p in picks] == [1]
+
+
+def test_skips_row_with_empty_player_id():
+    raw = [
+        {"pick_no": 1, "player_id": "9221", "roster_id": 10},
+        {"pick_no": 2, "player_id": "", "roster_id": 4},
+    ]
+    picks = parse_sleeper_picks(raw)
+    assert [p.pick_no for p in picks] == [1]
+
+
+def test_sorted_by_pick_no_with_a_bad_row_mixed_in():
+    raw = [
+        {"pick_no": 3, "player_id": "5555", "roster_id": 1},
+        {"pick_no": None, "player_id": "6666", "roster_id": 2},
+        {"pick_no": 1, "player_id": "9221", "roster_id": 10},
+        {"pick_no": "bad", "player_id": "7777", "roster_id": 3},
+    ]
+    picks = parse_sleeper_picks(raw)
+    assert [p.pick_no for p in picks] == [1, 3]
+
+
+def test_sleeper_feed_calls_fetcher_with_formatted_url_and_returns_picks(tmp_path: Path):
+    calls = []
+
+    def fake(url: str) -> str:
+        calls.append(url)
+        return json.dumps([
+            {"pick_no": 1, "player_id": "9221", "roster_id": 10},
+        ])
+
+    feed = SleeperFeed("draft123", fetcher=fake, cache_dir=tmp_path)
+    picks = feed.get_picks()
+
+    assert calls == ["https://api.sleeper.app/v1/draft/draft123/picks"]
+    assert picks == [Pick(pick_no=1, sleeper_id="9221", roster_id=10)]
+
+
+def test_sleeper_feed_never_serves_picks_from_cache(tmp_path: Path):
+    """Regression guard for ttl_seconds=0. If SleeperFeed.get_picks stopped passing
+    ttl_seconds=0 to fetch_json, the default 24h TTL would apply and the second
+    call below would be served from the on-disk cache written by the first call
+    instead of invoking the fetcher again -- calls would be 1, not 2, and this
+    test would fail."""
+    calls = []
+
+    def fake(url: str) -> str:
+        calls.append(url)
+        return json.dumps([{"pick_no": len(calls), "player_id": "9221", "roster_id": 10}])
+
+    feed = SleeperFeed("draft123", fetcher=fake, cache_dir=tmp_path)
+    feed.get_picks()
+    feed.get_picks()
+
+    assert len(calls) == 2
+
+
+def test_sleeper_feed_empty_draft_returns_empty_list(tmp_path: Path):
+    feed = SleeperFeed("draft123", fetcher=lambda url: "[]", cache_dir=tmp_path)
+    assert feed.get_picks() == []
