@@ -345,3 +345,59 @@ def test_ffc_does_not_merge_bijan_and_brian():
     ])
     assert players["8155"].adp == 2.0
     assert players["7588"].adp == 150.0
+
+
+def test_ffc_ambiguous_key_matches_neither_player():
+    """Two different players sharing a match_key (e.g. the real Ronald Jones
+    collision) must both be skipped, not have one silently overwritten."""
+    players = {
+        "5052": Player("5052", "Ronald Jones", "RB", None,
+                        adp=200.0, adp_stdev=25.0),
+        "4955": Player("4955", "Ronald Jones", "RB", None,
+                        adp=210.0, adp_stdev=26.0),
+    }
+    unmatched = apply_ffc_adp(players, [
+        {"name": "Ronald Jones", "position": "RB", "team": "",
+         "adp": 5.0, "stdev": 1.0, "bye": 9},
+    ])
+    assert unmatched == ["AMBIGUOUS: Ronald Jones"]
+    # Neither player is touched -- pre-existing ID-keyed values survive intact.
+    assert players["5052"].adp == 200.0
+    assert players["5052"].adp_stdev == 25.0
+    assert players["4955"].adp == 210.0
+    assert players["4955"].adp_stdev == 26.0
+
+
+def test_ffc_unique_key_still_matches_despite_ambiguity_guard():
+    """A player who shares no match_key with anyone must match normally --
+    proving the ambiguity guard doesn't break ordinary matching."""
+    players = {
+        "5052": Player("5052", "Ronald Jones", "RB", None,
+                        adp=200.0, adp_stdev=25.0),
+        "4955": Player("4955", "Ronald Jones", "RB", None,
+                        adp=210.0, adp_stdev=26.0),
+        "9221": Player("9221", "Jahmyr Gibbs", "RB", "DET", adp=999.0),
+    }
+    unmatched = apply_ffc_adp(players, [
+        {"name": "Ronald Jones", "position": "RB", "team": "",
+         "adp": 5.0, "stdev": 1.0, "bye": 9},
+        {"name": "Jahmyr Gibbs", "position": "RB", "team": "DET",
+         "adp": 1.5, "stdev": 0.3, "bye": 6},
+    ])
+    assert unmatched == ["AMBIGUOUS: Ronald Jones"]
+    assert players["9221"].adp == 1.5
+    assert players["9221"].adp_stdev == 0.3
+    assert players["9221"].bye == 6
+
+
+def test_ffc_ambiguous_key_adds_or_drops_no_player():
+    players = {
+        "5052": Player("5052", "Ronald Jones", "RB", None, adp=200.0),
+        "4955": Player("4955", "Ronald Jones", "RB", None, adp=210.0),
+    }
+    before = len(players)
+    apply_ffc_adp(players, [
+        {"name": "Ronald Jones", "position": "RB", "team": "",
+         "adp": 5.0, "stdev": 1.0, "bye": 9},
+    ])
+    assert len(players) == before, "ambiguity must never add or drop a player"

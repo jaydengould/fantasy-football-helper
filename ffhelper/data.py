@@ -311,29 +311,44 @@ def apply_sleeper_adp(
         players[pid].adp_stdev = curve_stdev(float(adp))
 
 
+_AMBIGUOUS_PREFIX = "AMBIGUOUS: "
+
+
 def apply_ffc_adp(players: dict[str, Player], ffc_rows: list[dict]) -> list[str]:
     """Non-load-bearing enrichment. Supplies adp/adp_stdev/bye where matched.
 
     FFC carries no cross-platform ID, so this is the one fuzzy join in the
     system. It runs LAST, on an already-complete ID-keyed board, so the blast
-    radius of a miss is three fields on one player. Returns unmatched names for
-    the caller to print -- never silently dropped.
+    radius of a miss is three fields on one player. Returns names for the
+    caller to print -- never silently dropped, and never guessed: a
+    match_key shared by two or more players is ambiguous and is excluded
+    from matching entirely (neither player is touched). Ambiguous rows are
+    reported with an "AMBIGUOUS: " prefix so the caller can tell "matched
+    nothing" apart from "matched an unresolvable key" without a type change.
     """
-    by_key = {p.match_key: p for p in players.values()}
+    by_key: dict[str, list[Player]] = {}
+    for p in players.values():
+        by_key.setdefault(p.match_key, []).append(p)
     # Sleeper DEF entries have full_name == "" and player_id == team code, so name
-    # matching can never work for them; join on team code instead.
+    # matching can never work for them; join on team code instead (32 teams, one
+    # DEF each -- no collision surface, so this branch needs no ambiguity guard).
     by_def_team = {p.team: p for p in players.values() if p.position == "DEF" and p.team}
     unmatched: list[str] = []
     for row in ffc_rows:
         position = norm_position(row.get("position", ""))
         team = row.get("team", "") or ""
+        name = row.get("name", "<unnamed>")
         if position == "DEF":
             target = by_def_team.get(team)
         else:
             key = f"{norm_name(row.get('name',''))}|{position}|{team}"
-            target = by_key.get(key)
+            candidates = by_key.get(key, [])
+            if len(candidates) > 1:
+                unmatched.append(f"{_AMBIGUOUS_PREFIX}{name}")
+                continue
+            target = candidates[0] if candidates else None
         if target is None:
-            unmatched.append(row.get("name", "<unnamed>"))
+            unmatched.append(name)
             continue
         if row.get("adp") is not None:
             target.adp = float(row["adp"])
