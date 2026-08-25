@@ -243,3 +243,61 @@ def test_apply_projections_sets_points_and_skips_unknown_ids():
     ]
     apply_projections(players, proj, LEAGUE_SCORING)
     assert players["9221"].proj_pts == 160.0
+
+
+from ffhelper.data import apply_ffc_adp, apply_sleeper_adp, curve_stdev
+
+
+def test_curve_stdev_matches_fitted_parameters():
+    # stdev = 0.287 * adp^0.809, fitted from FFC 12-team PPR data
+    assert round(curve_stdev(1.0), 3) == 0.287
+    assert curve_stdev(100.0) > curve_stdev(10.0), "variance grows with ADP"
+
+
+def test_sleeper_adp_applied_by_id_before_ffc():
+    players = {"9221": Player("9221", "Jahmyr Gibbs", "RB", "DET")}
+    proj = [{"player_id": "9221", "stats": {"adp_ppr": 1.0, "pts_ppr": 331.4}}]
+    apply_sleeper_adp(players, proj, "adp_ppr")
+    assert players["9221"].adp == 1.0
+    assert players["9221"].adp_stdev == pytest.approx(curve_stdev(1.0))
+
+
+def test_ffc_overwrites_stdev_on_match():
+    players = {"9221": Player("9221", "Jahmyr Gibbs", "RB", "DET", adp=1.0)}
+    unmatched = apply_ffc_adp(
+        players, [{"name": "Jahmyr Gibbs", "position": "RB", "team": "DET",
+                   "adp": 1.5, "stdev": 0.7, "bye": 6}]
+    )
+    assert unmatched == []
+    assert players["9221"].adp == 1.5
+    assert players["9221"].adp_stdev == 0.7
+    assert players["9221"].bye == 6
+
+
+def test_ffc_miss_is_reported_and_player_keeps_id_keyed_values():
+    """A fuzzy-join failure must never drop or corrupt a player."""
+    players = {"9221": Player("9221", "Jahmyr Gibbs", "RB", "DET",
+                              adp=1.0, adp_stdev=0.287)}
+    unmatched = apply_ffc_adp(
+        players, [{"name": "Someone Unknown", "position": "WR", "team": "XXX",
+                   "adp": 50.0, "stdev": 9.9, "bye": 7}]
+    )
+    assert unmatched == ["Someone Unknown"]
+    assert len(players) == 1, "no player added or dropped by the fuzzy join"
+    assert players["9221"].adp == 1.0, "ID-keyed ADP survives an FFC miss"
+    assert players["9221"].adp_stdev == 0.287
+
+
+def test_ffc_does_not_merge_bijan_and_brian():
+    players = {
+        "8155": Player("8155", "Bijan Robinson", "RB", "ATL"),
+        "7588": Player("7588", "Brian Robinson", "RB", "ATL"),
+    }
+    apply_ffc_adp(players, [
+        {"name": "Bijan Robinson", "position": "RB", "team": "ATL",
+         "adp": 2.0, "stdev": 0.8, "bye": 5},
+        {"name": "Brian Robinson", "position": "RB", "team": "ATL",
+         "adp": 150.0, "stdev": 20.0, "bye": 5},
+    ])
+    assert players["8155"].adp == 2.0
+    assert players["7588"].adp == 150.0

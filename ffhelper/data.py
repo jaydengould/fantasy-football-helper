@@ -257,3 +257,79 @@ def load_projections(
             )
         )
     return rows
+
+
+FFC_URL = "https://fantasyfootballcalculator.com/api/v1/adp/{fmt}?teams={teams}&year={year}"
+
+# Fitted from FFC 12-team PPR data on 2026-08-24: stdev = 0.287 * adp^0.809,
+# R^2 = 0.574. Used only as a fallback when FFC has no row for a player.
+# ponytail: refit if it drifts; a constant here would be worse than a bad fit.
+_STDEV_A, _STDEV_B = 0.287, 0.809
+
+
+def curve_stdev(adp: float) -> float:
+    return _STDEV_A * max(adp, 0.1) ** _STDEV_B
+
+
+def apply_sleeper_adp(
+    players: dict[str, Player], projections: list[dict], adp_field: str
+) -> None:
+    """ID-keyed ADP. Runs BEFORE the FFC join so every player has a value."""
+    for row in projections:
+        pid = row.get("player_id")
+        stats = row.get("stats") or {}
+        if not pid or pid not in players:
+            continue
+        adp = stats.get(adp_field)
+        if adp is None or adp >= 999:
+            continue
+        players[pid].adp = float(adp)
+        players[pid].adp_stdev = curve_stdev(float(adp))
+
+
+def apply_ffc_adp(players: dict[str, Player], ffc_rows: list[dict]) -> list[str]:
+    """Non-load-bearing enrichment. Supplies adp/adp_stdev/bye where matched.
+
+    FFC carries no cross-platform ID, so this is the one fuzzy join in the
+    system. It runs LAST, on an already-complete ID-keyed board, so the blast
+    radius of a miss is three fields on one player. Returns unmatched names for
+    the caller to print -- never silently dropped.
+    """
+    by_key = {p.match_key: p for p in players.values()}
+    unmatched: list[str] = []
+    for row in ffc_rows:
+        key = f"{norm_name(row.get('name',''))}|{row.get('position','')}|{row.get('team','') or ''}"
+        target = by_key.get(key)
+        if target is None:
+            unmatched.append(row.get("name", "<unnamed>"))
+            continue
+        if row.get("adp") is not None:
+            target.adp = float(row["adp"])
+        if row.get("stdev"):
+            target.adp_stdev = float(row["stdev"])
+        if row.get("bye"):
+            target.bye = int(row["bye"])
+    return unmatched
+
+
+def load_ffc_adp(
+    fmt: str, teams: int, year: int,
+    cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None,
+) -> list[dict]:
+    data = fetch_json(
+        FFC_URL.format(fmt=fmt, teams=teams, year=year),
+        f"ffc_{fmt}_{teams}_{year}",
+        cache_dir=cache_dir,
+        fetcher=fetcher,
+    )
+    return data.get("players", [])
+
+
+def adp_format_for(settings: LeagueSettings) -> str:
+    """Derive the FFC format parameter from synced scoring settings."""
+    rec = settings.scoring.get("rec", 0.0)
+    if rec >= 1.0:
+        return "ppr"
+    if rec >= 0.5:
+        return "half-ppr"
+    return "standard"
