@@ -94,3 +94,53 @@ def test_no_leftover_temp_files_after_successful_fetch(tmp_path: Path):
     files = list(tmp_path.iterdir())
     assert len(files) == 1, f"expected 1 file, found {len(files)}: {files}"
     assert files[0].name == "k.json", f"expected k.json, found {files[0].name}"
+
+
+from ffhelper.data import Player, norm_name, build_players
+
+
+def test_norm_name_strips_punctuation_and_case():
+    assert norm_name("Ja'Marr Chase") == "jamarrchase"
+    assert norm_name("Amon-Ra St. Brown") == "amonrastbrown"
+
+
+def test_crosswalk_join_is_by_id_not_name():
+    """Bijan and Brian Robinson are both ATL RBs. Name+pos+team collides;
+    sleeper_id does not. This is a real bug hit during design."""
+    raw = {
+        "9221": {"full_name": "Jahmyr Gibbs", "position": "RB", "team": "DET",
+                 "active": True, "injury_status": None},
+        "8155": {"full_name": "Bijan Robinson", "position": "RB", "team": "ATL",
+                 "active": True, "injury_status": None},
+        "7588": {"full_name": "Brian Robinson", "position": "RB", "team": "ATL",
+                 "active": True, "injury_status": "Questionable"},
+    }
+    crosswalk = {"9221": "40059", "8155": "40000", "7588": "34000"}
+    players = build_players(raw, crosswalk)
+
+    assert len(players) == 3, "no player may be dropped or merged"
+    assert players["8155"].name == "Bijan Robinson"
+    assert players["7588"].name == "Brian Robinson"
+    assert players["8155"].yahoo_id == "40000"
+    assert players["7588"].yahoo_id == "34000"
+    assert players["9221"].yahoo_id == "40059"
+    assert players["7588"].injury_status == "Questionable"
+
+
+def test_missing_crosswalk_entry_leaves_yahoo_id_none():
+    raw = {"1": {"full_name": "Nobody Special", "position": "WR", "team": "SF",
+                 "active": True, "injury_status": None}}
+    players = build_players(raw, {})
+    assert players["1"].yahoo_id is None
+
+
+def test_inactive_and_irrelevant_positions_excluded():
+    raw = {
+        "1": {"full_name": "Active WR", "position": "WR", "team": "SF",
+              "active": True, "injury_status": None},
+        "2": {"full_name": "Retired Guy", "position": "WR", "team": None,
+              "active": False, "injury_status": None},
+        "3": {"full_name": "Some Guard", "position": "OG", "team": "SF",
+              "active": True, "injury_status": None},
+    }
+    assert set(build_players(raw, {})) == {"1"}
