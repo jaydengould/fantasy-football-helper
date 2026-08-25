@@ -76,3 +76,71 @@ def test_tiers_are_per_position():
 def test_tiers_handle_single_player_position():
     players = [mk("a", "K", 120.0)]
     assert assign_tiers(players, {"a": 120.0}, sigma=1.0) == {"a": 1}
+
+
+def _realistic_rb_pool():
+    """8 draftable RBs with real gaps (one small, two big, one big, then a
+    tight cluster), followed by a 110-player below-replacement tail with
+    near-zero gaps. Mirrors the ~140-player real pool that exposed the bug:
+    a whole-pool stdev is dragged near zero by the tail, so it clears real
+    top-of-board gaps that a draftable-only stdev correctly keeps as breaks.
+    """
+    top8_scores = [65.5, 62.5, 44.5, 26.5, 9.5, 6.5, 3.5, 0.5]
+    players = [mk(f"top{i}", "RB", s) for i, s in enumerate(top8_scores)]
+    scores = {p.sleeper_id: s for p, s in zip(players, top8_scores)}
+    for i in range(110):
+        pid = f"tail{i}"
+        val = round(0.0 - 0.01 * i, 4)  # 0.0, -0.01, ... all <= 0 (non-draftable)
+        players.append(mk(pid, "RB", val))
+        scores[pid] = val
+    return players, scores
+
+
+def test_tiers_scope_threshold_to_draftable_players():
+    """Regression test for the whole-pool-stdev defect. The 110-player tail
+    has tiny gaps (~0.01) that, if included in the threshold's stdev, drag it
+    down to ~2.95 -- below the top group's own "small" gaps of 3.0, so every
+    one of those gaps would incorrectly clear threshold and each of the top 8
+    would land in its own tier: [1,2,3,4,5,6,7,8].
+
+    Verified against the pre-fix formula (threshold = sigma * pstdev(ALL
+    gaps in the position)) run standalone against this exact data: it
+    produces top-8 tiers [1, 2, 3, 4, 5, 6, 7, 8] -- fully fragmented, so
+    this test fails on that implementation. Scoping the stdev to the 8
+    draftable players' own gaps ([3, 18, 18, 17, 3, 3, 3], pstdev ~7.27)
+    keeps the "3" gaps below threshold and only the real 18/18/17 gaps break,
+    giving [1, 1, 2, 3, 4, 4, 4, 4].
+    """
+    players, scores = _realistic_rb_pool()
+    tiers = assign_tiers(players, scores, sigma=1.0)
+    top8 = [tiers[f"top{i}"] for i in range(8)]
+    assert top8 == [1, 1, 2, 3, 4, 4, 4, 4]
+    assert len(tiers) == len(players), "every player, draftable or not, gets a tier"
+
+
+def test_tiers_all_below_replacement_does_not_raise():
+    """No player clears replacement (all scores <= 0) -- draftable_n is 0, so
+    the threshold must fall back to the full gap set rather than dividing by
+    a zero-length stdev input or raising. This discriminates against an
+    implementation that assumes at least one positive score exists."""
+    players = [mk(str(i), "RB", -float(i)) for i in range(6)]
+    scores = {p.sleeper_id: -float(i) for i, p in enumerate(players)}
+    tiers = assign_tiers(players, scores, sigma=1.0)
+    assert len(tiers) == 6
+    assert all(isinstance(t, int) and t >= 1 for t in tiers.values())
+
+
+def test_sigma_is_a_coarseness_knob_on_realistic_pool():
+    """Larger sigma must yield the same or fewer distinct tiers. On the
+    realistic pool, sigma=0.5 breaks all 8 draftable gaps except the cluster
+    (4 distinct tiers among the top 8 plus tail tiers); sigma=3.0 clears
+    every gap in the top group (1 tier). A no-op sigma would make both equal
+    or unrelated to input; here they must differ."""
+    players, scores = _realistic_rb_pool()
+    small_sigma_tiers = assign_tiers(players, scores, sigma=0.5)
+    large_sigma_tiers = assign_tiers(players, scores, sigma=3.0)
+    small_count = len(set(small_sigma_tiers.values()))
+    large_count = len(set(large_sigma_tiers.values()))
+    assert small_count == 4
+    assert large_count == 1
+    assert large_count <= small_count

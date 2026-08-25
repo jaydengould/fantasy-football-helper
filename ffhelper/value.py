@@ -45,6 +45,12 @@ def assign_tiers(
 ) -> dict[str, int]:
     """Break a tier when the gap to the next player exceeds sigma * stdev(gaps).
 
+    The stdev is computed only over draftable players (score > 0, i.e. above
+    replacement) -- the below-replacement tail is full of near-zero gaps that
+    would drag the stdev down and swallow every real gap at the top of the
+    board. Tier ASSIGNMENT still walks every player in the position, draftable
+    or not; only the threshold's input set is narrowed.
+
     ponytail: gap-based clustering, not k-means. If tiers look wrong in a real
     draft, turn the sigma knob before reaching for a clustering library.
     """
@@ -59,8 +65,17 @@ def assign_tiers(
             scores.get(group[i].sleeper_id, 0.0) - scores.get(group[i + 1].sleeper_id, 0.0)
             for i in range(len(group) - 1)
         ]
+        # group is sorted descending by score, so draftable players (score > 0)
+        # are always a prefix of it -- count them and take that many leading gaps.
+        draftable_n = sum(1 for p in group if scores.get(p.sleeper_id, 0.0) > 0)
+        # ponytail: fewer than 2 draftable players means no meaningful stdev to
+        # compute over the draftable set -- fall back to the full gap set
+        # (identical to pre-fix behaviour) rather than a special case.
+        threshold_gaps = gaps[: draftable_n - 1] if draftable_n >= 2 else gaps
         threshold = (
-            sigma * statistics.pstdev(gaps) if len(gaps) > 1 else float("inf")
+            sigma * statistics.pstdev(threshold_gaps)
+            if len(threshold_gaps) > 1
+            else float("inf")
         )
         tier = 1
         for i, p in enumerate(group):
