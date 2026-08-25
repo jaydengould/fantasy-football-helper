@@ -125,3 +125,73 @@ def marginal_value(
 ) -> float:
     """How much adding `candidate` improves the optimal starting lineup."""
     return lineup_value([*roster, candidate], roster_slots) - lineup_value(roster, roster_slots)
+
+
+from collections import Counter
+
+from ffhelper.data import curve_stdev
+
+
+def next_pick_number(current_pick: int, slot: int, num_teams: int) -> int:
+    """The next pick belonging to `slot` strictly after `current_pick`.
+
+    Snake order: round r (1-indexed) gives slot s the pick
+    (r-1)*n + s on odd rounds, and (r-1)*n + (n-s+1) on even rounds.
+    """
+    r = 1
+    while True:
+        offset = slot if r % 2 == 1 else (num_teams - slot + 1)
+        pick = (r - 1) * num_teams + offset
+        if pick > current_pick:
+            return pick
+        r += 1
+
+
+def survival_prob(player: Player, at_pick: int) -> float:
+    """P(player is still available at `at_pick`), from ADP mean and spread.
+
+    FFC's per-player stdev cannot be synthesized -- fitting it from ADP alone
+    leaves 42.6% of the variance unexplained -- so the curve is only a fallback.
+    """
+    stdev = player.adp_stdev or curve_stdev(player.adp)
+    return 1.0 - NormalDist(player.adp, max(stdev, 0.1)).cdf(at_pick)
+
+
+def vona(players: list[Player], candidate: Player, at_pick: int) -> float:
+    """Value Over Next Available: what it costs to wait rather than take him now.
+
+    Expected best-at-position at `at_pick`, computed as a survival-weighted
+    walk down the position board: the best player is the first who survives.
+    """
+    same_pos = sorted(
+        (p for p in players if p.position == candidate.position and p is not candidate),
+        key=lambda p: -p.proj_pts,
+    )
+    expected = 0.0
+    prob_all_gone = 1.0
+    for p in same_pos:
+        surv = survival_prob(p, at_pick)
+        expected += prob_all_gone * surv * p.proj_pts
+        prob_all_gone *= 1.0 - surv
+        if prob_all_gone < 1e-6:
+            break
+    return candidate.proj_pts - expected
+
+
+def divergence(players: list[Player], scores: dict[str, float]) -> dict[str, int]:
+    """projection_rank - adp_rank. Positive means the model likes him more
+    than the market does.
+
+    NEVER average these two ranks. Blending pulls the board toward consensus,
+    and a board that tracks consensus produces consensus results.
+    """
+    by_proj = sorted(players, key=lambda p: -scores.get(p.sleeper_id, 0.0))
+    by_adp = sorted(players, key=lambda p: p.adp)
+    proj_rank = {p.sleeper_id: i for i, p in enumerate(by_proj, 1)}
+    adp_rank = {p.sleeper_id: i for i, p in enumerate(by_adp, 1)}
+    return {pid: adp_rank[pid] - proj_rank[pid] for pid in proj_rank}
+
+
+def detect_run(recent_positions: list[str], window: int = 8) -> dict[str, int]:
+    """Position counts over the last `window` picks."""
+    return dict(Counter(recent_positions[-window:]))

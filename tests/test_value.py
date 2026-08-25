@@ -199,3 +199,73 @@ def test_marginal_value_of_upgrade_is_the_difference():
 
 def test_lineup_value_of_empty_roster_is_zero():
     assert lineup_value([], {"QB": 1, "RB": 2}) == 0.0
+
+
+from ffhelper.value import (
+    detect_run, divergence, next_pick_number, survival_prob, vona,
+)
+
+
+def test_snake_pick_sequence_for_slot_3_in_12_team():
+    # slot 3 picks at 3, 22, 27, 46, 51 ...
+    assert next_pick_number(current_pick=1, slot=3, num_teams=12) == 3
+    assert next_pick_number(current_pick=3, slot=3, num_teams=12) == 22
+    assert next_pick_number(current_pick=22, slot=3, num_teams=12) == 27
+    assert next_pick_number(current_pick=27, slot=3, num_teams=12) == 46
+
+
+def test_snake_endpoints_turn_correctly():
+    # slot 1 picks 1 then 24; slot 12 picks 12 then 13 (the turn)
+    assert next_pick_number(1, 1, 12) == 24
+    assert next_pick_number(12, 12, 12) == 13
+
+
+def test_survival_decreases_as_pick_number_rises():
+    p = mk("a", "RB", 200.0, adp=20.0, stdev=5.0)
+    probs = [survival_prob(p, at_pick=k) for k in (10, 20, 30, 40)]
+    assert probs == sorted(probs, reverse=True), "survival must be monotonic"
+    assert probs[0] > 0.95
+    assert probs[-1] < 0.05
+
+
+def test_survival_at_adp_is_about_half():
+    p = mk("a", "RB", 200.0, adp=20.0, stdev=5.0)
+    assert survival_prob(p, at_pick=20) == pytest.approx(0.5, abs=0.01)
+
+
+def test_survival_falls_back_to_curve_when_stdev_missing():
+    p = Player("a", "A", "RB", "SF", proj_pts=200.0, adp=20.0, adp_stdev=None)
+    assert 0.0 < survival_prob(p, at_pick=20) < 1.0
+
+
+def test_vona_is_zero_when_an_equal_player_survives():
+    """If someone just as good is certain to last, waiting costs nothing."""
+    cand = mk("a", "RB", 200.0, adp=1.0, stdev=0.5)
+    clone = mk("b", "RB", 200.0, adp=300.0, stdev=1.0)   # certain to survive
+    assert vona([cand, clone], cand, at_pick=20) == pytest.approx(0.0, abs=0.5)
+
+
+def test_vona_is_large_when_nobody_survives():
+    cand = mk("a", "RB", 200.0, adp=1.0, stdev=0.5)
+    other = mk("b", "RB", 100.0, adp=2.0, stdev=0.5)     # also certain to be gone
+    assert vona([cand, other], cand, at_pick=50) > 190.0
+
+
+def test_divergence_flags_projection_vs_market_gaps():
+    # 'sleeper' is ranked 1st by projection but 3rd by ADP -> +2 divergence
+    players = [
+        mk("a", "RB", 300.0, adp=30.0),
+        mk("b", "RB", 250.0, adp=10.0),
+        mk("c", "RB", 200.0, adp=20.0),
+    ]
+    scores = {"a": 300.0, "b": 250.0, "c": 200.0}
+    div = divergence(players, scores)
+    assert div["a"] == 2, "projection rank 1, ADP rank 3"
+    assert div["b"] == -1
+    assert div["c"] == -1
+
+
+def test_detect_run_counts_recent_positions():
+    assert detect_run(["RB"] * 5 + ["WR"] * 3) == {"RB": 5, "WR": 3}
+    assert detect_run(["QB"] + ["RB"] * 10, window=8)["RB"] == 8
+    assert detect_run([]) == {}
