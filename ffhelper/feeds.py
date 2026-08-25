@@ -3,11 +3,14 @@
 Nothing downstream may reference a concrete feed class by name -- the engine
 never knows which platform it is serving.
 """
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
 from ffhelper.data import CACHE_DIR, fetch_json
+
+log = logging.getLogger(__name__)
 
 SLEEPER_PICKS_URL = "https://api.sleeper.app/v1/draft/{draft_id}/picks"
 
@@ -25,15 +28,20 @@ class PickFeed(Protocol):
 
 
 def parse_sleeper_picks(raw: list[dict]) -> list[Pick]:
-    picks = [
-        Pick(
-            pick_no=int(row["pick_no"]),
+    picks = []
+    for row in raw:
+        if not row.get("player_id") or row.get("pick_no") is None:
+            continue
+        try:
+            pick_no = int(row["pick_no"])
+        except (TypeError, ValueError):
+            log.warning("skipping pick with non-numeric pick_no: %r", row)
+            continue
+        picks.append(Pick(
+            pick_no=pick_no,
             sleeper_id=str(row["player_id"]),
             roster_id=row.get("roster_id"),
-        )
-        for row in raw
-        if row.get("player_id") and row.get("pick_no") is not None
-    ]
+        ))
     return sorted(picks, key=lambda p: p.pick_no)
 
 
