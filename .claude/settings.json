@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "LS",
+      "Edit",
+      "MultiEdit",
+      "Edit(src/**)",
+      "Edit(tests/**)",
+      "Edit(notebooks/**)",
+      "Bash(pip install *)",
+      "Bash(pip list)",
+      "Bash(python3 *)",
+      "Bash(pytest *)",
+      "Bash(jupyter *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git branch *)",
+      "Bash(git checkout *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(find *)",
+      "Bash(echo *)"
+    ],
+    "deny": [
+      "Read(.env*)",
+      "Read(**/secrets/**)",
+      "Edit(.env*)",
+      "Bash(rm -rf *)",
+      "Bash(sudo *)",
+      "Bash(curl * | sh)",
+      "Bash(chown *)"
+    ],
+    "defaultMode": "acceptEdits"
+  },
+  "env": {
+    "PYTHONPATH": "."
+  }
+}
