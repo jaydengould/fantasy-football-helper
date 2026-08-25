@@ -1,12 +1,13 @@
+import logging
 import queue
 import time
 
 import pytest
 
 from ffhelper.cli import (
-    MarkDrafted, _handle_command, _lookup_roster_id, _my_roster_from_picks, _preflight,
-    _render_tick, _run, find_players, load_board_inputs, league_settings_from_config, main,
-    render, resolve_settings,
+    MarkDrafted, NullFeed, _combine_my_roster, _handle_command, _lookup_roster_id,
+    _my_roster_from_picks, _preflight, _render_tick, _run, _select_feed, _stdin_reader,
+    find_players, load_board_inputs, league_settings_from_config, main, render, resolve_settings,
 )
 from ffhelper.config import League, Tunables
 from ffhelper.data import LeagueSettings, Player
@@ -62,6 +63,20 @@ def test_render_shows_position_run():
 
 def test_render_empty_board_does_not_crash():
     assert isinstance(render([], 10, 0.0, [], {}), str)
+
+
+def test_render_manual_mode_shows_status_and_never_a_stale_banner():
+    """stale_seconds=None (no feed at all) must show a clear manual-entry
+    status line and MUST NOT show the stale-feed banner -- there is no feed
+    to be stale, so showing one would be false. Against a build that treats
+    None like any other number (e.g. `stale_seconds > 15` with None raising,
+    or a leftover branch that always prints FEED STALE for non-floats), this
+    fails on either the missing status line or a wrongly-shown STALE banner.
+    """
+    board = [row("a", "A", "RB", 1.0, 0.5)]
+    out = render(board, 5, stale_seconds=None, my_roster=[], runs={})
+    assert "MANUAL" in out
+    assert "STALE" not in out
 
 
 # --- Manual league settings: a first-class path, not a fallback. ---
@@ -247,6 +262,12 @@ def test_run_survives_feed_failure_and_still_renders_with_stale_banner(monkeypat
     # warnings) keeps using the real clock. Since the feed always fails,
     # last_ok never advances, so every render tick is already well past the
     # 15s stale threshold.
+    #
+    # `input_queue` is passed explicitly (see `_run`'s docstring) so no real
+    # background stdin-reader thread spawns: that thread now logs on exit
+    # (Fix 4), and logging's own internal `time.time()` read would otherwise
+    # race the single seeded call below on a separate thread, making which
+    # call gets the -30s offset nondeterministic.
     real_time = time.time
     seeded = {"done": False}
 
@@ -258,7 +279,8 @@ def test_run_survives_feed_failure_and_still_renders_with_stale_banner(monkeypat
 
     monkeypatch.setattr("ffhelper.cli.time.time", fake_time)
 
-    result = _run(_loop_league(), Tunables(), limit=10, max_iterations=3)
+    result = _run(_loop_league(), Tunables(), limit=10, max_iterations=3,
+                  input_queue=queue.Queue())
     out = capsys.readouterr().out
 
     assert result == 0
@@ -416,20 +438,23 @@ def test_mark_drafted_marking_already_marked_player_is_idempotent():
 def test_handle_command_single_match_marks_directly():
     pool = _pool()
     state = MarkDrafted()
-    pending, status = _handle_command("gibbs", pool, state, [])
+    pending, pending_mine, status = _handle_command("gibbs", pool, state, [])
     assert pending == []
+    assert pending_mine is False
     assert state.drafted == {"gibbs"}
+    assert state.mine == set()             # plain mark, not a self-mark
     assert "Jahmyr Gibbs" in status
 
 
 def test_handle_command_multiple_matches_opens_disambiguation_then_selects():
     pool = _pool()
     state = MarkDrafted()
-    pending, status = _handle_command("robinson", pool, state, [])
+    pending, pending_mine, status = _handle_command("robinson", pool, state, [])
     assert state.drafted == set()  # nothing marked yet -- ambiguous query alone never marks
     assert len(pending) == 2
+    assert pending_mine is False
 
-    pending2, status2 = _handle_command("1", pool, state, pending)
+    pending2, pending_mine2, status2 = _handle_command("1", pool, state, pending, pending_mine)
     assert state.drafted == {pending[0].sleeper_id}
     assert pending2 == []
 
@@ -511,7 +536,7 @@ def test_render_tick_wires_my_roster_and_marg_reflects_it(monkeypatch):
 
     _render_tick(
         picks, time.time(), players, settings, league, Tunables(), 10,
-        manual_gone=set(), roster_id=5,
+        manual_gone=set(), manual_mine=set(), roster_id=5,
     )
 
     rows = {r.player.sleeper_id: r for r in captured["board"]}
@@ -541,3 +566,274 @@ def test_run_wires_manual_marks_into_the_board(monkeypatch, capsys):
     assert "marked A (RB ATL)" in out
     # the board itself is empty now -- "A" was excluded, not just narrated
     assert "1   A " not in out
+
+
+# --- Fix 1: `run` without a pick feed (no draft_id, or no feed for the platform). ---
+
+
+def test_select_feed_uses_sleeper_feed_when_draft_id_resolved(monkeypatch):
+    """Discriminates against a selector that always returns NullFeed, or one
+    that instantiates SleeperFeed unconditionally regardless of platform."""
+    sentinel = _FakeFeed()
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: sentinel)
+    feed, has_feed = _select_feed(_loop_league(), _loop_settings())
+    assert feed is sentinel
+    assert has_feed is True
+
+
+def test_select_feed_uses_null_feed_when_no_draft_id():
+    settings = LeagueSettings(num_teams=10, scoring={}, roster_slots={"QB": 1}, rounds=1,
+                               draft_id=None)
+    feed, has_feed = _select_feed(_loop_league(), settings)
+    assert isinstance(feed, NullFeed)
+    assert has_feed is False
+    assert feed.get_picks() == []
+
+
+def test_select_feed_uses_null_feed_for_non_sleeper_platform():
+    """Even with a draft_id-shaped value present, a platform with no real feed
+    implementation (Yahoo/ESPN/CBS/a friend's league) must not get SleeperFeed."""
+    league = League(name="yahoo-main", platform="yahoo", league_id="1")
+    settings = LeagueSettings(num_teams=10, scoring={}, roster_slots={"QB": 1}, rounds=1,
+                               draft_id="some-id")
+    feed, has_feed = _select_feed(league, settings)
+    assert isinstance(feed, NullFeed)
+    assert has_feed is False
+
+
+def test_run_with_no_draft_id_starts_and_renders_a_board(monkeypatch, capsys):
+    """Fix 1's core guarantee: `run` on a league with no draft_id (the Yahoo/
+    ESPN/CBS/manual-league case) must render a full board instead of exiting
+    early. Against the pre-fix `if not settings.draft_id: return 1` guard,
+    this fails: result would be 1 and the player would never be printed.
+    """
+    settings = LeagueSettings(num_teams=10, scoring={"pass_td": 6.0}, roster_slots={"QB": 1},
+                               rounds=1, draft_id=None)
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), settings))
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    league = League(name="yahoo-main", platform="yahoo", league_id="1")
+
+    result = _run(league, Tunables(), limit=10, max_iterations=2)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "A" in out                      # the one player in _loop_players() rendered
+
+
+def test_run_with_no_draft_id_shows_manual_status_and_no_stale_banner(monkeypatch, capsys):
+    """Feed-less mode must say so plainly and must never show a stale-feed
+    clock -- there is no feed to be stale. Against a build that leaves
+    `last_ok` as a real timestamp when there is no feed, this fails because
+    `stale_seconds` would be a tiny real number instead of None, and neither
+    the manual line nor (once past 15s) the correct banner would show.
+    """
+    settings = LeagueSettings(num_teams=10, scoring={"pass_td": 6.0}, roster_slots={"QB": 1},
+                               rounds=1, draft_id=None)
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), settings))
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    league = League(name="yahoo-main", platform="yahoo", league_id="1")
+
+    result = _run(league, Tunables(), limit=10, max_iterations=2)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "MANUAL MODE" in out
+    assert "FEED STALE" not in out
+
+
+def test_run_sleeper_league_with_draft_id_is_unaffected_by_null_feed_path(monkeypatch, capsys):
+    """A Sleeper league with a resolved draft_id must still use the real feed
+    and must never show the manual-mode line. Against a build where feed
+    selection is broken (e.g. always picks NullFeed), this fails: the fake
+    feed would never be called and "MANUAL MODE" would incorrectly appear.
+    """
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), _loop_settings()))
+    fake_feed = _FakeFeed(picks=[])
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: fake_feed)
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+
+    result = _run(_loop_league(), Tunables(), limit=10, max_iterations=1)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert fake_feed.calls == 1
+    assert "MANUAL MODE" not in out
+
+
+# --- Fix 2: marking a player as the user's own pick, explicitly. ---
+
+
+def test_mark_drafted_mine_tracks_membership_separately_from_drafted():
+    """`mine` must stay a subset of `drafted`, tracked independently -- a
+    plain (non-self) mark must never leak into `mine`.
+    """
+    state = MarkDrafted()
+    state.mark("bijan")              # plain mark: drafted, not mine
+    state.mark("gibbs", mine=True)   # self mark: drafted AND mine
+    assert state.drafted == {"bijan", "gibbs"}
+    assert state.mine == {"gibbs"}
+
+
+def test_mark_drafted_undo_reverses_self_mark():
+    """undo() must remove a self-marked player from BOTH `drafted` and
+    `mine`. Discriminates against an undo that only pops `_marked` but
+    leaves a stale id sitting in `_mine`, which would leave a departed
+    player permanently stuck in my_roster.
+    """
+    state = MarkDrafted()
+    state.mark("bijan", mine=True)
+    assert state.drafted == {"bijan"}
+    assert state.mine == {"bijan"}
+
+    state.undo()
+
+    assert state.drafted == set()
+    assert state.mine == set()
+
+
+def test_handle_command_me_prefix_single_match_marks_as_mine():
+    pool = _pool()
+    state = MarkDrafted()
+    pending, pending_mine, status = _handle_command("me gibbs", pool, state, [])
+    assert pending == []
+    assert state.drafted == {"gibbs"}
+    assert state.mine == {"gibbs"}
+    assert "yours" in status
+
+
+def test_handle_command_me_prefix_ambiguous_query_opens_disambiguation_marks_nothing():
+    """The self-mark path must disambiguate exactly like a plain mark does --
+    "me robinson" matching both Bijan and Brian Robinson must never resolve
+    silently. Against a build that marks the first match for "me " searches
+    (skipping disambiguation because it only special-cased the plain path),
+    this fails: state.drafted/mine would be non-empty after the first call.
+    """
+    pool = _pool()
+    state = MarkDrafted()
+    pending, pending_mine, status = _handle_command("me robinson", pool, state, [])
+    assert state.drafted == set()          # nothing marked yet
+    assert state.mine == set()
+    assert pending_mine is True
+    assert len(pending) == 2
+
+    pending2, pending_mine2, status2 = _handle_command("1", pool, state, pending, pending_mine)
+    assert state.drafted == {pending[0].sleeper_id}
+    assert state.mine == {pending[0].sleeper_id}  # the chosen player is self-marked
+    assert pending2 == []
+
+
+def test_handle_command_plain_search_never_marks_as_mine():
+    """Guards the "explicit only" rule the other direction: a search with no
+    "me " prefix must never end up in `mine`, even for a single-match hit."""
+    pool = _pool()
+    state = MarkDrafted()
+    _handle_command("gibbs", pool, state, [])
+    assert state.mine == set()
+
+
+def test_combine_my_roster_merges_feed_and_self_marked_without_double_counting():
+    """A player the feed already reports under the user's roster_id, who was
+    ALSO self-marked (e.g. marked on a hunch before the feed caught up), must
+    appear exactly once in the combined roster -- never twice.
+    """
+    players = _loop_players()               # {"1": Player("1", "A", "RB", ...)}
+    picks = [Pick(pick_no=1, sleeper_id="1", roster_id=5)]
+    feed_roster = _my_roster_from_picks(picks, players, roster_id=5)
+
+    combined = _combine_my_roster(feed_roster, mine_ids={"1"}, players=players)
+    assert [p.sleeper_id for p in combined] == ["1"]
+
+
+def test_combine_my_roster_adds_self_marked_players_the_feed_never_saw():
+    """In feed-less mode `feed_roster` is always [] -- self-marked players
+    must still surface in the combined roster."""
+    players = _loop_players()
+    combined = _combine_my_roster([], mine_ids={"1"}, players=players)
+    assert [p.sleeper_id for p in combined] == ["1"]
+
+
+def test_render_tick_self_mark_adds_to_my_roster_and_depresses_marg(monkeypatch):
+    """CLI-level regression guard for Fix 2 in a feed-less draft: self-marking
+    the player already filling the QB slot must both remove him from the pool
+    and land him in my_roster, so a same-position candidate's marginal value
+    drops below his raw projection. Against a build that only reads
+    manual_gone (drops the player from the pool) but never folds manual_mine
+    into my_roster, this fails: marginal would equal the raw 300.0 projection.
+    """
+    players = {
+        "qb1": Player("qb1", "Roster QB", "QB", "SF", proj_pts=50.0, adp=50.0, adp_stdev=5.0),
+        "qb2": Player("qb2", "Candidate QB", "QB", "KC", proj_pts=300.0, adp=1.0, adp_stdev=1.0),
+    }
+    settings = LeagueSettings(num_teams=10, scoring={}, roster_slots={"QB": 1}, rounds=1,
+                               draft_id=None)
+    league = _loop_league(draft_slot=None)
+
+    captured = {}
+
+    def spy_render(board, *a, **kw):
+        captured["board"] = board
+        return "ok"
+
+    monkeypatch.setattr("ffhelper.cli.render", spy_render)
+
+    _render_tick(
+        [], None, players, settings, league, Tunables(), 10,
+        manual_gone={"qb1"}, manual_mine={"qb1"}, roster_id=None,
+    )
+
+    rows = {r.player.sleeper_id: r for r in captured["board"]}
+    assert "qb1" not in rows                       # removed from the available pool
+    assert rows["qb2"].marginal == 250.0
+    assert rows["qb2"].marginal < players["qb2"].proj_pts
+
+
+def test_run_self_mark_via_me_prefix_reaches_my_roster_end_to_end(monkeypatch, capsys):
+    """End-to-end: typing "me a" through `_run`'s input_queue (no feed, no
+    real stdin) must both exclude the player from the board and list it under
+    "my roster:" -- the same wiring `test_run_wires_manual_marks_into_the_board`
+    checks for a plain mark, but for the self-mark path.
+    """
+    settings = LeagueSettings(num_teams=10, scoring={"pass_td": 6.0}, roster_slots={"QB": 1},
+                               rounds=1, draft_id=None)
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), settings))
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    league = League(name="yahoo-main", platform="yahoo", league_id="1")
+
+    q: queue.Queue = queue.Queue()
+    q.put("me a")
+
+    result = _run(league, Tunables(), limit=10, max_iterations=2, input_queue=q)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "my roster:  A (RB)" in out
+    assert "1   A " not in out              # excluded from the ranked board
+
+
+# --- Fix 4: a dead stdin reader must be logged, not silent. ---
+
+
+def test_stdin_reader_logs_warning_when_stdin_closes(monkeypatch, caplog):
+    """EOF (stdin closes, e.g. piped/redirected input) must not fail silently.
+    Against the pre-fix bare `except Exception: pass` with no warning on a
+    natural (non-exception) loop exit, this fails: no WARNING record at all.
+    """
+    monkeypatch.setattr("ffhelper.cli.sys.stdin", iter([]))
+    with caplog.at_level(logging.WARNING, logger="ffhelper.cli"):
+        _stdin_reader(queue.Queue())
+    assert any("stdin" in rec.message.lower() for rec in caplog.records)
+
+
+def test_stdin_reader_logs_warning_on_exception(monkeypatch, caplog):
+    class _BoomStdin:
+        def __iter__(self):
+            raise RuntimeError("stdin gone")
+
+    monkeypatch.setattr("ffhelper.cli.sys.stdin", _BoomStdin())
+    with caplog.at_level(logging.WARNING, logger="ffhelper.cli"):
+        _stdin_reader(queue.Queue())
+    assert any("stdin" in rec.message.lower() for rec in caplog.records)
