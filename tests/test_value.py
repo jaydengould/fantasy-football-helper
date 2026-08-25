@@ -167,19 +167,28 @@ def test_lineup_value_ignores_players_beyond_slots():
 
 def test_third_rb_adds_less_than_first():
     """The core insight the trade finder inherits: lineup constraints create
-    surplus, so a third RB is worth a fraction of the first."""
+    diminishing returns, so a later RB adds less than the first. A fourth RB
+    only upgrades the roster if he beats the current flex player."""
     slots = {"RB": 2, "FLEX": 1}
     empty: list[Player] = []
-    one_rb = [mk("r1", "RB", 250.0)]
     three_rb = [mk("r1", "RB", 250.0), mk("r2", "RB", 200.0), mk("r3", "RB", 150.0)]
-    cand = mk("new", "RB", 180.0)
 
-    first = marginal_value(empty, cand, slots)
-    fourth = marginal_value(three_rb, cand, slots)
+    # The same candidate added to an empty roster is worth the full amount.
+    cand_180 = mk("new_180", "RB", 180.0)
+    first = marginal_value(empty, cand_180, slots)
     assert first == 180.0
-    assert fourth == 0.0, "a 4th RB with 2RB+1FLEX filled adds nothing"
-    assert marginal_value(one_rb, cand, slots) == 180.0
-    assert first > fourth
+
+    # Added to a three-RB roster (250, 200, 150 in RB/RB/FLEX), the 180 upgrades
+    # the FLEX slot from 150 to 180, adding exactly 30 points (diminishing return).
+    fourth = marginal_value(three_rb, cand_180, slots)
+    assert fourth == 30.0
+
+    # A candidate worse than the current FLEX player adds nothing.
+    cand_100 = mk("new_100", "RB", 100.0)
+    assert marginal_value(three_rb, cand_100, slots) == 0.0
+
+    # Verify the diminishing-returns relationship: first > fourth > zero
+    assert first > fourth > 0.0
 
 
 def test_marginal_value_of_upgrade_is_the_difference():
