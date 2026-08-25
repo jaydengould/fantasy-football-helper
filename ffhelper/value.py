@@ -83,3 +83,45 @@ def assign_tiers(
             if i < len(gaps) and gaps[i] > threshold:
                 tier += 1
     return tiers
+
+
+FLEX_ELIGIBLE = {"RB", "WR", "TE"}
+
+
+def lineup_value(roster: list[Player], roster_slots: dict[str, int]) -> float:
+    """Points scored by the optimal starting lineup drawn from `roster`.
+
+    Phase 1 uses this for starter-slot awareness; Phase 5's trade finder uses
+    the identical function. Never inline it into the board.
+    """
+    remaining = sorted(roster, key=lambda p: -p.proj_pts)
+    used: set[str] = set()
+    total = 0.0
+
+    for pos, count in roster_slots.items():
+        if pos == "FLEX":
+            continue
+        picked = 0
+        for p in remaining:
+            if picked >= count:
+                break
+            if p.position == pos and p.sleeper_id not in used:
+                used.add(p.sleeper_id)
+                total += p.proj_pts
+                picked += 1
+
+    for _ in range(roster_slots.get("FLEX", 0)):
+        for p in remaining:
+            if p.position in FLEX_ELIGIBLE and p.sleeper_id not in used:
+                used.add(p.sleeper_id)
+                total += p.proj_pts
+                break
+
+    return total
+
+
+def marginal_value(
+    roster: list[Player], candidate: Player, roster_slots: dict[str, int]
+) -> float:
+    """How much adding `candidate` improves the optimal starting lineup."""
+    return lineup_value([*roster, candidate], roster_slots) - lineup_value(roster, roster_slots)

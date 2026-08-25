@@ -5,6 +5,7 @@ import pytest
 from ffhelper.data import Player
 from ffhelper.value import (
     assign_tiers, replacement_points, replacement_ranks, vbd,
+    lineup_value, marginal_value,
 )
 
 SLOTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1}
@@ -144,3 +145,48 @@ def test_sigma_is_a_coarseness_knob_on_realistic_pool():
     assert small_count == 4
     assert large_count == 1
     assert large_count <= small_count
+
+
+def test_lineup_value_fills_dedicated_slots_then_flex():
+    slots = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1}
+    roster = [
+        mk("q", "QB", 300.0),
+        mk("r1", "RB", 250.0), mk("r2", "RB", 200.0), mk("r3", "RB", 150.0),
+        mk("w1", "WR", 240.0), mk("w2", "WR", 190.0),
+        mk("t", "TE", 120.0),
+    ]
+    # 300 + 250 + 200 + 240 + 190 + 120 + flex(best leftover = r3 150) = 1450
+    assert lineup_value(roster, slots) == 1450.0
+
+
+def test_lineup_value_ignores_players_beyond_slots():
+    slots = {"QB": 1}
+    roster = [mk("q1", "QB", 300.0), mk("q2", "QB", 290.0)]
+    assert lineup_value(roster, slots) == 300.0
+
+
+def test_third_rb_adds_less_than_first():
+    """The core insight the trade finder inherits: lineup constraints create
+    surplus, so a third RB is worth a fraction of the first."""
+    slots = {"RB": 2, "FLEX": 1}
+    empty: list[Player] = []
+    one_rb = [mk("r1", "RB", 250.0)]
+    three_rb = [mk("r1", "RB", 250.0), mk("r2", "RB", 200.0), mk("r3", "RB", 150.0)]
+    cand = mk("new", "RB", 180.0)
+
+    first = marginal_value(empty, cand, slots)
+    fourth = marginal_value(three_rb, cand, slots)
+    assert first == 180.0
+    assert fourth == 0.0, "a 4th RB with 2RB+1FLEX filled adds nothing"
+    assert marginal_value(one_rb, cand, slots) == 180.0
+    assert first > fourth
+
+
+def test_marginal_value_of_upgrade_is_the_difference():
+    slots = {"QB": 1}
+    roster = [mk("q1", "QB", 300.0)]
+    assert marginal_value(roster, mk("q2", "QB", 350.0), slots) == 50.0
+
+
+def test_lineup_value_of_empty_roster_is_zero():
+    assert lineup_value([], {"QB": 1, "RB": 2}) == 0.0
