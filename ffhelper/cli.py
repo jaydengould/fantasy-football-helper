@@ -352,7 +352,16 @@ def _render_tick(
     Pulled out of `_run` so a single iteration's work can be wrapped in its
     own try/except and driven a bounded number of times from tests.
     """
+    # The current pick must reflect every player known to be drafted, not just
+    # what the feed reported -- in manual (or feed-less) mode `picks` is
+    # permanently empty, and `len(picks) + 1` would freeze the board at pick 1
+    # forever regardless of how many players were hand-marked. `drafted` is
+    # already the union used to filter the available pool; the pick count
+    # must be derived from that SAME set so the board can't disagree with
+    # itself about who's off the board. Set union means a player reported by
+    # both the feed and a manual mark is counted once, not twice.
     drafted = {p.sleeper_id for p in picks} | manual_gone
+    current_pick = len(drafted) + 1
     available = [p for pid, p in players.items() if pid not in drafted]
     feed_roster = _my_roster_from_picks(picks, players, roster_id)
     my_roster = _combine_my_roster(feed_roster, manual_mine, players)
@@ -360,15 +369,15 @@ def _render_tick(
 
     board = build_board(
         available, my_roster, settings.roster_slots, settings.num_teams,
-        current_pick=len(picks) + 1, my_slot=league.draft_slot, tunables=tunables,
+        current_pick=current_pick, my_slot=league.draft_slot, tunables=tunables,
     )
     print("\033[2J\033[H", end="")                # clear screen
     stale_seconds = None if last_ok is None else time.time() - last_ok
     print(render(board, limit, stale_seconds, my_roster, detect_run(recent)))
     if league.draft_slot:
-        nxt = next_pick_number(len(picks) + 1, league.draft_slot, settings.num_teams)
-        print(f"\npick {len(picks) + 1}   your next pick: {nxt} "
-              f"({nxt - len(picks) - 1} away)")
+        nxt = next_pick_number(current_pick, league.draft_slot, settings.num_teams)
+        print(f"\npick {current_pick}   your next pick: {nxt} "
+              f"({nxt - current_pick} away)")
     print("\ntype part of a name to mark drafted (\"me \" prefix for your own "
           "pick), a number to disambiguate, 'u' to undo")
     if status:
@@ -420,6 +429,11 @@ def _run(
 
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
+        # Cleared every tick: a status set by a command belongs to the tick
+        # it happened on. Without this reset, a message from an earlier tick
+        # (when the queue was last non-empty) keeps re-printing on every
+        # subsequent tick forever, since nothing else ever overwrites it.
+        status = ""
         while not input_queue.empty():
             pending, pending_mine, status = _handle_command(
                 input_queue.get_nowait(), players, mark_state, pending, pending_mine

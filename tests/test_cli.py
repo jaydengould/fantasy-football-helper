@@ -837,3 +837,172 @@ def test_stdin_reader_logs_warning_on_exception(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="ffhelper.cli"):
         _stdin_reader(queue.Queue())
     assert any("stdin" in rec.message.lower() for rec in caplog.records)
+
+
+# --- Fix 5: current pick derived from ALL drafted players (feed union manual),
+# not from the feed's pick list alone -- the frozen-pick-1 bug. ---
+
+
+def _five_player_pool() -> dict[str, Player]:
+    """Distinct, letters-only names -- `norm_name` strips digits entirely, so
+    "Player 1".."Player 5" would all collapse to the same normalised token and
+    become ambiguous. `target` is never marked in any of the tests below; it
+    exists purely so its own survival probability can be read back."""
+    names = ["Aardvark", "Bobcat", "Cougar", "Dingo"]
+    fillers = {
+        str(i): Player(str(i), n, "RB", "ATL", proj_pts=100.0 - i, adp=float(i), adp_stdev=1.0)
+        for i, n in enumerate(names, 1)
+    }
+    fillers["target"] = Player("target", "Zeta Target", "RB", "ATL", proj_pts=90.0,
+                                adp=40.0, adp_stdev=5.0)
+    return fillers
+
+
+def test_render_tick_manual_marks_advance_pick_and_undo_reverses_it(monkeypatch, capsys):
+    """Drives the exact per-tick pipeline `_run` uses -- `_handle_command`
+    feeding a persistent `MarkDrafted`, then `_render_tick` reading its
+    `.drafted` set -- across four marks and an undo, and reads the reported
+    pick number back out of the printed footer.
+
+    Against the frozen-counter bug (`current_pick=len(picks) + 1`, and
+    `picks` is permanently `[]` in manual mode since there is no feed), the
+    footer would read "pick 1" on every single tick below, marks or no marks,
+    and this test fails on the very first advancing assertion.
+    """
+    players = _five_player_pool()
+    settings = LeagueSettings(num_teams=10, scoring={}, roster_slots={"RB": 1}, rounds=1,
+                               draft_id=None)
+    league = _loop_league(draft_slot=3)  # draft_slot needed for the footer line to print
+    state = MarkDrafted()
+    pending: list[Player] = []
+    pending_mine = False
+
+    def tick() -> str:
+        capsys.readouterr()
+        _render_tick([], None, players, settings, league, Tunables(), 10,
+                     state.drafted, state.mine, roster_id=None)
+        return capsys.readouterr().out
+
+    assert "pick 1   your next pick" in tick()
+
+    for name in ["Aardvark", "Bobcat", "Cougar", "Dingo"]:
+        pending, pending_mine, _ = _handle_command(name, players, state, pending, pending_mine)
+
+    assert "pick 5   your next pick" in tick()   # 4 marks -> current_pick advances to 5
+
+    state.undo()
+    assert "pick 4   your next pick" in tick()   # undo restores exactly one pick
+
+
+def test_render_tick_self_mark_advances_pick_count_same_as_plain_mark(monkeypatch, capsys):
+    """A `me <query>` self-mark takes a player off the board exactly like a
+    plain mark -- it must consume a pick in the count too. Against a build
+    that only unions `manual_gone` for the available-pool filter but keeps
+    computing `current_pick` from `len(picks)` alone, this fails: the footer
+    would stay on "pick 1" after the self-mark.
+    """
+    players = _five_player_pool()
+    settings = LeagueSettings(num_teams=10, scoring={}, roster_slots={"RB": 1}, rounds=1,
+                               draft_id=None)
+    league = _loop_league(draft_slot=3)
+    state = MarkDrafted()
+
+    _handle_command("me Aardvark", players, state, [], False)
+
+    capsys.readouterr()
+    _render_tick([], None, players, settings, league, Tunables(), 10,
+                 state.drafted, state.mine, roster_id=None)
+    out = capsys.readouterr().out
+
+    assert "pick 2   your next pick" in out
+
+
+def test_render_tick_survival_decreases_as_manual_marks_accumulate(monkeypatch):
+    """The core regression guard: a player who is never marked must see his
+    OWN survival probability strictly decrease once several other players are
+    marked drafted between ticks, because `at_pick` (derived from
+    `current_pick`) is moving forward under him.
+
+    Verified this fails against the frozen-counter behaviour: with
+    `current_pick=len(picks) + 1` and `picks` always `[]` in manual mode,
+    `current_pick` -- and therefore `at_pick` fed into `survival_prob` --
+    is bit-for-bit identical on both calls below regardless of how many
+    players get marked in between, so `before == after` and the `<`
+    assertion fails (97%/100%/100% all draft long, exactly as observed
+    against the real loop).
+    """
+    players = _five_player_pool()
+    settings = LeagueSettings(num_teams=10, scoring={}, roster_slots={"RB": 1}, rounds=1,
+                               draft_id=None)
+    league = _loop_league(draft_slot=None)
+
+    captured = []
+
+    def spy_render(board, *a, **kw):
+        captured.append({r.player.sleeper_id: r.survival for r in board})
+        return "ok"
+
+    monkeypatch.setattr("ffhelper.cli.render", spy_render)
+
+    state = MarkDrafted()
+    _render_tick([], None, players, settings, league, Tunables(), 10,
+                 state.drafted, state.mine, roster_id=None)
+    before = captured[0]["target"]
+
+    for pid in ["1", "2", "3", "4"]:
+        state.mark(pid)
+    _render_tick([], None, players, settings, league, Tunables(), 10,
+                 state.drafted, state.mine, roster_id=None)
+    after = captured[1]["target"]
+
+    assert after < before
+
+
+def test_render_tick_feed_only_pick_count_matches_feed_with_no_manual_marks(capsys):
+    """Sleeper-with-a-real-feed guarantee: with no manual marks at all, the
+    reported pick count must equal the feed's own pick count exactly --
+    `len(picks) + 1`, unchanged from before this fix. Against a build that
+    (over-)counts differently (e.g. double-counts, or adds 1 twice), this
+    fails on the exact footer text.
+    """
+    players = _five_player_pool()
+    settings = LeagueSettings(num_teams=10, scoring={}, roster_slots={"RB": 1}, rounds=1,
+                               draft_id="d1")
+    league = _loop_league(draft_slot=3)
+    picks = [
+        Pick(pick_no=1, sleeper_id="1", roster_id=None),
+        Pick(pick_no=2, sleeper_id="2", roster_id=None),
+        Pick(pick_no=3, sleeper_id="3", roster_id=None),
+    ]
+
+    _render_tick(picks, time.time(), players, settings, league, Tunables(), 10,
+                 manual_gone=set(), manual_mine=set(), roster_id=None)
+    out = capsys.readouterr().out
+
+    assert "pick 4   your next pick" in out    # len(picks) + 1, no manual marks in play
+
+
+def test_run_action_status_shows_on_its_tick_and_is_gone_the_next(monkeypatch, capsys):
+    """The transient action confirmation (e.g. "marked A (RB ATL)") must be
+    shown for the tick the action happened on and cleared afterward. A single
+    command is queued before the loop starts, so it is drained and marked on
+    the FIRST tick only; the SECOND tick has nothing new in the queue.
+
+    Against the pre-fix code -- where `status` is a variable outside the loop
+    that is only ever overwritten, never reset, so an empty queue leaves it
+    holding the previous tick's value -- the confirmation would print on
+    BOTH of the two rendered frames and `out.count(...)` would be 2, not 1.
+    """
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+
+    q: queue.Queue = queue.Queue()
+    q.put("A")  # matches the sole player in _loop_players(), id "1"
+
+    result = _run(_loop_league(), Tunables(), limit=10, max_iterations=2, input_queue=q)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert out.count("marked A (RB ATL)") == 1
