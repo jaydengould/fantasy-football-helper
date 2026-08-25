@@ -253,4 +253,27 @@ def build_board(
         )
         for p in available
     ]
-    return sorted(rows, key=lambda r: -r.vona)
+    # VONA is quantized to the tenth of a point the board actually displays,
+    # then VBD breaks the ties.
+    #
+    # VONA compresses to ~0 for everyone whenever your next pick is only a pick
+    # or two away -- at pick 1, and on both sides of every snake turn -- because
+    # almost nobody gets taken in that gap. At pick 1 the entire board below the
+    # top four ranked on VONA differences of 1e-12 to 5e-3: floating-point dust,
+    # not signal. That is how four kickers reached the top ten of the opening
+    # board, above Christian McCaffrey.
+    #
+    # Rounding first means the sort agrees with the numbers on screen: two rows
+    # that print the same VONA are ordered by value, not by dict order.
+    #
+    # Negative VONA is also floored to 0. A negative VONA says one thing --
+    # "waiting is free, you would get someone at least as good" -- and its
+    # MAGNITUDE is not comparable across positions, because each is measured
+    # against its own positional pool. A kicker two points off the best kicker
+    # scores -2; McCaffrey behind the expected best RB scores -20; ranking the
+    # kicker above him is meaningless. Once waiting is free, value decides.
+    #
+    # This does NOT blend the two: VONA decides outright wherever waiting has a
+    # real cost, which is every pick that matters. VBD only fills in where VONA
+    # has nothing to say.
+    return sorted(rows, key=lambda r: (-max(round(r.vona, 1), 0.0), -r.vbd))

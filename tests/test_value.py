@@ -532,6 +532,46 @@ def test_board_without_draft_slot_still_builds():
     assert len(board) == 2
 
 
+def test_compressed_vona_falls_back_to_value_instead_of_ranking_a_kicker_first():
+    """Reproduces the opening-board defect found by running the real pool.
+
+    When your next pick is a pick or two away -- pick 1, and both sides of every
+    snake turn -- almost nobody gets taken in the gap, so VONA compresses toward
+    0 for everyone and the board ends up ranking on floating-point dust. On the
+    live 632-player pool this put four kickers in the top ten above Christian
+    McCaffrey.
+
+    Here `elite_rb` is behind `best_rb`, who is near-certain to survive, so his
+    VONA is a large negative. `kicker` is only 2 points behind the one other
+    kicker, so his VONA is about -2. Both say the same thing -- waiting is free
+    -- but pre-fix the sort compared those magnitudes across positions and the
+    kicker, worth 3 points over replacement, outranked an RB worth 190.
+    """
+    best_rb = mk("best_rb", "RB", 300.0, adp=200.0, stdev=20.0)   # certain to survive
+    elite_rb = mk("elite_rb", "RB", 250.0, adp=200.0, stdev=20.0)
+    repl_rb = mk("repl_rb", "RB", 60.0, adp=200.0, stdev=20.0)
+    k1 = mk("k1", "K", 130.0, adp=200.0, stdev=20.0)
+    kicker = mk("kicker", "K", 128.0, adp=200.0, stdev=20.0)
+
+    board = build_board(
+        available=[best_rb, elite_rb, repl_rb, k1, kicker], my_roster=[],
+        settings_slots=SLOTS, num_teams=12, current_pick=1, my_slot=2,
+        tunables=Tunables(),
+    )
+    order = [r.player.sleeper_id for r in board]
+    by_id = {r.player.sleeper_id: r for r in board}
+
+    # Both are in the "waiting is free" regime -- the premise of the test.
+    assert by_id["elite_rb"].vona < 0
+    assert by_id["kicker"].vona < 0
+    # ...and the kicker's negative VONA is the SMALLER one, which is exactly
+    # why the pre-fix sort ranked him above the RB.
+    assert by_id["kicker"].vona > by_id["elite_rb"].vona
+    assert order.index("elite_rb") < order.index("kicker")
+    # The stored VONA must stay negative -- only the sort key is floored.
+    assert by_id["elite_rb"].vona == pytest.approx(-50.0, abs=1.0)
+
+
 def test_board_of_empty_pool_is_empty():
     assert build_board([], [], SLOTS, 12, 1, 3, Tunables()) == []
 

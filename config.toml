@@ -22,4 +22,66 @@ league_id = "1395959490938966016"
 [[league]]
 name = "yahoo-main"
 platform = "yahoo"
-league_id = "REPLACE_AFTER_TASK_1"
+# Yahoo's Fantasy API needs per-developer approval that will not arrive before
+# the Sept 1 draft, so league_id is unused today -- there is no feed and no
+# settings sync. Everything below is hand-entered, which is the FIRST-CLASS
+# path for this platform, not a fallback. Picks are entered by hand.
+league_id = "REPLACE_WITH_YAHOO_LEAGUE_ID"
+# draft_slot = 4
+
+[league.settings]
+num_teams = 10
+bench = 5
+
+[league.settings.roster_slots]
+QB = 1
+RB = 2
+WR = 2
+TE = 1
+FLEX = 2
+K = 1
+DEF = 1
+
+# User-supplied 2026-08-24, complete. Mapped to Sleeper stat keys.
+# Differs from Sleeper in ways that change the board, not just the numbers:
+# half PPR, 0.25/completion (unique to Yahoo -- favours volume passers over
+# rushing QBs), INT -2, and no FG-miss penalty.
+[league.settings.scoring]
+pass_cmp = 0.25
+pass_yd = 0.04
+pass_td = 6
+pass_int = -2
+pass_2pt = 2
+rush_yd = 0.1
+rush_td = 6
+rush_2pt = 2
+rec = 0.5
+rec_yd = 0.1
+rec_td = 6
+rec_2pt = 2
+fum_lost = -2
+fum_rec_td = 6
+
+fgm_0_19 = 3
+fgm_20_29 = 3
+fgm_30_39 = 3
+fgm_40_49 = 4
+fgm_50_59 = 5
+fgm_60p = 5
+xpm = 1
+
+sack = 1
+int = 2
+fum_rec = 2
+def_td = 6
+def_st_td = 6
+st_td = 6
+safe = 2
+blk_kick = 2
+pts_allow_0 = 10
+pts_allow_1_6 = 7
+pts_allow_7_13 = 4
+pts_allow_14_20 = 1
+pts_allow_21_27 = 0
+pts_allow_28_34 = -1
+pts_allow_35p = -4
