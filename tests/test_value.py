@@ -455,3 +455,45 @@ def test_detect_run_window_zero_or_negative_is_empty_not_everything():
     positions = ["RB"] * 5 + ["WR"] * 3
     assert detect_run(positions, window=0) == {}
     assert detect_run(positions, window=-1) == {}
+
+
+from ffhelper.config import Tunables
+from ffhelper.value import build_board
+
+
+def test_board_sorts_by_vona_and_fills_all_fields():
+    players = [
+        mk("a", "RB", 300.0, adp=1.0, stdev=0.5),
+        mk("b", "RB", 290.0, adp=2.0, stdev=0.5),
+        mk("c", "WR", 280.0, adp=200.0, stdev=5.0),   # certain to survive
+    ]
+    board = build_board(
+        available=players, my_roster=[], settings_slots=SLOTS, num_teams=12,
+        current_pick=1, my_slot=3, tunables=Tunables(),
+    )
+    assert len(board) == 3
+    assert board == sorted(board, key=lambda r: -r.vona)
+    top = board[0]
+    assert top.tier >= 1
+    assert 0.0 <= top.survival <= 1.0
+    assert isinstance(top.divergence, int)
+
+
+def test_board_without_draft_slot_still_builds():
+    """draft_slot is often unknown pre-draft; the board must not fail."""
+    players = [mk("a", "RB", 300.0), mk("b", "WR", 280.0)]
+    board = build_board(players, [], SLOTS, 12, current_pick=5, my_slot=None,
+                        tunables=Tunables())
+    assert len(board) == 2
+
+
+def test_board_of_empty_pool_is_empty():
+    assert build_board([], [], SLOTS, 12, 1, 3, Tunables()) == []
+
+
+def test_marginal_value_reflects_existing_roster():
+    slots = {"RB": 1, "FLEX": 0}
+    roster = [mk("have", "RB", 300.0)]
+    players = [mk("new", "RB", 100.0, adp=50.0)]
+    board = build_board(players, roster, slots, 12, 1, 3, Tunables())
+    assert board[0].marginal == 0.0, "a worse RB behind a filled slot adds nothing"

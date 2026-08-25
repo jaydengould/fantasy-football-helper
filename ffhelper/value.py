@@ -201,3 +201,56 @@ def detect_run(recent_positions: list[str], window: int = 8) -> dict[str, int]:
     if window <= 0:
         return {}
     return dict(Counter(recent_positions[-window:]))
+
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Row:
+    player: Player
+    vbd: float
+    vona: float
+    marginal: float
+    tier: int
+    survival: float
+    divergence: int
+
+
+def build_board(
+    available: list[Player],
+    my_roster: list[Player],
+    settings_slots: dict[str, int],
+    num_teams: int,
+    current_pick: int,
+    my_slot: int | None,
+    tunables,
+) -> list[Row]:
+    """Assemble the ranked board. Pure: same inputs, same output, always."""
+    if not available:
+        return []
+
+    at_pick = (
+        next_pick_number(current_pick, my_slot, num_teams)
+        if my_slot
+        else current_pick + 1
+    )
+    ranks = replacement_ranks(settings_slots, num_teams, tunables.flex_share)
+    repl = replacement_points(available, ranks)
+    vbd_scores = vbd(available, repl)
+    tiers = assign_tiers(available, vbd_scores, tunables.tier_break_sigma)
+    divs = divergence(available, vbd_scores)
+
+    rows = [
+        Row(
+            player=p,
+            vbd=vbd_scores[p.sleeper_id],
+            vona=vona(available, p, at_pick),
+            marginal=marginal_value(my_roster, p, settings_slots),
+            tier=tiers[p.sleeper_id],
+            survival=survival_prob(p, at_pick),
+            divergence=divs[p.sleeper_id],
+        )
+        for p in available
+    ]
+    return sorted(rows, key=lambda r: -r.vona)
