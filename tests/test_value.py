@@ -2,7 +2,7 @@
 does not care whether the numbers are real."""
 import pytest
 
-from ffhelper.data import Player
+from ffhelper.data import ADP_UNKNOWN, Player
 from ffhelper.value import (
     assign_tiers, replacement_points, replacement_ranks, vbd,
     lineup_value, marginal_value,
@@ -69,9 +69,28 @@ def test_tiers_break_on_large_gaps():
 
 
 def test_tiers_are_per_position():
-    players = [mk("a", "RB", 300.0), mk("b", "WR", 299.0)]
-    tiers = assign_tiers(players, {"a": 300.0, "b": 299.0}, sigma=1.0)
-    assert tiers["a"] == 1 and tiers["b"] == 1
+    """Found vacuous by mutation testing: with only two players and one gap the
+    threshold is inf, so both land in tier 1 whether tiers are grouped by
+    position or not -- the assertion held against a build that tiered the whole
+    pool as one group.
+
+    This pool discriminates. Per position the RB gaps are [50, 10] (pstdev 20,
+    so only the 50 breaks) giving [1, 2, 2], and the WR gaps are [5, 5] (pstdev
+    0, so both break) giving [1, 2, 3]. Pooled into one group the gaps become
+    [50, 10, 140, 5, 5] with pstdev ~51.6, so only the 140 -- the artificial
+    step between the two POSITIONS -- breaks, collapsing every RB into tier 1
+    and every WR into tier 2.
+    """
+    rbs = [mk("rb1", "RB", 300.0), mk("rb2", "RB", 250.0), mk("rb3", "RB", 240.0)]
+    wrs = [mk("wr1", "WR", 100.0), mk("wr2", "WR", 95.0), mk("wr3", "WR", 90.0)]
+    players = [*rbs, *wrs]
+    scores = {p.sleeper_id: p.proj_pts for p in players}
+
+    tiers = assign_tiers(players, scores, sigma=1.0)
+
+    assert [tiers[f"rb{i}"] for i in (1, 2, 3)] == [1, 2, 2]
+    assert [tiers[f"wr{i}"] for i in (1, 2, 3)] == [1, 2, 3]
+    assert tiers["wr1"] == 1, "each position starts its own tier 1"
 
 
 def test_tiers_handle_single_player_position():
@@ -443,6 +462,76 @@ def test_divergence_flags_projection_vs_market_gaps():
     assert div["c"] == -1
 
 
+def test_divergence_is_ranked_within_position_not_globally():
+    """Task 13 defect. VBD is cross-position comparable only NEAR replacement.
+    Deep in the pool it is not -- kickers cluster tightly around their baseline
+    while skill players fall hundreds of points below theirs -- so a
+    replacement-level kicker outranked a deep RB on a global VBD ranking while
+    the market correctly ranked the RB higher, because you only ever need one
+    kicker. The flag fired on 40% of top-20 rows led by five kickers.
+
+    Here both kickers are ranked 1st and 2nd among kickers by BOTH projection
+    and ADP, so their within-position divergence is exactly 0 -- the model and
+    the market agree about them completely. Ten deep RBs are priced ahead of
+    them but project below them, which is precisely the real situation.
+
+    Against a global ranking each kicker scores +10 and this fails.
+    """
+    kickers = [mk("k1", "K", 5.0, adp=150.0), mk("k2", "K", 0.0, adp=160.0)]
+    deep_rbs = [mk(f"rb{i}", "RB", -50.0 - i, adp=100.0 + i) for i in range(10)]
+    players = [*kickers, *deep_rbs]
+    scores = {p.sleeper_id: p.proj_pts for p in players}
+
+    div = divergence(players, scores)
+
+    assert div["k1"] == 0, "ranked 1st among kickers by both projection and ADP"
+    assert div["k2"] == 0
+    assert all(div[f"rb{i}"] == 0 for i in range(10)), "same order both ways"
+
+
+def test_divergence_is_none_for_a_player_the_market_never_priced():
+    """A third of the real pool (209 of 632) carries the ADP_UNKNOWN sentinel.
+    They all tie at the sentinel, so under the old code they sorted to the
+    bottom of the ADP ranking together and any of them with a decent projection
+    manufactured a huge fake divergence -- Darren Waller at +399.
+
+    `unpriced` here projects best in the pool but has no ADP. The old code
+    ranked him 1st by projection and last by ADP and reported +3. He must
+    report None instead: no opinion is not agreement, and it is not a +399
+    bargain either.
+    """
+    players = [
+        mk("a", "RB", 300.0, adp=30.0),
+        mk("b", "RB", 250.0, adp=10.0),
+        mk("c", "RB", 200.0, adp=20.0),
+        mk("unpriced", "RB", 400.0, adp=ADP_UNKNOWN),
+    ]
+    scores = {"a": 300.0, "b": 250.0, "c": 200.0, "unpriced": 400.0}
+    div = divergence(players, scores)
+
+    assert div["unpriced"] is None
+    # And his absence must not shift anyone else: the three rated players keep
+    # exactly the ranks they had without him.
+    assert (div["a"], div["b"], div["c"]) == (2, -1, -1)
+
+
+def test_divergence_ranks_both_sides_over_the_same_rated_subset():
+    """Ranking projections over ALL players while ranking ADP over only the
+    rated ones would compare a rank out of N to a rank out of a smaller M, and
+    bias every divergence positive. Adding unpriced players -- who project at
+    the very top -- must not move a single rated player's number."""
+    rated = [mk("a", "RB", 300.0, adp=30.0), mk("b", "RB", 250.0, adp=10.0),
+             mk("c", "RB", 200.0, adp=20.0)]
+    scores = {"a": 300.0, "b": 250.0, "c": 200.0}
+    before = divergence(rated, scores)
+
+    noise = [mk(f"n{i}", "RB", 500.0 + i, adp=ADP_UNKNOWN) for i in range(20)]
+    scores.update({p.sleeper_id: p.proj_pts for p in noise})
+    after = divergence([*rated, *noise], scores)
+
+    assert {k: after[k] for k in ("a", "b", "c")} == before
+
+
 def test_detect_run_counts_recent_positions():
     assert detect_run(["RB"] * 5 + ["WR"] * 3) == {"RB": 5, "WR": 3}
     assert detect_run(["QB"] + ["RB"] * 10, window=8)["RB"] == 8
@@ -458,7 +547,7 @@ def test_detect_run_window_zero_or_negative_is_empty_not_everything():
 
 
 from ffhelper.config import Tunables
-from ffhelper.value import build_board
+from ffhelper.value import build_board, is_bench_only, is_redundant
 
 
 def test_board_sorts_by_vona_and_fills_all_fields():
@@ -530,6 +619,210 @@ def test_board_without_draft_slot_still_builds():
     board = build_board(players, [], SLOTS, 12, current_pick=5, my_slot=None,
                         tunables=Tunables())
     assert len(board) == 2
+
+
+def test_compressed_vona_falls_back_to_value_instead_of_ranking_a_kicker_first():
+    """Reproduces the opening-board defect found by running the real pool.
+
+    When your next pick is a pick or two away -- pick 1, and both sides of every
+    snake turn -- almost nobody gets taken in the gap, so VONA compresses toward
+    0 for everyone and the board ends up ranking on floating-point dust. On the
+    live 632-player pool this put four kickers in the top ten above Christian
+    McCaffrey.
+
+    Here `elite_rb` is behind `best_rb`, who is near-certain to survive, so his
+    VONA is a large negative. `kicker` is only 2 points behind the one other
+    kicker, so his VONA is about -2. Both say the same thing -- waiting is free
+    -- but pre-fix the sort compared those magnitudes across positions and the
+    kicker, worth 3 points over replacement, outranked an RB worth 190.
+    """
+    best_rb = mk("best_rb", "RB", 300.0, adp=200.0, stdev=20.0)   # certain to survive
+    elite_rb = mk("elite_rb", "RB", 250.0, adp=200.0, stdev=20.0)
+    repl_rb = mk("repl_rb", "RB", 60.0, adp=200.0, stdev=20.0)
+    k1 = mk("k1", "K", 130.0, adp=200.0, stdev=20.0)
+    kicker = mk("kicker", "K", 128.0, adp=200.0, stdev=20.0)
+
+    board = build_board(
+        # Kickers listed FIRST on purpose. Every VONA here floors to 0, so the
+        # ordering rests entirely on the VBD tiebreak -- and with the kickers
+        # already at the front of the list, a sort with no tiebreak would leave
+        # them there on insertion order alone and pass this test vacuously.
+        available=[k1, kicker, repl_rb, elite_rb, best_rb], my_roster=[],
+        settings_slots=SLOTS, num_teams=12, current_pick=1, my_slot=2,
+        tunables=Tunables(),
+    )
+    order = [r.player.sleeper_id for r in board]
+    by_id = {r.player.sleeper_id: r for r in board}
+
+    # Both are in the "waiting is free" regime -- the premise of the test.
+    assert by_id["elite_rb"].vona < 0
+    assert by_id["kicker"].vona < 0
+    # ...and the kicker's negative VONA is the SMALLER one, which is exactly
+    # why the pre-fix sort ranked him above the RB.
+    assert by_id["kicker"].vona > by_id["elite_rb"].vona
+    assert order.index("elite_rb") < order.index("kicker")
+    # The stored VONA must stay negative -- only the sort key is floored.
+    assert by_id["elite_rb"].vona == pytest.approx(-50.0, abs=1.0)
+
+
+def test_lineup_value_never_starts_a_qb_or_kicker_in_a_flex_slot():
+    """Found by mutation testing: deleting the `p.position in FLEX_ELIGIBLE`
+    guard in `lineup_value`'s FLEX loop left the full suite green.
+
+    Without it the FLEX slots take the highest-projection unused player of ANY
+    position, so a second QB or a kicker starts at FLEX. That inflates
+    `lineup_value`, which inflates `marginal_value`, which is the MARG column --
+    and Phase 5's trade finder inherits the same function.
+
+    Roster here has exactly one flex-worthy player left (rb2) and a high-scoring
+    spare QB. SLOTS is QB1/RB2/WR2/TE1/FLEX2/K1/DEF1, so after the named slots
+    fill, two FLEX slots are open and only rb2 may legally fill one.
+    """
+    roster = [
+        mk("qb1", "QB", 400.0), mk("qb2", "QB", 390.0),      # qb2 is a bench QB
+        mk("rb1", "RB", 200.0), mk("rb2", "RB", 190.0), mk("rb3", "RB", 180.0),
+        mk("wr1", "WR", 150.0), mk("wr2", "WR", 140.0),
+        mk("te1", "TE", 100.0), mk("k1", "K", 130.0), mk("d1", "DEF", 120.0),
+    ]
+    got = lineup_value(roster, SLOTS)
+    # QB1 + RB1,RB2 + WR1,WR2 + TE1 + K + DEF + FLEX(rb3, wr-none left) ...
+    # the only legal FLEX fills are rb3 (180) and then nothing else eligible.
+    expected = 400 + 200 + 190 + 150 + 140 + 100 + 130 + 120 + 180
+    assert got == pytest.approx(expected)
+    # The bench QB (390) and nothing else may sneak into the second FLEX slot.
+    assert got < expected + 390
+
+
+def test_replacement_baseline_comes_from_the_full_pool_not_whats_left():
+    """Task 13 defect. Replacement level is a property of the league -- what the
+    last startable player at a position is worth -- not of whoever happens to
+    remain. Computing it from `available` made the baseline collapse as the
+    draft drained (QB 347.5 at pick 1 -> 165.9 by pick 164), which handed a
+    backup quarterback a VBD of +149.0 against a true value of -32.5.
+
+    Here the full pool has 20 RBs running 300 down to 110; only the top three
+    are still available. Against the full pool the baseline is the 20th RB;
+    against `available` it would be the 3rd, which is 170 points higher and
+    would flatten every VBD on the board.
+    """
+    full = [mk(f"rb{i}", "RB", 300.0 - i * 10, adp=float(i + 1), stdev=5.0) for i in range(20)]
+    available = full[:3]
+
+    board = build_board(
+        available=available, my_roster=[], settings_slots=SLOTS, num_teams=12,
+        current_pick=40, my_slot=None, tunables=Tunables(), replacement_pool=full,
+    )
+    top = next(r for r in board if r.player.sleeper_id == "rb0")
+
+    # RB replacement rank is 36 for this league; only 20 RBs exist, so the
+    # baseline is the worst of them -- 110.0. 300 - 110 = 190.
+    assert top.vbd == pytest.approx(190.0)
+    # Against `available` alone the baseline would be rb2 (280), giving 20.0.
+    assert top.vbd != pytest.approx(20.0)
+
+
+def test_a_player_who_cannot_start_never_outranks_one_who_can():
+    """Task 13 defect, and the reason that draft ended with three quarterbacks.
+
+    VONA is position-relative and roster-BLIND: it stays large for a third QB
+    you will never start. `filler` has the higher VONA but cannot crack the
+    starting lineup (marginal 0); `starter` fills a genuinely empty slot. The
+    board must lead with the one that helps.
+
+    Against the ungated sort this fails: filler's larger VONA wins outright.
+    """
+    roster = [mk("have_wr1", "WR", 250.0), mk("have_wr2", "WR", 240.0),
+              mk("have_rb1", "RB", 230.0), mk("have_rb2", "RB", 220.0),
+              mk("have_flex1", "RB", 210.0), mk("have_flex2", "WR", 200.0),
+              mk("have_te", "TE", 190.0), mk("have_k", "K", 100.0),
+              mk("have_def", "DEF", 90.0)]
+    # Every slot above is full EXCEPT QB.
+    filler = mk("filler", "WR", 120.0, adp=50.0, stdev=2.0)      # cannot start
+    starter = mk("starter", "QB", 300.0, adp=60.0, stdev=2.0)    # fills empty QB
+    others = [mk(f"wr{i}", "WR", 119.0 - i, adp=200.0, stdev=20.0) for i in range(4)]
+    qb2 = mk("qb2", "QB", 295.0, adp=200.0, stdev=20.0)
+
+    board = build_board(
+        available=[filler, starter, qb2, *others], my_roster=roster,
+        settings_slots=SLOTS, num_teams=12, current_pick=55, my_slot=None,
+        tunables=Tunables(),
+    )
+    by = {r.player.sleeper_id: r for r in board}
+    assert by["filler"].marginal == pytest.approx(0.0)
+    assert by["starter"].marginal > 0
+    assert by["filler"].vona > by["starter"].vona, "premise: filler has the bigger raw VONA"
+    order = [r.player.sleeper_id for r in board]
+    assert order.index("starter") < order.index("filler")
+    # The VONA column still reports true positional scarcity -- only the sort is gated.
+    assert by["filler"].vona > 0
+
+
+def test_a_second_kicker_ranks_last_once_you_already_have_one():
+    """Task 13, bench mode. The roster-need gate alone is not enough: it ties a
+    redundant kicker at 0 with everyone else, and then the VBD tiebreak floats
+    him to the TOP, because by the late rounds every remaining RB/WR is below
+    replacement while the best remaining kicker is still above it. That made a
+    second kicker the top recommendation for the last four picks of the mock.
+
+    Against the un-demoted sort the kicker leads and this fails.
+    """
+    roster = [mk("have_wr1", "WR", 250.0), mk("have_wr2", "WR", 240.0),
+              mk("have_rb1", "RB", 230.0), mk("have_rb2", "RB", 220.0),
+              mk("have_flex1", "RB", 210.0), mk("have_flex2", "WR", 200.0),
+              mk("have_te", "TE", 190.0), mk("have_qb", "QB", 300.0),
+              mk("have_k", "K", 100.0), mk("have_def", "DEF", 90.0)]
+    spare_k = mk("spare_k", "K", 99.0, adp=200.0, stdev=20.0)
+    spare_d = mk("spare_d", "DEF", 89.0, adp=200.0, stdev=20.0)
+    scraps = [mk(f"rb{i}", "RB", 40.0 - i, adp=200.0, stdev=20.0) for i in range(3)]
+    available = [spare_k, spare_d, *scraps]
+
+    # The real late-round shape: nearly every kicker and defense is still
+    # undrafted, so the best remaining one sits ABOVE league replacement, while
+    # every remaining RB is far below it. That is what floats them to the top.
+    full_pool = available + (
+        [mk(f"k{i}", "K", 98.0 - i, adp=200.0, stdev=20.0) for i in range(14)]
+        + [mk(f"d{i}", "DEF", 88.0 - i, adp=200.0, stdev=20.0) for i in range(14)]
+        + [mk(f"stud{i}", "RB", 300.0 - i, adp=20.0, stdev=5.0) for i in range(40)]
+    )
+
+    board = build_board(available, roster, SLOTS, 12, 170, None, Tunables(),
+                        replacement_pool=full_pool)
+    order = [r.player.sleeper_id for r in board]
+    by = {r.player.sleeper_id: r for r in board}
+
+    assert by["spare_k"].vbd > by["rb0"].vbd, "premise: the spare K has the better VBD"
+    assert set(order[-2:]) == {"spare_k", "spare_d"}
+    assert order[0].startswith("rb"), "a real bench flyer should lead instead"
+
+
+def test_a_first_kicker_is_not_demoted():
+    """The rule is 'a SECOND kicker', not 'kickers'. With no K rostered, the
+    kicker must rank normally -- otherwise you would never be told to draft one."""
+    roster = [mk("have_qb", "QB", 300.0)]
+    k = mk("k", "K", 140.0, adp=100.0, stdev=10.0)
+    board = build_board([k], roster, SLOTS, 12, 90, None, Tunables())
+    assert not is_redundant(k, roster, SLOTS)
+    assert board[0].player.sleeper_id == "k"
+
+
+def test_is_bench_only_detects_a_full_starting_lineup():
+    """At pick 164 of the Task 13 mock, 0 of 469 available players improved the
+    starting lineup, so any confident ordering was fabricated. The caller has to
+    be able to detect that and say so."""
+    roster = [mk("have_wr1", "WR", 250.0), mk("have_wr2", "WR", 240.0),
+              mk("have_rb1", "RB", 230.0), mk("have_rb2", "RB", 220.0),
+              mk("have_flex1", "RB", 210.0), mk("have_flex2", "WR", 200.0),
+              mk("have_te", "TE", 190.0), mk("have_qb", "QB", 300.0),
+              mk("have_k", "K", 100.0), mk("have_def", "DEF", 90.0)]
+    scraps = [mk(f"x{i}", "WR", 50.0 - i, adp=200.0, stdev=20.0) for i in range(5)]
+
+    full = build_board(scraps, roster, SLOTS, 12, 170, None, Tunables())
+    assert is_bench_only(full) is True
+
+    # One genuine upgrade is enough to make the board meaningful again.
+    upgrade = mk("stud", "WR", 400.0, adp=200.0, stdev=20.0)
+    assert is_bench_only(build_board([*scraps, upgrade], roster, SLOTS, 12, 170,
+                                     None, Tunables())) is False
 
 
 def test_board_of_empty_pool_is_empty():

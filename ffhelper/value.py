@@ -6,7 +6,7 @@ board testable without touching a network.
 import statistics
 from statistics import NormalDist
 
-from ffhelper.data import Player
+from ffhelper.data import ADP_UNKNOWN, Player
 
 
 def replacement_ranks(
@@ -182,18 +182,49 @@ def vona(players: list[Player], candidate: Player, at_pick: int) -> float:
     return candidate.proj_pts - expected
 
 
-def divergence(players: list[Player], scores: dict[str, float]) -> dict[str, int]:
-    """projection_rank - adp_rank. Positive means the model likes him more
-    than the market does.
+def divergence(players: list[Player], scores: dict[str, float]) -> dict[str, int | None]:
+    """adp_rank - projection_rank, ranked WITHIN each position. Positive means
+    the model likes him more than the market does, relative to his positional
+    peers. None means the market has no opinion at all.
 
     NEVER average these two ranks. Blending pulls the board toward consensus,
     and a board that tracks consensus produces consensus results.
+
+    Ranked within position, not globally. VBD is cross-position comparable only
+    NEAR REPLACEMENT, which is what it is designed for. Deep in the pool it is
+    not: measured on the real pool, the worst kicker sits 65 points below the
+    kicker baseline and the worst defense 25 below theirs, while the worst
+    receiver is 177 below his. So a replacement-level kicker (VBD ~0) outranked
+    a deep RB (VBD ~-190) on a global ranking, while the market correctly ranked
+    the RB higher -- because you only ever need one kicker. The flag was
+    reporting that roster-rule artifact as a valuation disagreement: it fired on
+    40% of top-20 rows in the Task 13 mock, led by Matt Gay at +167 and four
+    other kickers. Within position the same board tops out at +20, and reads as
+    "the model likes him N spots more than the market does, among receivers".
+
+    Players carrying the `ADP_UNKNOWN` sentinel are EXCLUDED and reported as
+    None -- a third of the real pool has no ADP at all, and they all tie at the
+    sentinel, so ranking them together manufactured a fake divergence (Darren
+    Waller at +399, on a player with no ADP whatsoever). None rather than 0,
+    because 0 asserts "model and market agree", which is a fabrication when
+    there is no market price to agree with.
+
+    Both rankings are always computed over the SAME set, so a player missing
+    from one side can never shift the other side's ranks.
     """
-    by_proj = sorted(players, key=lambda p: -scores.get(p.sleeper_id, 0.0))
-    by_adp = sorted(players, key=lambda p: p.adp)
-    proj_rank = {p.sleeper_id: i for i, p in enumerate(by_proj, 1)}
-    adp_rank = {p.sleeper_id: i for i, p in enumerate(by_adp, 1)}
-    return {pid: adp_rank[pid] - proj_rank[pid] for pid in proj_rank}
+    by_pos: dict[str, list[Player]] = {}
+    for p in players:
+        if p.adp < ADP_UNKNOWN:
+            by_pos.setdefault(p.position, []).append(p)
+
+    out: dict[str, int | None] = {p.sleeper_id: None for p in players}
+    for group in by_pos.values():
+        by_proj = sorted(group, key=lambda p: -scores.get(p.sleeper_id, 0.0))
+        by_adp = sorted(group, key=lambda p: p.adp)
+        proj_rank = {p.sleeper_id: i for i, p in enumerate(by_proj, 1)}
+        adp_rank = {p.sleeper_id: i for i, p in enumerate(by_adp, 1)}
+        out.update({pid: adp_rank[pid] - proj_rank[pid] for pid in proj_rank})
+    return out
 
 
 def detect_run(recent_positions: list[str], window: int = 8) -> dict[str, int]:
@@ -206,6 +237,29 @@ def detect_run(recent_positions: list[str], window: int = 8) -> dict[str, int]:
 from dataclasses import dataclass
 
 
+# Below this, a player does not meaningfully improve the optimal starting
+# lineup. Not exactly 0: lineup_value sums floats, so an upgrade worth a
+# rounding error should not read as a real one.
+MARGINAL_EPS = 0.5
+
+# Positions where a second one is dead weight in a draft. They cannot fill a
+# FLEX slot, and unlike a backup QB there is no bye-week or injury case for
+# carrying two -- kickers and defenses are streamed off waivers. Once you hold
+# as many as you start, further ones rank last.
+#
+# This is NOT generalisable to QB: a backup quarterback is a legitimate roster
+# spot, so QB is deliberately absent.
+REDUNDANT_ONCE_FILLED = ("K", "DEF")
+
+
+def is_redundant(player: Player, my_roster: list[Player], roster_slots: dict[str, int]) -> bool:
+    """True when the player is a second kicker or defense you would never start."""
+    if player.position not in REDUNDANT_ONCE_FILLED:
+        return False
+    held = sum(1 for p in my_roster if p.position == player.position)
+    return held >= roster_slots.get(player.position, 1)
+
+
 @dataclass(frozen=True)
 class Row:
     player: Player
@@ -214,7 +268,7 @@ class Row:
     marginal: float
     tier: int
     survival: float
-    divergence: int
+    divergence: int | None      # None = the market has no price for him at all
 
 
 def build_board(
@@ -225,8 +279,31 @@ def build_board(
     current_pick: int,
     my_slot: int | None,
     tunables,
+    replacement_pool: list[Player] | None = None,
 ) -> list[Row]:
-    """Assemble the ranked board. Pure: same inputs, same output, always."""
+    """Assemble the ranked board. Pure: same inputs, same output, always.
+
+    `replacement_pool` is the pool the replacement BASELINE is drawn from, and
+    live callers must pass the FULL player pool, not the available one.
+    Replacement level is a property of the league -- "what the last startable
+    player at this position is worth" -- not of whoever happens to be left.
+
+    Measured against the real Task 13 mock, computing it from `available` made
+    the baseline collapse as the draft drained:
+
+        at pick      QB       RB       WR       TE
+              1   347.5   147.9   177.3   162.5
+            164   165.9    31.9    75.8   100.3
+
+    which gave a backup quarterback (Tyler Shough, 314.9 proj) a VBD of +149.0
+    where his true value over league replacement is -32.5. That inflation drove
+    every bad late-round recommendation in that draft, QB worst of all: only
+    ~14 QBs go in a 12-team 1-QB league, so QB12-of-remaining is a deep backup
+    by the late rounds while QB12-of-everyone never moves.
+
+    Defaults to `available` only so small unit tests can omit it; that default
+    reproduces the old behaviour and no live caller should rely on it.
+    """
     if not available:
         return []
 
@@ -236,7 +313,7 @@ def build_board(
         else current_pick + 1
     )
     ranks = replacement_ranks(settings_slots, num_teams, tunables.flex_share)
-    repl = replacement_points(available, ranks)
+    repl = replacement_points(replacement_pool if replacement_pool is not None else available, ranks)
     vbd_scores = vbd(available, repl)
     tiers = assign_tiers(available, vbd_scores, tunables.tier_break_sigma)
     divs = divergence(available, vbd_scores)
@@ -253,4 +330,68 @@ def build_board(
         )
         for p in available
     ]
-    return sorted(rows, key=lambda r: -r.vona)
+    # VONA is quantized to the tenth of a point the board actually displays,
+    # then VBD breaks the ties.
+    #
+    # VONA compresses to ~0 for everyone whenever your next pick is only a pick
+    # or two away -- at pick 1, and on both sides of every snake turn -- because
+    # almost nobody gets taken in that gap. At pick 1 the entire board below the
+    # top four ranked on VONA differences of 1e-12 to 5e-3: floating-point dust,
+    # not signal. That is how four kickers reached the top ten of the opening
+    # board, above Christian McCaffrey.
+    #
+    # Rounding first means the sort agrees with the numbers on screen: two rows
+    # that print the same VONA are ordered by value, not by dict order.
+    #
+    # Negative VONA is also floored to 0. A negative VONA says one thing --
+    # "waiting is free, you would get someone at least as good" -- and its
+    # MAGNITUDE is not comparable across positions, because each is measured
+    # against its own positional pool. A kicker two points off the best kicker
+    # scores -2; McCaffrey behind the expected best RB scores -20; ranking the
+    # kicker above him is meaningless. Once waiting is free, value decides.
+    #
+    # This does NOT blend the two: VONA decides outright wherever waiting has a
+    # real cost, which is every pick that matters. VBD only fills in where VONA
+    # has nothing to say.
+    #
+    # VONA is also gated by roster need. VONA is position-relative and
+    # roster-BLIND by construction: it asks "how much better than the next guy
+    # at his position", which stays large for a third quarterback you will
+    # never start. In the Task 13 mock that put Jayden Reed (marginal 0.0, he
+    # could not crack the starting lineup) above Brock Purdy at pick 92 when
+    # the user had no quarterback at all -- and it is why that draft ended with
+    # three QBs on one roster. A player who cannot improve your starters costs
+    # you nothing to pass on, whatever his positional scarcity.
+    #
+    # Gated in the SORT only; `Row.vona` keeps the true positional number so
+    # the column still reports real scarcity, and MARG beside it explains the
+    # ordering.
+    #
+    # A second kicker or defense ranks last regardless. The gate alone is not
+    # enough: it ties them at 0 with everyone else, and then the VBD tiebreak
+    # FLOATS THEM TO THE TOP late, because by then every remaining RB and WR is
+    # below replacement while the best remaining kicker is still above it. In
+    # the Task 13 mock that made a second kicker the top recommendation for the
+    # last four picks. They are still listed, never hidden -- just ranked where
+    # they belong.
+    return sorted(
+        rows,
+        key=lambda r: (
+            -max(round(r.vona, 1), 0.0) if r.marginal > MARGINAL_EPS else 0.0,
+            is_redundant(r.player, my_roster, settings_slots),
+            -r.vbd,
+        ),
+    )
+
+
+def is_bench_only(board: list[Row]) -> bool:
+    """True when no available player improves the optimal starting lineup.
+
+    Once every starting slot is filled, marginal value is 0 for the entire
+    pool -- 0 of 469 players at pick 164 of the Task 13 mock -- so there is no
+    signal left to rank on and any confident ordering is fabricated. Callers
+    must say so rather than presenting the resulting order as advice. The tool
+    has no model of bench value (upside, handcuffs, injury insurance) and
+    projections do not capture it.
+    """
+    return bool(board) and all(r.marginal <= MARGINAL_EPS for r in board)

@@ -1,6 +1,7 @@
 [tunables]
 tier_break_sigma = 1.0
-divergence_flag_slots = 25
+# Within-position rank gap that earns a flag. See Tunables in config.py.
+divergence_flag_slots = 10
 
 [tunables.flex_share]
 RB = 0.5
@@ -15,11 +16,110 @@ yahoo = 12
 name = "sleeper-main"
 platform = "sleeper"
 league_id = "1395959490938966016"
-# draft_slot: Sleeper draft_order had 11 of 12 slots at design time.
-# Set this manually once the draft order is final. Never trust the API for it.
-# draft_slot = 3
+# Which ADP the survival model believes. "ffc" or "sleeper".
+#
+# Set to "sleeper" on a MECHANISM, not on the (circular) mock result: Sleeper
+# displays its own ADP on the draft board to all twelve drafters during the
+# draft. They anchor on the number in front of them. Most have never seen FFC's.
+#
+# The stdev sweep in scripts/calibrate.py rules out the easy alternative --
+# multiplying FFC's stdev by 1.5/2/3/4/6 pulls the bottom bucket from 74% down
+# to 4% but leaves the middle buckets stuck at ~87% at every k. That is a wrong
+# MEAN, and no amount of widening fixes a location error.
+#
+# Known cost: Sleeper's `adp_ppr` folds in TE-premium leagues, so TEs read ~20
+# picks earlier than a flat-scoring league would take them (QB +0.4 and RB -1.4
+# are identical; WR is -9.7). Partly self-fulfilling, since that same skewed
+# number is what the room is looking at -- but treat TE survival with suspicion.
+#
+# ONE LINE TO REVERT. Confirm with a human mock:
+#   .venv/bin/python scripts/calibrate.py <draft_id> 5
+adp_source = "sleeper"
+# Set by hand 2026-08-25 on the user's word, never read from the API -- the tool
+# deliberately does not guess this, because a wrong slot silently produces the
+# wrong next-pick number for every pick of the draft. Cross-checked against the
+# live draft_order, which independently maps this user to slot 5 and still has
+# slot 8 unassigned; if the order is reshuffled before Sept 6, re-check it.
+draft_slot = 5
+
+# Task 13 rehearsal. Borrows sleeper-main's synced scoring and roster and points
+# the pick feed at a Sleeper mock draft instead -- a mock has a draft_id but no
+# league of its own, so its settings cannot be fetched. Set draft_id from the
+# mock draft URL (the long number after /draft/), set draft_slot to the seat you
+# drew, then: python -m ffhelper.cli run --league mock
+# Confirmed a `league_mock` of league 1395959490938966016: same 12 teams, PPR,
+# 15 rounds, same roster slots -- so sleeper-main's synced scoring is correct
+# for it. draft_order confirms seat 5. Delete this block after Task 13.
+[[league]]
+name = "mock"
+platform = "sleeper"
+league_id = "1395959490938966016"
+draft_id = "1398139615038185472"
+draft_slot = 5
 
 [[league]]
 name = "yahoo-main"
 platform = "yahoo"
-league_id = "REPLACE_AFTER_TASK_1"
+# Yahoo's Fantasy API needs per-developer approval that will not arrive before
+# the Sept 1 draft, so league_id is unused today -- there is no feed and no
+# settings sync. Everything below is hand-entered, which is the FIRST-CLASS
+# path for this platform, not a fallback. Picks are entered by hand.
+league_id = "REPLACE_WITH_YAHOO_LEAGUE_ID"
+# draft_slot = 4
+
+[league.settings]
+num_teams = 10
+bench = 5
+
+[league.settings.roster_slots]
+QB = 1
+RB = 2
+WR = 2
+TE = 1
+FLEX = 2
+K = 1
+DEF = 1
+
+# User-supplied 2026-08-24, complete. Mapped to Sleeper stat keys.
+# Differs from Sleeper in ways that change the board, not just the numbers:
+# half PPR, 0.25/completion (unique to Yahoo -- favours volume passers over
+# rushing QBs), INT -2, and no FG-miss penalty.
+[league.settings.scoring]
+pass_cmp = 0.25
+pass_yd = 0.04
+pass_td = 6
+pass_int = -2
+pass_2pt = 2
+rush_yd = 0.1
+rush_td = 6
+rush_2pt = 2
+rec = 0.5
+rec_yd = 0.1
+rec_td = 6
+rec_2pt = 2
+fum_lost = -2
+fum_rec_td = 6
+
+fgm_0_19 = 3
+fgm_20_29 = 3
+fgm_30_39 = 3
+fgm_40_49 = 4
+fgm_50_59 = 5
+fgm_60p = 5
+xpm = 1
+
+sack = 1
+int = 2
+fum_rec = 2
+def_td = 6
+def_st_td = 6
+st_td = 6
+safe = 2
+blk_kick = 2
+pts_allow_0 = 10
+pts_allow_1_6 = 7
+pts_allow_7_13 = 4
+pts_allow_14_20 = 1
+pts_allow_21_27 = 0
+pts_allow_28_34 = -1
+pts_allow_35p = -4

@@ -20,6 +20,13 @@ class Pick:
     pick_no: int
     sleeper_id: str
     roster_id: int | None = None
+    # The seat that made the pick, 1-indexed, snake-aware (round 2 pick 13 is
+    # slot 12). This -- NOT roster_id -- is how the user's own picks are found:
+    # a Sleeper MOCK draft sets roster_id to None on every single pick, so
+    # matching on it left my_roster empty for an entire 180-pick draft while
+    # looking healthy. draft_slot is present in both mocks and league drafts,
+    # and is exactly the value already configured as `league.draft_slot`.
+    draft_slot: int | None = None
 
 
 class PickFeed(Protocol):
@@ -37,10 +44,12 @@ def parse_sleeper_picks(raw: list[dict]) -> list[Pick]:
         except (TypeError, ValueError):
             log.warning("skipping pick with non-numeric pick_no: %r", row)
             continue
+        slot = row.get("draft_slot")
         picks.append(Pick(
             pick_no=pick_no,
             sleeper_id=str(row["player_id"]),
             roster_id=row.get("roster_id"),
+            draft_slot=int(slot) if slot is not None else None,
         ))
     return sorted(picks, key=lambda p: p.pick_no)
 
@@ -59,5 +68,6 @@ class SleeperFeed:
             ttl_seconds=0,          # live data; never serve from cache on success
             cache_dir=self.cache_dir,
             fetcher=self.fetcher,
+            stale_ok=False,         # a failed poll must raise so the STALE banner can fire
         )
         return parse_sleeper_picks(raw)

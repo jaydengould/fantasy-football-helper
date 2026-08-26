@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from ffhelper.feeds import Pick, SleeperFeed, parse_sleeper_picks
 
 
@@ -12,6 +14,25 @@ def test_parses_picks_in_order():
     picks = parse_sleeper_picks(raw)
     assert [p.pick_no for p in picks] == [1, 2]
     assert picks[0] == Pick(pick_no=1, sleeper_id="9221", roster_id=10)
+
+
+def test_parses_draft_slot_including_when_roster_id_is_null():
+    """A real row from the Task 13 mock. Sleeper mock drafts set `roster_id` to
+    None on EVERY pick while populating `draft_slot` normally -- which is why
+    my_roster is matched on draft_slot. If the parser drops draft_slot, the
+    whole roster resolution silently returns nothing, exactly as it did for a
+    full 180-pick draft.
+    """
+    raw = [{"pick_no": 5, "player_id": "4034", "roster_id": None, "draft_slot": 5,
+            "round": 1, "picked_by": ""}]
+    pick = parse_sleeper_picks(raw)[0]
+    assert pick.draft_slot == 5
+    assert pick.roster_id is None
+
+
+def test_draft_slot_is_none_when_the_row_omits_it():
+    raw = [{"pick_no": 1, "player_id": "9221", "roster_id": 10}]
+    assert parse_sleeper_picks(raw)[0].draft_slot is None
 
 
 def test_skips_picks_without_a_player():
@@ -99,6 +120,29 @@ def test_sleeper_feed_never_serves_picks_from_cache(tmp_path: Path):
     feed.get_picks()
 
     assert len(calls) == 2
+
+
+def test_sleeper_feed_raises_on_a_failed_poll_instead_of_replaying_the_cache(tmp_path: Path):
+    """A dead feed must reach the caller as an exception so the STALE banner can
+    fire. Serving the previous poll's picks is indistinguishable from a healthy
+    draft where nobody has picked yet.
+
+    Against the pre-fix code -- `fetch_json` with its default stale-on-failure
+    fallback -- the second call returns the first call's picks and this test
+    fails with no exception raised.
+    """
+    calls = []
+
+    def flaky(url: str) -> str:
+        calls.append(url)
+        if len(calls) == 1:
+            return json.dumps([{"pick_no": 1, "player_id": "9221", "roster_id": 10}])
+        raise ConnectionError("wifi dropped")
+
+    feed = SleeperFeed("draft123", fetcher=flaky, cache_dir=tmp_path)
+    assert len(feed.get_picks()) == 1
+    with pytest.raises(ConnectionError):
+        feed.get_picks()
 
 
 def test_sleeper_feed_empty_draft_returns_empty_list(tmp_path: Path):

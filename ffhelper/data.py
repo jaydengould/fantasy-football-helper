@@ -47,8 +47,9 @@ def _stale_fallback(path: Path, exc: Exception, label: str) -> Any:
     raise exc
 
 
-def _write_cache_atomic(path: Path, cache_dir: Path, text: str) -> None:
+def _write_cache_atomic(path: Path, text: str) -> None:
     """tempfile.mkstemp + os.replace so a reader never sees a partial cache file."""
+    cache_dir = path.parent
     cache_dir.mkdir(parents=True, exist_ok=True)
     fd = None
     tmp_path = None
@@ -72,11 +73,17 @@ def fetch_json(
     ttl_seconds: int = 86_400,
     cache_dir: Path = CACHE_DIR,
     fetcher: Callable[[str], str] | None = None,
+    stale_ok: bool = True,
 ) -> Any:
     """Fetch JSON with a write-through disk cache and stale-on-failure fallback.
 
     Draft night depends on this: a failed refresh must degrade to stale data,
     never to an exception, whenever any cached copy exists.
+
+    `stale_ok=False` turns that off for live data, where a silently-stale answer
+    is WORSE than an error: the pick list must raise on a failed poll so the
+    caller can show the feed is dead. Returning yesterday's picks looks healthy
+    and is wrong -- the same class of bug as a frozen pick counter.
     """
     fetcher = fetcher or _requests_get
     cache_dir = Path(cache_dir)
@@ -89,9 +96,11 @@ def fetch_json(
     try:
         text = fetcher(url)
     except Exception as exc:
+        if not stale_ok:
+            raise
         return _stale_fallback(path, exc, cache_key)
 
-    _write_cache_atomic(path, cache_dir, text)
+    _write_cache_atomic(path, text)
     return json.loads(text)
 
 
@@ -100,6 +109,12 @@ CROSSWALK_URL = (
     "https://raw.githubusercontent.com/dynastyprocess/data/master/files/db_playerids.csv"
 )
 DRAFTABLE = {"QB", "RB", "WR", "TE", "K", "DEF"}
+
+# Sentinel for "no ADP data at all", not "goes at pick 999". A third of the real
+# pool carries it. Survival treats it correctly (those players genuinely do not
+# get drafted), but anything that RANKS by adp must exclude it -- see
+# value.divergence.
+ADP_UNKNOWN = 999.0
 
 
 @dataclass
@@ -111,7 +126,7 @@ class Player:
     yahoo_id: str | None = None
     injury_status: str | None = None
     proj_pts: float = 0.0
-    adp: float = 999.0
+    adp: float = ADP_UNKNOWN
     adp_stdev: float | None = None
     bye: int | None = None
 
@@ -192,7 +207,7 @@ def load_crosswalk(cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | 
         for r in rows
         if r.get("sleeper_id", "").strip() and r.get("yahoo_id", "").strip() not in ("", "NA")
     }
-    _write_cache_atomic(path, cache_dir, json.dumps(mapping))
+    _write_cache_atomic(path, json.dumps(mapping))
     return mapping
 
 
@@ -295,27 +310,58 @@ def curve_stdev(adp: float) -> float:
     return _STDEV_A * max(adp, 0.1) ** _STDEV_B
 
 
+# Sleeper's own key names, NOT derivable from the FFC format string: FFC says
+# "standard" where Sleeper's key is `adp_std`. Deriving the key by string
+# munging produced `adp_standard`, which Sleeper does not emit, so every player
+# in a standard-scoring league silently kept adp 999 -- a fabricated board that
+# renders as if healthy. Explicit map, and apply_sleeper_adp warns on 0 matches.
+SLEEPER_ADP_FIELD = {
+    "ppr": "adp_ppr",
+    "half-ppr": "adp_half_ppr",
+    "standard": "adp_std",
+}
+
+
 def apply_sleeper_adp(
     players: dict[str, Player], projections: list[dict], adp_field: str
 ) -> None:
-    """ID-keyed ADP. Runs BEFORE the FFC join so every player has a value."""
+    """ID-keyed ADP. Runs BEFORE the FFC join so every player has a value.
+
+    Degrade, never fabricate: a field name that matches nothing leaves every
+    player at adp 999, which looks like a working board. Say so instead.
+    """
+    matched = 0
     for row in projections:
         pid = row.get("player_id")
         stats = row.get("stats") or {}
         if not pid or pid not in players:
             continue
         adp = stats.get(adp_field)
-        if adp is None or adp >= 999:
+        if adp is None or adp >= ADP_UNKNOWN:
             continue
         players[pid].adp = float(adp)
         players[pid].adp_stdev = curve_stdev(float(adp))
+        matched += 1
+    if not matched:
+        log.warning(
+            "no projection row carried ADP field %r -- every player keeps adp 999, "
+            "so survival and VONA are meaningless. Known Sleeper fields: %s",
+            adp_field, sorted(SLEEPER_ADP_FIELD.values()),
+        )
 
 
 _AMBIGUOUS_PREFIX = "AMBIGUOUS: "
 
 
-def apply_ffc_adp(players: dict[str, Player], ffc_rows: list[dict]) -> list[str]:
+def apply_ffc_adp(
+    players: dict[str, Player], ffc_rows: list[dict], set_adp: bool = True
+) -> list[str]:
     """Non-load-bearing enrichment. Supplies adp/adp_stdev/bye where matched.
+
+    `set_adp=False` takes ONLY the bye week and leaves adp/adp_stdev alone --
+    for leagues whose ADP source is not FFC. Bye weeks come from nowhere else
+    (Sleeper's player DB has no bye field), so this join always runs; only the
+    ADP overwrite is optional.
 
     FFC carries no cross-platform ID, so this is the one fuzzy join in the
     system. It runs LAST, on an already-complete ID-keyed board, so the blast
@@ -358,9 +404,9 @@ def apply_ffc_adp(players: dict[str, Player], ffc_rows: list[dict]) -> list[str]
         if target is None:
             unmatched.append(name)
             continue
-        if row.get("adp") is not None:
+        if set_adp and row.get("adp") is not None:
             target.adp = float(row["adp"])
-        if row.get("stdev"):
+        if set_adp and row.get("stdev"):
             target.adp_stdev = float(row["stdev"])
         if row.get("bye"):
             target.bye = int(row["bye"])

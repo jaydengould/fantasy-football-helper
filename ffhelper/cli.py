@@ -7,21 +7,26 @@ import queue
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import (
-    LeagueSettings, Player, adp_format_for, apply_ffc_adp, apply_projections,
-    apply_sleeper_adp, fetch_json, load_ffc_adp, load_players, load_projections,
-    load_sleeper_settings, norm_name,
+    LeagueSettings, Player, SLEEPER_ADP_FIELD, adp_format_for, apply_ffc_adp,
+    apply_projections, apply_sleeper_adp, fetch_json, load_ffc_adp, load_players,
+    load_projections, load_sleeper_settings, norm_name,
 )
 from ffhelper.feeds import Pick, PickFeed, SleeperFeed
-from ffhelper.value import Row, build_board, detect_run, next_pick_number
+from ffhelper.value import Row, build_board, detect_run, is_bench_only, next_pick_number
 
 log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
 SEASON = "2026"
 SLEEPER_DRAFT_URL = "https://api.sleeper.app/v1/draft/{draft_id}"
+# Validated at load, not at first use: an unknown value must fail at preflight,
+# not silently fall through to FFC halfway through a draft. "yahoo" is
+# deliberately absent -- see League.adp_source.
+ADP_SOURCES = {"ffc", "sleeper"}
 
 
 def find_players(pool: dict[str, Player], query: str) -> list[Player]:
@@ -115,7 +120,10 @@ def _handle_command(
     if line.lower() in ("u", "undo"):
         mark_state.undo()
         return [], False, "undid last mark"
-    if pending and line.isdigit():
+    # isdecimal(), not isdigit(): isdigit() is True for superscripts ('²') and
+    # other numeric forms that int() then refuses. isdecimal() is exactly the
+    # set int() accepts.
+    if pending and line.isdecimal():
         idx = int(line)
         if 1 <= idx <= len(pending):
             chosen = pending[idx - 1]
@@ -158,7 +166,7 @@ def _stdin_reader(q: "queue.Queue[str]") -> None:
 
 def render(
     board: list[Row], limit: int, stale_seconds: float | None,
-    my_roster: list[Player], runs: dict[str, int],
+    my_roster: list[Player], runs: dict[str, int], divergence_flag_slots: int = 10,
 ) -> str:
     lines: list[str] = []
     if stale_seconds is None:
@@ -169,6 +177,15 @@ def render(
         lines.append("--  MANUAL MODE: no pick feed -- picks are entered by hand only  --")
     elif stale_seconds > 15:
         lines.append(f"!!  FEED STALE {stale_seconds:.0f}s  -- board may be out of date")
+    if is_bench_only(board):
+        # Degrade, never fabricate. Every starting slot is full, so no available
+        # player improves the lineup and there is nothing left to rank on. Say
+        # that instead of presenting the residual ordering as a recommendation:
+        # at pick 164 of the Task 13 mock this state produced a confident case
+        # for a third quarterback, and then for a second kicker.
+        lines.append("--  STARTING LINEUP FULL: no player improves your starters.  --")
+        lines.append("--  These are BENCH picks, ordered by value over league replacement.  --")
+        lines.append("--  The tool has no model of upside or handcuffs -- trust yourself here.  --")
     if runs:
         summary = "  ".join(f"{pos} {n}" for pos, n in sorted(runs.items(), key=lambda kv: -kv[1]))
         lines.append(f"last 8 picks:  {summary}")
@@ -181,14 +198,18 @@ def render(
         flags = []
         if r.player.injury_status:
             flags.append(r.player.injury_status)
-        if abs(r.divergence) >= 25:
+        # divergence is None for a player the market has never priced -- a third
+        # of the pool. No opinion is not agreement, so he gets no flag and the
+        # column shows a dash rather than a fabricated 0.
+        if r.divergence is not None and abs(r.divergence) >= divergence_flag_slots:
             flags.append(f"{'MODEL' if r.divergence > 0 else 'MARKET'}+{abs(r.divergence)}")
         if r.player.bye:
             flags.append(f"bye{r.player.bye}")
+        div = "-" if r.divergence is None else f"{r.divergence:+d}"
         lines.append(
             f"{i:<3} {r.player.name[:24]:<24} {r.player.position:<4} {r.vona:>7.1f} "
             f"{r.vbd:>7.1f} {r.marginal:>7.1f} {r.tier:>4} {r.survival:>6.0%} "
-            f"{r.divergence:>+5}  {' '.join(flags)}"
+            f"{div:>5}  {' '.join(flags)}"
         )
     return "\n".join(lines)
 
@@ -204,7 +225,22 @@ def resolve_settings(league: League, season: str = SEASON) -> LeagueSettings:
 
     Precedence: platform API when reachable, else the config block. A league that
     later gains API access starts syncing with no config change.
+
+    `league.draft_id`, when set, overrides whichever draft the settings name --
+    see `League.draft_id`. Announced on stderr, never silent: pointing the feed
+    at a different draft than the league's own is exactly the kind of thing that
+    must not be discovered halfway through a real draft.
     """
+    settings = _resolve_settings_source(league)
+    if league.draft_id and league.draft_id != settings.draft_id:
+        print(f"draft override  : feed points at draft {league.draft_id} "
+              f"(league {league.name!r} reports {settings.draft_id}); "
+              f"scoring and roster still come from {league.name!r}", file=sys.stderr)
+        settings = replace(settings, draft_id=league.draft_id)
+    return settings
+
+
+def _resolve_settings_source(league: League) -> LeagueSettings:
     if league.platform == "sleeper":
         return load_sleeper_settings(league.league_id)
     if league.settings is not None:
@@ -235,17 +271,29 @@ def league_settings_from_config(raw: dict) -> LeagueSettings:
 def load_board_inputs(
     league: League, tunables: Tunables, season: str = SEASON
 ) -> tuple[dict[str, Player], LeagueSettings]:
-    """Cold start: fetch everything, join by ID, then enrich with FFC."""
+    """Cold start: fetch everything, join by ID, then enrich with FFC.
+
+    Sleeper ADP is applied first as the ID-keyed baseline, then FFC's fuzzy
+    join runs. Whether FFC OVERWRITES that baseline is `league.adp_source`; the
+    join itself always runs, because bye weeks come from nowhere else.
+    """
     settings = resolve_settings(league, season)
     players = load_players()
     projections = load_projections(season)
 
     apply_projections(players, projections, settings.scoring)
     fmt = league.adp_format or adp_format_for(settings)
-    apply_sleeper_adp(players, projections, f"adp_{fmt.replace('-', '_')}")
+    apply_sleeper_adp(players, projections, SLEEPER_ADP_FIELD.get(fmt, f"adp_{fmt.replace('-', '_')}"))
 
+    if league.adp_source not in ADP_SOURCES:
+        raise ValueError(
+            f"league {league.name!r} has adp_source={league.adp_source!r}; "
+            f"expected one of {sorted(ADP_SOURCES)}. "
+            f"(\"yahoo\" is not implemented -- the API is not available yet.)"
+        )
     teams = league.adp_teams or settings.num_teams
-    unmatched = apply_ffc_adp(players, load_ffc_adp(fmt, teams, int(season)))
+    unmatched = apply_ffc_adp(players, load_ffc_adp(fmt, teams, int(season)),
+                              set_adp=league.adp_source == "ffc")
     if unmatched:
         # Printed, never silently dropped.
         print(f"FFC: {len(unmatched)} unmatched -> {', '.join(unmatched[:15])}"
@@ -255,46 +303,38 @@ def load_board_inputs(
     return {pid: p for pid, p in players.items() if p.proj_pts > 0}, settings
 
 
-def _lookup_roster_id(league: League, settings: LeagueSettings) -> int | None:
-    """Resolve the user's Sleeper roster_id from the configured draft_slot via
-    the draft object's `slot_to_roster_id` map, fetched through the existing
-    cached `fetch_json` (no new HTTP path, no reimplemented caching).
-
-    Never guesses: returns None -- and callers must leave my_roster empty --
-    when draft_slot isn't configured, the platform has no such mapping
-    (anything but Sleeper today), or the lookup fails for any reason.
-    """
-    if league.draft_slot is None or league.platform != "sleeper" or not settings.draft_id:
-        return None
-    try:
-        raw = fetch_json(
-            SLEEPER_DRAFT_URL.format(draft_id=settings.draft_id),
-            f"draft_{settings.draft_id}",
-        )
-    except Exception as exc:                      # noqa: BLE001 - degrade, don't fabricate
-        log.warning("could not resolve my_roster (slot_to_roster_id unavailable): %s", exc)
-        return None
-    roster_id = (raw.get("slot_to_roster_id") or {}).get(str(league.draft_slot))
-    return int(roster_id) if roster_id is not None else None
-
-
 def _my_roster_from_picks(
-    picks: list, players: dict[str, Player], roster_id: int | None,
+    picks: list, players: dict[str, Player], my_slot: int | None,
 ) -> list[Player]:
-    """Picks carrying the user's roster_id are the user's own players.
+    """Picks made from the user's own seat are the user's own players.
 
-    Manually marked players carry no roster_id (there may be no feed at all
-    in manual mode, and a hand-marked pick could belong to any team), so they
-    are never folded in here -- doing so would be a guess, not a lookup. See
-    `_combine_my_roster` for where self-marked players (via "me ") are added
-    back in explicitly.
+    Matched on `draft_slot`, NOT `roster_id`. A Sleeper mock draft returns
+    `roster_id: None` on every pick, so the previous roster_id match silently
+    produced an empty roster for a whole 180-pick draft -- and an empty roster
+    makes MARG meaningless, which is what let the board keep recommending a
+    quarterback after one was already drafted. `draft_slot` is present in both
+    mocks and league drafts and needs no `slot_to_roster_id` lookup, since it
+    is exactly the value already configured as `league.draft_slot`.
+
+    Manually marked players carry no seat (there may be no feed at all in
+    manual mode, and a hand-marked pick could belong to any team), so they are
+    never folded in here -- that would be a guess, not a lookup. See
+    `_combine_my_roster` for where self-marked players ("me ") are added back.
     """
-    if roster_id is None:
+    if my_slot is None:
         return []
-    return [
+    mine = [
         players[p.sleeper_id] for p in picks
-        if p.roster_id == roster_id and p.sleeper_id in players
+        if p.draft_slot == my_slot and p.sleeper_id in players
     ]
+    if picks and not mine and not any(p.draft_slot is not None for p in picks):
+        # Degrade, never fabricate: an empty roster here is indistinguishable
+        # from "you have not picked yet", and that silence is exactly how the
+        # roster_id version hid for an entire draft.
+        log.warning("no pick carries a draft_slot -- my_roster cannot be resolved, "
+                    "so MARG is computed against an empty roster. Use 'me <player>' "
+                    "to mark your own picks by hand.")
+    return mine
 
 
 def _combine_my_roster(
@@ -345,7 +385,7 @@ def _select_feed(league: League, settings: LeagueSettings) -> tuple[PickFeed, bo
 def _render_tick(
     picks: list, last_ok: float | None, players: dict[str, Player], settings: LeagueSettings,
     league: League, tunables: Tunables, limit: int, manual_gone: set[str],
-    manual_mine: set[str], roster_id: int | None, status: str = "",
+    manual_mine: set[str], my_slot: int | None, status: str = "",
 ) -> None:
     """Build and print one frame of the draft board from the current picks.
 
@@ -360,24 +400,41 @@ def _render_tick(
     # must be derived from that SAME set so the board can't disagree with
     # itself about who's off the board. Set union means a player reported by
     # both the feed and a manual mark is counted once, not twice.
+    #
+    # The count alone is not enough either: `parse_sleeper_picks` skips
+    # malformed rows, so one bad row would shift the horizon down by one for
+    # the rest of the draft. The feed's own highest pick_no is authoritative
+    # where it exists, so take whichever is further along.
     drafted = {p.sleeper_id for p in picks} | manual_gone
-    current_pick = len(drafted) + 1
+    highest = max((p.pick_no for p in picks), default=0)
+    current_pick = max(len(drafted), highest) + 1
     available = [p for pid, p in players.items() if pid not in drafted]
-    feed_roster = _my_roster_from_picks(picks, players, roster_id)
+    feed_roster = _my_roster_from_picks(picks, players, my_slot)
     my_roster = _combine_my_roster(feed_roster, manual_mine, players)
     recent = [players[p.sleeper_id].position for p in picks[-8:] if p.sleeper_id in players]
 
     board = build_board(
         available, my_roster, settings.roster_slots, settings.num_teams,
         current_pick=current_pick, my_slot=league.draft_slot, tunables=tunables,
+        # The FULL pool, not `available`: replacement level is a property of the
+        # league, and drawing it from the draining pool inflated every late-round
+        # number. See build_board's docstring.
+        replacement_pool=list(players.values()),
     )
     print("\033[2J\033[H", end="")                # clear screen
     stale_seconds = None if last_ok is None else time.time() - last_ok
-    print(render(board, limit, stale_seconds, my_roster, detect_run(recent)))
+    print(render(board, limit, stale_seconds, my_roster, detect_run(recent),
+                 tunables.divergence_flag_slots))
     if league.draft_slot:
         nxt = next_pick_number(current_pick, league.draft_slot, settings.num_teams)
-        print(f"\npick {current_pick}   your next pick: {nxt} "
-              f"({nxt - current_pick} away)")
+        # Is the pick on the clock RIGHT NOW yours? `next_pick_number` is
+        # strictly-after, so ask it from one pick earlier and see if it lands here.
+        if next_pick_number(current_pick - 1, league.draft_slot, settings.num_teams) == current_pick:
+            print(f"\n>>> PICK {current_pick} IS YOURS -- YOU ARE ON THE CLOCK <<<"
+                  f"   (next after this: {nxt})")
+        else:
+            print(f"\npick {current_pick}   your next pick: {nxt} "
+                  f"({nxt - current_pick} away)")
     print("\ntype part of a name to mark drafted (\"me \" prefix for your own "
           "pick), a number to disambiguate, 'u' to undo")
     if status:
@@ -412,7 +469,6 @@ def _run(
     """
     players, settings = load_board_inputs(league, tunables)
     feed, has_feed = _select_feed(league, settings)
-    roster_id = _lookup_roster_id(league, settings)
     mark_state = MarkDrafted()
     pending: list[Player] = []
     pending_mine = False
@@ -423,6 +479,7 @@ def _run(
         threading.Thread(target=_stdin_reader, args=(input_queue,), daemon=True).start()
 
     picks: list = []
+    last_frame: tuple | None = None
     last_ok: float | None = time.time() if has_feed else None
     interval = tunables.poll_seconds.get(league.platform, 5)
     interval = max(interval, 1)  # ponytail: floor to 1s to prevent busy-loop / API rate limiting
@@ -435,9 +492,17 @@ def _run(
         # subsequent tick forever, since nothing else ever overwrites it.
         status = ""
         while not input_queue.empty():
-            pending, pending_mine, status = _handle_command(
-                input_queue.get_nowait(), players, mark_state, pending, pending_mine
-            )
+            # Guarded per COMMAND, not per drain: one bad line must not discard
+            # the rest of the queue. This is the third per-tick statement and
+            # obeys the same rule as the other two -- nothing here propagates.
+            line = input_queue.get_nowait()
+            try:
+                pending, pending_mine, status = _handle_command(
+                    line, players, mark_state, pending, pending_mine
+                )
+            except Exception as exc:                  # noqa: BLE001 - loop must never die
+                log.warning("command %r failed: %s", line, exc)
+                status = f"could not handle {line!r} -- try again"
 
         try:
             picks = feed.get_picks()
@@ -446,11 +511,25 @@ def _run(
         except Exception as exc:                      # noqa: BLE001 - loop must never die
             log.warning("poll failed: %s", exc)
 
-        try:
-            _render_tick(picks, last_ok, players, settings, league, tunables, limit,
-                         mark_state.drafted, mark_state.mine, roster_id, status)
-        except Exception as exc:                      # noqa: BLE001 - loop must never die
-            log.error("draft tick failed: %s", exc, exc_info=True)
+        # Redraw only when something actually changed. Polling stays at
+        # `interval` so the feed is never behind, but a full screen-clear every
+        # 5 seconds with identical content is unreadable churn -- you cannot
+        # tell a real update from a repaint, and a status line can flash past
+        # before it is read. While the feed is STALE the frame is always
+        # redrawn, so the staleness counter keeps ticking up visibly.
+        stale = last_ok is not None and (time.time() - last_ok) > 15
+        frame = (len(picks), max((p.pick_no for p in picks), default=0),
+                 frozenset(mark_state.drafted), frozenset(mark_state.mine), status)
+        if frame != last_frame or stale or iterations == 0:
+            try:
+                _render_tick(picks, last_ok, players, settings, league, tunables, limit,
+                             mark_state.drafted, mark_state.mine, league.draft_slot, status)
+                # Only AFTER a successful draw. Marking the frame done before
+                # rendering would make a failed render freeze the screen: the
+                # next identical tick would dedup away the retry.
+                last_frame = frame
+            except Exception as exc:                  # noqa: BLE001 - loop must never die
+                log.error("draft tick failed: %s", exc, exc_info=True)
 
         iterations += 1
         if max_iterations is None or iterations < max_iterations:
@@ -466,6 +545,7 @@ def _preflight(league: League, tunables: Tunables) -> int:
     print(f"teams           : {settings.num_teams}")
     print(f"roster slots    : {settings.roster_slots}")
     print(f"scoring keys    : {len(settings.scoring)}  (pass_td={settings.scoring.get('pass_td')})")
+    print(f"adp source      : {league.adp_source}")
     print(f"draft_id        : {settings.draft_id}")
     print(f"players w/ proj : {len(players)}")
 
@@ -473,6 +553,13 @@ def _preflight(league: League, tunables: Tunables) -> int:
     print(f"missing stdev   : {len(no_stdev)}")
     if league.draft_slot is None:
         print("draft_slot      : NOT SET -- board will degrade to next-pick survival")
+        ok = False
+    elif not 1 <= league.draft_slot <= settings.num_teams:
+        # Hand-entered and never guessed, so a typo is entirely possible -- and
+        # an out-of-range slot silently produces wrong next-pick numbers for the
+        # whole draft rather than failing.
+        print(f"draft_slot      : {league.draft_slot} is OUT OF RANGE for "
+              f"{settings.num_teams} teams -- every next-pick number will be wrong")
         ok = False
     else:
         print(f"draft_slot      : {league.draft_slot}")

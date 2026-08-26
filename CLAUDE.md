@@ -113,6 +113,11 @@ Sleeper. The RB tilt comes from half PPR plus 10-team shallower replacement.
   the upgrade path.
 - Non-trivial logic leaves one runnable check behind. One `test_value.py` plus
   `preflight`. No mocking the network — the pure core doesn't need it.
+- **A new test must be shown to fail before the fix**, by
+  `git stash push -- ffhelper && pytest -k <name>`. A test written after a fix
+  and never seen red is not evidence.
+- **Add a mutation to `scripts/mutate.py` alongside non-trivial logic.** It is
+  one line and it is the only mechanical check that a test does anything.
 
 ## Non-negotiables
 
@@ -172,6 +177,11 @@ fresh opinion.
   dress up a guess. Rank by a transaction-history prior instead.
 - **Ruled out:** FantasyPros (paid, ToU bars reproducing content), ESPN/Yahoo
   scraping, `nfl_data_py` (deprecated by nflverse → use `nflreadpy`).
+  **ESPN is under reconsideration as of 2026-08-25** — its fantasy JSON API (not
+  HTML scraping) serves raw stat lines plus an `espn_id` that joins through the
+  crosswalk we already fetch, and the project already depends on Sleeper's
+  equally undocumented projections endpoint. Median rank disagreement with
+  Rotowire is 22 places. **Not reversed — the user's call.** See `TODO.md` §13.
 
 ## Phases
 
@@ -226,6 +236,167 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   a config override, never trusted from the API.
 
 ## Session log
+
+### 2026-08-25 (third block) — TASK 13 DONE. Ten defects found by drafting.
+
+**State:** branch `draft-night-fixes`, **174 tests, 37 mutations (36 killed)**.
+Outstanding work is in `TODO.md`; sections 11-14 are new.
+
+A full 180-pick Sleeper mock was run live (`1398139615038185472`, seat 5) and
+then replayed offline against every fix. **Ten defects, every one past a green
+suite.** The full table is `TODO.md` section 11. The four that mattered most:
+
+1. **`my_roster` was empty for the entire draft.** Sleeper mocks set
+   `roster_id: None` on every pick while populating `draft_slot` normally, and
+   the code matched on `roster_id`. Now matched on `draft_slot`, which deleted
+   `_lookup_roster_id` and a network call.
+2. **The sort ignored MARG.** VONA is position-relative and roster-BLIND, so it
+   stays large for a third QB you will never start. Gated by roster need in the
+   sort only; `Row.vona` keeps the true positional number.
+3. **`replacement_points` was drawn from the AVAILABLE pool**, so the baseline
+   collapsed as the draft drained (QB 347.5 -> 165.9 by pick 164), handing a
+   backup quarterback a VBD of +149.0 against a true -32.5. This drove every bad
+   late-round number.
+4. **`divergence` was noise.** The `adp=999` sentinel (209 of 632 players) all
+   tied at the bottom of the ADP ranking and manufactured fake divergence
+   (Darren Waller +399 on a player with no ADP), and ranking globally rather
+   than within position reported a roster-rule artifact as a valuation
+   disagreement. Flag fired on 41.7% of top-20 rows; now 6%.
+
+**Fixing #1 alone changed zero recommendations** — replaying picks 68/77/92 with
+a correct roster gives byte-identical ordering, because MARG was never in the
+sort. Worth remembering: the obvious-looking bug was not the cause.
+
+#### `adp_source` — a knob, and a judgement flagged as such
+
+Survival calibration is governed by the accuracy of the ADP **mean** and almost
+nothing else. FFC gives 74/82/89/90/94 (nearly flat); Sleeper gives 4/17/52/91/100.
+That comparison is **circular** — the mock's bots pick off Sleeper's list — but
+two things it establishes are not:
+
+- The model FORM is sound: Sleeper ADP calibrates near-perfectly using the
+  *fitted curve* stdev the design calls a weak fallback. Mean >> spread.
+- It is a wrong mean, not a narrow one. Multiplying FFC's stdev by 1.5/2/3/4/6
+  drags the bottom bucket 74% -> 4% but leaves the middle stuck at ~87% at every
+  k. **Widening cannot fix a location error.** Restricting to FFC's 267 rated
+  players changes nothing, which also kills the "synthesized-stdev tail" theory.
+
+`sleeper-main` is set to `adp_source = "sleeper"` on a MECHANISM, not a
+measurement: Sleeper shows its own ADP on the draft board to all twelve
+drafters. Known cost — Sleeper's `adp_ppr` folds in TE-premium leagues, so TEs
+read ~20 picks early (QB and RB are identical). **One config line reverts it**,
+and `scripts/calibrate.py` settles it on a human mock. Yahoo stays on `ffc`.
+
+#### Practices that earned their keep
+
+- **`scripts/mutate.py` caught two vacuous tests this block**, including one
+  written the same day (`isdecimal`, where the loop guard swallowed the error)
+  and `test_tiers_are_per_position`, which held against a build that tiered the
+  whole pool as one group. Add a mutation with every non-trivial change.
+- **Replaying a completed draft offline** is the highest-value debugging tool
+  this project has. `scripts/calibrate.py` and the `draft_id` override exist to
+  make it repeatable.
+
+#### Corrections I had to make, both the same mistake
+
+Twice I drew a confident conclusion from a measurement without checking what
+produced it. First: treating the review's constructed pick-61 board as an
+observation, then arguing the gaussian tail was "falsified" on top of it.
+Second: recommending a switch to Sleeper ADP off a "4x better" result, before
+noticing the bots pick off that same list. **Check the provenance of evidence
+before building an argument on it** — including my own.
+
+### 2026-08-25 (second session) — Review findings cleared; one rejected on data
+
+**State:** branch `draft-night-fixes` off `main`, 2 commits, **151 tests**.
+Everything actionable from the final review is done. **Outstanding work is in
+`TODO.md`; the only item with real risk left is Task 13.**
+
+Done: both draft-night blockers (unreachable STALE banner, unguarded input
+drain), all four cheap fixes, and the Yahoo `[league.settings]` block. Every new
+test was verified failing against pre-fix source with
+`git stash push -- ffhelper` before the fix landed.
+
+#### A ninth defect found by running the code, not by testing it
+
+**The opening board ranked four kickers in the top ten, above McCaffrey.** A
+150-test suite passed over it completely. VONA compresses toward 0 for everyone
+whenever the next pick is a pick or two away — pick 1, and **both sides of every
+snake turn**, so this would have hit on draft night. Below the top four the board
+sorted on VONA differences of 1e-12; below that, on negative-VONA magnitudes that
+are not comparable across positions.
+
+Sort key is now `(-max(round(vona, 1), 0.0), -r.vbd)` — round to the displayed
+tenth of a point so the sort agrees with the screen, floor at 0 because every
+negative VONA means the same thing and once waiting is free, value decides.
+`Row.vona` is untouched; only the sort key is floored. Boards at picks 27 and 51
+are byte-identical.
+
+#### The review's survival finding was rejected — do not re-litigate
+
+Finding #4 (`survival_prob` unconditional, SURV 0.00% for fallers) is **closed as
+won't-fix**, with the full costing in `TODO.md` section 2. Three reasons:
+
+1. **Its evidence was a constructed board state, not an observation.** "Live
+   check, real pool, pick 61 with two WRs slid past their ADP" was built by hand.
+   No draft has ever been run with this tool.
+2. **The gaussian tail is well calibrated.** FFC's `low` field records the latest
+   pick each player was ever taken across ~836 real drafts each. Predicted worst
+   fall over that many drafts: 3.0 sigma. Observed median worst case: **2.9
+   sigma.** Players ever falling >= 8 sigma: **zero**. The cited Collins case is
+   13.8 sigma.
+3. **Frequency doesn't justify blast radius.** The fabricated 0.00% does start at
+   2 sigma (an 11-pick slide), but expected available players that far past ADP
+   run 0.02–0.11 per board state — one row every few drafts.
+
+The best fix, if ever revisited, is a **variance-matched conditional logistic**
+(`s = stdev*sqrt(3)/pi`), not the conditioning the review proposed: a gaussian's
+hazard rate explodes in the tail, so `S(at)/S(cur)` returns 0.01% for Collins and
+divides by zero past 8.3 sigma. It needs real validation data first.
+
+**The lesson worth keeping:** this project's rule is "run it against real data,
+never trust a green suite." That rule cuts both ways — it also means **not acting
+on a finding whose evidence is synthetic.** Both defects this session were found
+by running real data; the one rejection was justified by real data too.
+
+#### Audit of the review process itself, after that miss
+
+Prompted by "what stops other bad findings getting through". Classifying the
+final review's six substantive findings by the evidence behind each:
+
+| Evidence type | Findings | Verdict |
+| --- | --- | --- |
+| Mechanically reproducible (a failing test, or a literal in a file) | 1, 2, 3, 5, 6 | **all five real** |
+| Judgement about what a number *means* | 4 (survival) | **the only wrong one** |
+
+The existing discipline — "write a test that fails before the fix" — is a strong
+filter, and it filtered correctly. The gap is precisely for claims that cannot be
+reduced to a failing test. Those need a different standard: **record whether the
+evidence was observed or constructed, and quantify how often it occurs.**
+
+**`scripts/mutate.py` added.** Breaks the engine on purpose, one line at a time,
+and checks the suite notices. First run: **4 of 18 mutations survived**, 3 were
+real coverage gaps —
+
+- `lineup_value` would start a QB or kicker at FLEX; nothing caught it. Inflates
+  MARG, and Phase 5's trade finder inherits the same function.
+- `MarkDrafted`'s idempotency guard: `me gibbs` then `gibbs` then `u` leaves the
+  player *out* of `drafted` but still in `mine` — back on the board and still
+  counted in `my_roster`.
+- The `isdecimal` fix from this same session: reverting it kept the suite green,
+  because the loop guard added beside it swallows the error. **The test I wrote
+  to prove that fix proved nothing.** Now driven directly against
+  `_handle_command`.
+
+Now 18 of 19 killed. The survivor is a genuine equivalent mutant (`>` vs `>=` on
+float gaps, never exactly equal) and is documented in the script.
+
+**Two doc claims were also false and are corrected:** `scripts/yahoo_auth.py`
+was described as "written and untested" — it never existed and never was
+committed. And finding 7's `adp_format_for` note was right: Sleeper emits
+`adp_std`, not `adp_standard`, so a standard-scoring league silently kept adp 999
+for every player and rendered a board that looked healthy. Fixed with an explicit
+`SLEEPER_ADP_FIELD` map plus a warning when the field matches nothing.
 
 ### 2026-08-24 — Brainstorming and spec
 
