@@ -177,6 +177,11 @@ fresh opinion.
   dress up a guess. Rank by a transaction-history prior instead.
 - **Ruled out:** FantasyPros (paid, ToU bars reproducing content), ESPN/Yahoo
   scraping, `nfl_data_py` (deprecated by nflverse → use `nflreadpy`).
+  **ESPN is under reconsideration as of 2026-08-25** — its fantasy JSON API (not
+  HTML scraping) serves raw stat lines plus an `espn_id` that joins through the
+  crosswalk we already fetch, and the project already depends on Sleeper's
+  equally undocumented projections endpoint. Median rank disagreement with
+  Rotowire is 22 places. **Not reversed — the user's call.** See `TODO.md` §13.
 
 ## Phases
 
@@ -231,6 +236,75 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   a config override, never trusted from the API.
 
 ## Session log
+
+### 2026-08-25 (third block) — TASK 13 DONE. Ten defects found by drafting.
+
+**State:** branch `draft-night-fixes`, **174 tests, 37 mutations (36 killed)**.
+Outstanding work is in `TODO.md`; sections 11-14 are new.
+
+A full 180-pick Sleeper mock was run live (`1398139615038185472`, seat 5) and
+then replayed offline against every fix. **Ten defects, every one past a green
+suite.** The full table is `TODO.md` section 11. The four that mattered most:
+
+1. **`my_roster` was empty for the entire draft.** Sleeper mocks set
+   `roster_id: None` on every pick while populating `draft_slot` normally, and
+   the code matched on `roster_id`. Now matched on `draft_slot`, which deleted
+   `_lookup_roster_id` and a network call.
+2. **The sort ignored MARG.** VONA is position-relative and roster-BLIND, so it
+   stays large for a third QB you will never start. Gated by roster need in the
+   sort only; `Row.vona` keeps the true positional number.
+3. **`replacement_points` was drawn from the AVAILABLE pool**, so the baseline
+   collapsed as the draft drained (QB 347.5 -> 165.9 by pick 164), handing a
+   backup quarterback a VBD of +149.0 against a true -32.5. This drove every bad
+   late-round number.
+4. **`divergence` was noise.** The `adp=999` sentinel (209 of 632 players) all
+   tied at the bottom of the ADP ranking and manufactured fake divergence
+   (Darren Waller +399 on a player with no ADP), and ranking globally rather
+   than within position reported a roster-rule artifact as a valuation
+   disagreement. Flag fired on 41.7% of top-20 rows; now 6%.
+
+**Fixing #1 alone changed zero recommendations** — replaying picks 68/77/92 with
+a correct roster gives byte-identical ordering, because MARG was never in the
+sort. Worth remembering: the obvious-looking bug was not the cause.
+
+#### `adp_source` — a knob, and a judgement flagged as such
+
+Survival calibration is governed by the accuracy of the ADP **mean** and almost
+nothing else. FFC gives 74/82/89/90/94 (nearly flat); Sleeper gives 4/17/52/91/100.
+That comparison is **circular** — the mock's bots pick off Sleeper's list — but
+two things it establishes are not:
+
+- The model FORM is sound: Sleeper ADP calibrates near-perfectly using the
+  *fitted curve* stdev the design calls a weak fallback. Mean >> spread.
+- It is a wrong mean, not a narrow one. Multiplying FFC's stdev by 1.5/2/3/4/6
+  drags the bottom bucket 74% -> 4% but leaves the middle stuck at ~87% at every
+  k. **Widening cannot fix a location error.** Restricting to FFC's 267 rated
+  players changes nothing, which also kills the "synthesized-stdev tail" theory.
+
+`sleeper-main` is set to `adp_source = "sleeper"` on a MECHANISM, not a
+measurement: Sleeper shows its own ADP on the draft board to all twelve
+drafters. Known cost — Sleeper's `adp_ppr` folds in TE-premium leagues, so TEs
+read ~20 picks early (QB and RB are identical). **One config line reverts it**,
+and `scripts/calibrate.py` settles it on a human mock. Yahoo stays on `ffc`.
+
+#### Practices that earned their keep
+
+- **`scripts/mutate.py` caught two vacuous tests this block**, including one
+  written the same day (`isdecimal`, where the loop guard swallowed the error)
+  and `test_tiers_are_per_position`, which held against a build that tiered the
+  whole pool as one group. Add a mutation with every non-trivial change.
+- **Replaying a completed draft offline** is the highest-value debugging tool
+  this project has. `scripts/calibrate.py` and the `draft_id` override exist to
+  make it repeatable.
+
+#### Corrections I had to make, both the same mistake
+
+Twice I drew a confident conclusion from a measurement without checking what
+produced it. First: treating the review's constructed pick-61 board as an
+observation, then arguing the gaussian tail was "falsified" on top of it.
+Second: recommending a switch to Sleeper ADP off a "4x better" result, before
+noticing the bots pick off that same list. **Check the provenance of evidence
+before building an argument on it** — including my own.
 
 ### 2026-08-25 (second session) — Review findings cleared; one rejected on data
 

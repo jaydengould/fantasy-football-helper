@@ -5,16 +5,20 @@ Ordered by deadline.
 
 ## What is left, in one place
 
-**Everything from the final review is done.** Remaining work, in priority order:
+**Task 13 is DONE** — a full 180-pick mock was run and every defect it exposed is
+fixed (section 11). Remaining work, in priority order:
 
-1. **Task 13 — live Sleeper mock draft.** Section 5. Needs the user. This is the
-   only remaining item with real risk attached, and running the code is what has
-   caught every serious defect in this build.
-2. **Set `draft_slot` for both leagues.** Section 6. One line each; it is the
-   only reason `preflight` reports INCOMPLETE.
-3. **Yahoo `league_id`** is still a placeholder in `config.toml` — section 7.
-   Nothing reads it (no API access, no feed), so it blocks nothing.
-4. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
+1. **Run a HUMAN mock and settle `adp_source`.** Section 12. The single largest
+   remaining accuracy question. `sleeper-main` is now on `adp_source =
+   "sleeper"` on a mechanistic argument, NOT a measurement — one line to revert.
+   `scripts/calibrate.py <draft_id> <slot>` settles it.
+2. **Set `draft_slot` for both leagues.** Section 6. One line each; the only
+   reason `preflight` reports INCOMPLETE for `sleeper-main`.
+3. **Add ESPN as a second projection source.** Section 13. Investigated and
+   found viable; needs a decision on reversing the "ESPN ruled out" call.
+4. **Bench-mode ordering.** Section 14. Honest but still weak once starters fill.
+5. **Yahoo `league_id`** placeholder — section 7. Nothing reads it, blocks nothing.
+6. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
 
 ## Deadlines
 
@@ -265,3 +269,153 @@ left:
 - **Phase 5** — trade finder. `lineup_value()` was built standalone specifically
   so this inherits it. Will not output an acceptance probability; ranks by a
   transaction-history prior instead.
+
+---
+
+## 11. Task 13 — DONE 2026-08-25. Ten defects found, all fixed.
+
+A full 180-pick Sleeper mock (`1398139615038185472`, seat 5) was run live, then
+replayed offline against the fixed engine. Everything below was found by running
+the code; a 162-test green suite passed over every one of them.
+
+| # | Defect | Symptom the user saw |
+| --- | --- | --- |
+| 1 | `my_roster` matched on `roster_id`, which is `None` on EVERY mock pick | roster empty all draft, so MARG was meaningless |
+| 2 | The sort ignored MARG entirely | "still suggesting Purdy after drafting Stafford"; three QBs |
+| 3 | `replacement_points` drawn from the AVAILABLE pool | baseline collapsed as the draft drained; backup QB VBD +149 vs a true -32.5 |
+| 4 | No bench model once starters fill | confident case for a 3rd QB, then a 2nd kicker |
+| 5 | A second K/DEF floated to the top late | McPherson top-recommended for the last four picks |
+| 6 | `divergence` included the `adp=999` sentinel (209 of 632 players) | Darren Waller +399 on a player with no ADP at all |
+| 7 | `divergence` ranked globally, not within position | flag fired on 41.7% of top-20 rows, led by five kickers |
+| 8 | No on-the-clock indicator | "maybe something that shows it is currently your pick" |
+| 9 | Full screen clear every 5s regardless of change | "annoying with updates every 5 seconds" |
+| 10 | Task 13 could not be run as written — a mock has a draft_id but no league | `load_sleeper_settings` had nothing to fetch |
+
+Replayed across all 15 turns after the fixes: picks 5-68 unchanged (the early
+board was already right), picks 77-116 lead with the QB that was actually needed
+instead of a receiver who could not crack the lineup, picks 140-173 flagged
+`[BENCH]`.
+
+**Not defects, recorded so they are not re-investigated:**
+- Parker Washington and Jayden Reed over their ADP is Rotowire genuinely
+  projecting them above the market (212 vs DK Metcalf's 183). The no-blend rule
+  working as designed — see section 13 for the second-source answer.
+- Recommending Purdy after Stafford at picks 101-125 is legitimate: Purdy
+  projects 363.2 to Stafford's 344.2 and lasted to pick 129.
+
+---
+
+## 12. Settle `adp_source` with a HUMAN mock — highest-value open item
+
+`sleeper-main` is set to `adp_source = "sleeper"`. **This is a judgement backed
+by a mechanism, not by a measurement.** One line in `config.toml` reverts it.
+
+Measured against the Task 13 mock, survival calibration by ADP source:
+
+| model says | FFC | Sleeper | ideal |
+| --- | --- | --- | --- |
+| 0-20% | 74% | 4% | 10% |
+| 20-40% | 82% | 17% | 30% |
+| 40-60% | 89% | 52% | 50% |
+| 60-80% | 90% | 91% | 70% |
+| 80-100% | 94% | 100% | 90% |
+
+**That comparison is CIRCULAR** — the mock's CPU drafters pick off Sleeper's own
+list (36% took the literal top of it; median rank taken was 2). It cannot say
+which ADP predicts twelve humans.
+
+What it DOES establish, and what is not circular:
+- The model FORM is sound. Sleeper ADP calibrates near-perfectly using the
+  *fitted curve* stdev the design calls a weak fallback, so the MEAN matters far
+  more than the spread.
+- The problem is a wrong mean, not a narrow one. Multiplying FFC's stdev by
+  1.5/2/3/4/6 drags the bottom bucket from 74% to 4% but leaves the middle
+  buckets stuck at ~87% at every k. Widening cannot fix a location error.
+- Restricting to FFC's 267 rated players changes nothing (73/81/88/89/94), which
+  kills the "synthesized-stdev tail" theory. The 247-vs-180 over-count by pick
+  180 is real arithmetic but is NOT what breaks calibration.
+
+**The argument for "sleeper" is mechanistic:** Sleeper shows its own ADP on the
+draft board to all twelve drafters during the draft. They anchor on the number
+in front of them; most have never seen FFC's.
+
+**The cost:** Sleeper's `adp_ppr` folds in TE-premium leagues. TEs read ~20 picks
+earlier than a flat-scoring league would take them (QB +0.4, RB -1.4 identical;
+WR -9.7). Partly self-fulfilling, since the room sees that same skewed number —
+but treat TE survival with suspicion until measured.
+
+**To settle it:** run a mock with real people, then
+
+    .venv/bin/python scripts/calibrate.py <draft_id> <your_slot>
+
+It prints the table above for both sources. Pick whichever is closer to
+10/30/50/70/90 and set `adp_source` accordingly. **Yahoo stays on `ffc`** — those
+drafters are not in the Sleeper app.
+
+---
+
+## 13. ESPN as a second projection source — investigated, viable, needs a decision
+
+Prompted by "are we sure Rotowire is the best data available?" Checked against
+the live endpoint rather than assumed.
+
+**It clears every constraint:**
+
+| Requirement | ESPN |
+| --- | --- |
+| Raw stat lines (custom scoring needs them) | yes — Gibbs 283 att / 1372 rush yds / 14.45 rush TD |
+| Integer-ID join (non-negotiable #1) | yes — `espn_id`, already in the crosswalk we fetch, 8152 populated |
+| Coverage | 584 season projections; 446 skill players overlap our pool |
+| Auth / cost | none |
+
+    https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/2026
+        /segments/0/leaguedefaults/3?view=kona_player_info
+    header: X-Fantasy-Filter: {"players":{"limit":1500,...}}
+    season projection = statSourceId 1, statSplitTypeId 0
+
+**And the sources disagree enough to be worth having:** median |rank difference|
+22 places; 210 of 446 differ by 25+; 95 by 50+. Notably **Jayden Reed is WR#83
+to Rotowire and WR#122 to ESPN** — the player the board pushed for four straight
+picks and the user flagged as suspicious. ESPN is also far higher on Breece Hall
+(#70 vs #31) and Josh Jacobs (#80 vs #43).
+
+**The one real risk, and its antidote.** ESPN keys stats numerically (24 = rush
+yds, 53 = receptions...) and a wrong mapping would silently corrupt projections
+— the worst failure mode this project has. But ESPN returns `appliedTotal`
+ALONGSIDE the raw stats: implement the map plus ESPN's own default scoring, and
+if it reproduces `appliedTotal` for every player, the mapping is *proven*. That
+turns the main risk into a mechanical check.
+
+**Two things to settle before building:**
+1. `CLAUDE.md` explicitly ruled out "ESPN/Yahoo scraping". This is an
+   undocumented JSON API, not HTML scraping, and the project already depends on
+   Sleeper's equally undocumented projections endpoint — but it IS a recorded
+   decision, and the repo is public and tied to a job search (the same reasoning
+   that killed FantasyPros). **User's call.**
+2. What to do with two sources. **Recommendation: do NOT average — surface the
+   disagreement.** A `SPLIT` flag where sources diverge 25+ places says "this is
+   one analyst's opinion, not a consensus", which is exactly what was needed
+   about Jayden Reed. Averaging would have moved him #83 -> ~#100 and explained
+   nothing. Same philosophy as the divergence flag: show disagreement, never
+   average it away.
+
+Note averaging PROJECTIONS does not violate the no-blend rule — that rule is
+about mixing projections with ADP, i.e. value with price. Averaging projections
+is a better estimate of value and never touches price. Different axis.
+
+**Estimate: ~2 working sessions.** Fits before Sept 6.
+
+---
+
+## 14. Bench-mode ordering is honest but still weak
+
+Once every starting slot is full, `is_bench_only` fires and the board says so
+rather than presenting the residual order as advice. The K/DEF demotion stops it
+recommending a second kicker. But the ordering underneath is still just static
+VBD, which by the late rounds favours whatever is least far below replacement —
+now TEs instead of kickers.
+
+The tool has no model of bench value: upside, handcuffs, injury insurance. The
+banner tells the user to trust themselves. Fixing it properly needs either a
+handcuff model (which RB backs up a starter you roster) or an explicit
+variance/upside signal, and projections do not carry either.
