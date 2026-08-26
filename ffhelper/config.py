@@ -45,7 +45,13 @@ class League:
 @dataclass(frozen=True)
 class Tunables:
     tier_break_sigma: float = 1.0
-    divergence_flag_slots: int = 25
+    # Within-position rank gap that earns a MODEL+/MARKET+ flag. Was 25, tuned
+    # for the old GLOBAL ranking whose kicker artifacts reached +399. Within
+    # position the same real board tops out at +20, so 25 could never fire.
+    # Measured over 300 top-20 rows of the Task 13 mock: 8 fires on 9% of rows,
+    # 10 on 6%, 12 on 3%. 10 is about one flag per screenful. One draft's
+    # evidence -- turn it if it feels noisy or silent.
+    divergence_flag_slots: int = 10
     flex_share: dict[str, float] = field(
         default_factory=lambda: {"RB": 0.5, "WR": 0.5, "TE": 0.0}
     )

@@ -28,7 +28,7 @@ league_id = "12345"
     assert get_league(leagues, "yahoo-main").draft_slot is None
     assert tun.tier_break_sigma == 1.0
     # defaults applied for unspecified tunables
-    assert tun.divergence_flag_slots == 25
+    assert tun.divergence_flag_slots == 10
     assert tun.flex_share == {"RB": 0.5, "WR": 0.5, "TE": 0.0}
     assert tun.poll_seconds == {"sleeper": 5, "yahoo": 12}
 
@@ -77,6 +77,6 @@ def test_no_tunables_section_yields_all_defaults(tmp_path: Path):
     cfg.write_text('[[league]]\nname = "test"\nplatform = "sleeper"\nleague_id = "1"\n')
     _, tun = load_config(cfg)
     assert tun.tier_break_sigma == 1.0
-    assert tun.divergence_flag_slots == 25
+    assert tun.divergence_flag_slots == 10
     assert tun.flex_share == {"RB": 0.5, "WR": 0.5, "TE": 0.0}
     assert tun.poll_seconds == {"sleeper": 5, "yahoo": 12}

@@ -166,7 +166,7 @@ def _stdin_reader(q: "queue.Queue[str]") -> None:
 
 def render(
     board: list[Row], limit: int, stale_seconds: float | None,
-    my_roster: list[Player], runs: dict[str, int], divergence_flag_slots: int = 25,
+    my_roster: list[Player], runs: dict[str, int], divergence_flag_slots: int = 10,
 ) -> str:
     lines: list[str] = []
     if stale_seconds is None:

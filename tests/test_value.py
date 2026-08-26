@@ -69,9 +69,28 @@ def test_tiers_break_on_large_gaps():
 
 
 def test_tiers_are_per_position():
-    players = [mk("a", "RB", 300.0), mk("b", "WR", 299.0)]
-    tiers = assign_tiers(players, {"a": 300.0, "b": 299.0}, sigma=1.0)
-    assert tiers["a"] == 1 and tiers["b"] == 1
+    """Found vacuous by mutation testing: with only two players and one gap the
+    threshold is inf, so both land in tier 1 whether tiers are grouped by
+    position or not -- the assertion held against a build that tiered the whole
+    pool as one group.
+
+    This pool discriminates. Per position the RB gaps are [50, 10] (pstdev 20,
+    so only the 50 breaks) giving [1, 2, 2], and the WR gaps are [5, 5] (pstdev
+    0, so both break) giving [1, 2, 3]. Pooled into one group the gaps become
+    [50, 10, 140, 5, 5] with pstdev ~51.6, so only the 140 -- the artificial
+    step between the two POSITIONS -- breaks, collapsing every RB into tier 1
+    and every WR into tier 2.
+    """
+    rbs = [mk("rb1", "RB", 300.0), mk("rb2", "RB", 250.0), mk("rb3", "RB", 240.0)]
+    wrs = [mk("wr1", "WR", 100.0), mk("wr2", "WR", 95.0), mk("wr3", "WR", 90.0)]
+    players = [*rbs, *wrs]
+    scores = {p.sleeper_id: p.proj_pts for p in players}
+
+    tiers = assign_tiers(players, scores, sigma=1.0)
+
+    assert [tiers[f"rb{i}"] for i in (1, 2, 3)] == [1, 2, 2]
+    assert [tiers[f"wr{i}"] for i in (1, 2, 3)] == [1, 2, 3]
+    assert tiers["wr1"] == 1, "each position starts its own tier 1"
 
 
 def test_tiers_handle_single_player_position():
@@ -441,6 +460,33 @@ def test_divergence_flags_projection_vs_market_gaps():
     assert div["a"] == 2, "projection rank 1, ADP rank 3"
     assert div["b"] == -1
     assert div["c"] == -1
+
+
+def test_divergence_is_ranked_within_position_not_globally():
+    """Task 13 defect. VBD is cross-position comparable only NEAR replacement.
+    Deep in the pool it is not -- kickers cluster tightly around their baseline
+    while skill players fall hundreds of points below theirs -- so a
+    replacement-level kicker outranked a deep RB on a global VBD ranking while
+    the market correctly ranked the RB higher, because you only ever need one
+    kicker. The flag fired on 40% of top-20 rows led by five kickers.
+
+    Here both kickers are ranked 1st and 2nd among kickers by BOTH projection
+    and ADP, so their within-position divergence is exactly 0 -- the model and
+    the market agree about them completely. Ten deep RBs are priced ahead of
+    them but project below them, which is precisely the real situation.
+
+    Against a global ranking each kicker scores +10 and this fails.
+    """
+    kickers = [mk("k1", "K", 5.0, adp=150.0), mk("k2", "K", 0.0, adp=160.0)]
+    deep_rbs = [mk(f"rb{i}", "RB", -50.0 - i, adp=100.0 + i) for i in range(10)]
+    players = [*kickers, *deep_rbs]
+    scores = {p.sleeper_id: p.proj_pts for p in players}
+
+    div = divergence(players, scores)
+
+    assert div["k1"] == 0, "ranked 1st among kickers by both projection and ADP"
+    assert div["k2"] == 0
+    assert all(div[f"rb{i}"] == 0 for i in range(10)), "same order both ways"
 
 
 def test_divergence_is_none_for_a_player_the_market_never_priced():

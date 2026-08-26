@@ -1,6 +1,7 @@
 [tunables]
 tier_break_sigma = 1.0
-divergence_flag_slots = 25
+# Within-position rank gap that earns a flag. See Tunables in config.py.
+divergence_flag_slots = 10
 
 [tunables.flex_share]
 RB = 0.5

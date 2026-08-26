@@ -183,34 +183,47 @@ def vona(players: list[Player], candidate: Player, at_pick: int) -> float:
 
 
 def divergence(players: list[Player], scores: dict[str, float]) -> dict[str, int | None]:
-    """adp_rank - projection_rank. Positive means the model likes him more
-    than the market does. None means the market has no opinion at all.
+    """adp_rank - projection_rank, ranked WITHIN each position. Positive means
+    the model likes him more than the market does, relative to his positional
+    peers. None means the market has no opinion at all.
 
     NEVER average these two ranks. Blending pulls the board toward consensus,
     and a board that tracks consensus produces consensus results.
 
-    Players carrying the `ADP_UNKNOWN` sentinel are EXCLUDED from both rankings
-    and reported as None. A third of the real pool (209 of 632) has no ADP at
-    all; they all tie at the sentinel, so they sorted to the bottom of the ADP
-    ranking together and any of them with a respectable projection manufactured
-    an enormous fake divergence -- Darren Waller at +399, Matt Gay at +167. The
-    flag fired on 41.7% of top-20 rows in the Task 13 mock and was, at the top
-    end, pure artifact.
+    Ranked within position, not globally. VBD is cross-position comparable only
+    NEAR REPLACEMENT, which is what it is designed for. Deep in the pool it is
+    not: measured on the real pool, the worst kicker sits 65 points below the
+    kicker baseline and the worst defense 25 below theirs, while the worst
+    receiver is 177 below his. So a replacement-level kicker (VBD ~0) outranked
+    a deep RB (VBD ~-190) on a global ranking, while the market correctly ranked
+    the RB higher -- because you only ever need one kicker. The flag was
+    reporting that roster-rule artifact as a valuation disagreement: it fired on
+    40% of top-20 rows in the Task 13 mock, led by Matt Gay at +167 and four
+    other kickers. Within position the same board tops out at +20, and reads as
+    "the model likes him N spots more than the market does, among receivers".
 
-    Both rankings are computed over the SAME rated subset. Ranking projections
-    over all 632 while ranking ADP over only the 423 rated would compare a rank
-    out of 632 to a rank out of 423 and bias every divergence positive.
+    Players carrying the `ADP_UNKNOWN` sentinel are EXCLUDED and reported as
+    None -- a third of the real pool has no ADP at all, and they all tie at the
+    sentinel, so ranking them together manufactured a fake divergence (Darren
+    Waller at +399, on a player with no ADP whatsoever). None rather than 0,
+    because 0 asserts "model and market agree", which is a fabrication when
+    there is no market price to agree with.
 
-    None is returned rather than 0 because 0 asserts "model and market agree",
-    which is a fabrication when there is no market price to agree with.
+    Both rankings are always computed over the SAME set, so a player missing
+    from one side can never shift the other side's ranks.
     """
-    rated = [p for p in players if p.adp < ADP_UNKNOWN]
-    by_proj = sorted(rated, key=lambda p: -scores.get(p.sleeper_id, 0.0))
-    by_adp = sorted(rated, key=lambda p: p.adp)
-    proj_rank = {p.sleeper_id: i for i, p in enumerate(by_proj, 1)}
-    adp_rank = {p.sleeper_id: i for i, p in enumerate(by_adp, 1)}
+    by_pos: dict[str, list[Player]] = {}
+    for p in players:
+        if p.adp < ADP_UNKNOWN:
+            by_pos.setdefault(p.position, []).append(p)
+
     out: dict[str, int | None] = {p.sleeper_id: None for p in players}
-    out.update({pid: adp_rank[pid] - proj_rank[pid] for pid in proj_rank})
+    for group in by_pos.values():
+        by_proj = sorted(group, key=lambda p: -scores.get(p.sleeper_id, 0.0))
+        by_adp = sorted(group, key=lambda p: p.adp)
+        proj_rank = {p.sleeper_id: i for i, p in enumerate(by_proj, 1)}
+        adp_rank = {p.sleeper_id: i for i, p in enumerate(by_adp, 1)}
+        out.update({pid: adp_rank[pid] - proj_rank[pid] for pid in proj_rank})
     return out
 
 
