@@ -211,6 +211,23 @@ from dataclasses import dataclass
 # rounding error should not read as a real one.
 MARGINAL_EPS = 0.5
 
+# Positions where a second one is dead weight in a draft. They cannot fill a
+# FLEX slot, and unlike a backup QB there is no bye-week or injury case for
+# carrying two -- kickers and defenses are streamed off waivers. Once you hold
+# as many as you start, further ones rank last.
+#
+# This is NOT generalisable to QB: a backup quarterback is a legitimate roster
+# spot, so QB is deliberately absent.
+REDUNDANT_ONCE_FILLED = ("K", "DEF")
+
+
+def is_redundant(player: Player, my_roster: list[Player], roster_slots: dict[str, int]) -> bool:
+    """True when the player is a second kicker or defense you would never start."""
+    if player.position not in REDUNDANT_ONCE_FILLED:
+        return False
+    held = sum(1 for p in my_roster if p.position == player.position)
+    return held >= roster_slots.get(player.position, 1)
+
 
 @dataclass(frozen=True)
 class Row:
@@ -318,9 +335,21 @@ def build_board(
     # Gated in the SORT only; `Row.vona` keeps the true positional number so
     # the column still reports real scarcity, and MARG beside it explains the
     # ordering.
+    #
+    # A second kicker or defense ranks last regardless. The gate alone is not
+    # enough: it ties them at 0 with everyone else, and then the VBD tiebreak
+    # FLOATS THEM TO THE TOP late, because by then every remaining RB and WR is
+    # below replacement while the best remaining kicker is still above it. In
+    # the Task 13 mock that made a second kicker the top recommendation for the
+    # last four picks. They are still listed, never hidden -- just ranked where
+    # they belong.
     return sorted(
         rows,
-        key=lambda r: (-max(round(r.vona, 1), 0.0) if r.marginal > MARGINAL_EPS else 0.0, -r.vbd),
+        key=lambda r: (
+            -max(round(r.vona, 1), 0.0) if r.marginal > MARGINAL_EPS else 0.0,
+            is_redundant(r.player, my_roster, settings_slots),
+            -r.vbd,
+        ),
     )
 
 

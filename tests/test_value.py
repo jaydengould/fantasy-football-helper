@@ -458,7 +458,7 @@ def test_detect_run_window_zero_or_negative_is_empty_not_everything():
 
 
 from ffhelper.config import Tunables
-from ffhelper.value import build_board, is_bench_only
+from ffhelper.value import build_board, is_bench_only, is_redundant
 
 
 def test_board_sorts_by_vona_and_fills_all_fields():
@@ -554,7 +554,11 @@ def test_compressed_vona_falls_back_to_value_instead_of_ranking_a_kicker_first()
     kicker = mk("kicker", "K", 128.0, adp=200.0, stdev=20.0)
 
     board = build_board(
-        available=[best_rb, elite_rb, repl_rb, k1, kicker], my_roster=[],
+        # Kickers listed FIRST on purpose. Every VONA here floors to 0, so the
+        # ordering rests entirely on the VBD tiebreak -- and with the kickers
+        # already at the front of the list, a sort with no tiebreak would leave
+        # them there on insertion order alone and pass this test vacuously.
+        available=[k1, kicker, repl_rb, elite_rb, best_rb], my_roster=[],
         settings_slots=SLOTS, num_teams=12, current_pick=1, my_slot=2,
         tunables=Tunables(),
     )
@@ -662,6 +666,54 @@ def test_a_player_who_cannot_start_never_outranks_one_who_can():
     assert order.index("starter") < order.index("filler")
     # The VONA column still reports true positional scarcity -- only the sort is gated.
     assert by["filler"].vona > 0
+
+
+def test_a_second_kicker_ranks_last_once_you_already_have_one():
+    """Task 13, bench mode. The roster-need gate alone is not enough: it ties a
+    redundant kicker at 0 with everyone else, and then the VBD tiebreak floats
+    him to the TOP, because by the late rounds every remaining RB/WR is below
+    replacement while the best remaining kicker is still above it. That made a
+    second kicker the top recommendation for the last four picks of the mock.
+
+    Against the un-demoted sort the kicker leads and this fails.
+    """
+    roster = [mk("have_wr1", "WR", 250.0), mk("have_wr2", "WR", 240.0),
+              mk("have_rb1", "RB", 230.0), mk("have_rb2", "RB", 220.0),
+              mk("have_flex1", "RB", 210.0), mk("have_flex2", "WR", 200.0),
+              mk("have_te", "TE", 190.0), mk("have_qb", "QB", 300.0),
+              mk("have_k", "K", 100.0), mk("have_def", "DEF", 90.0)]
+    spare_k = mk("spare_k", "K", 99.0, adp=200.0, stdev=20.0)
+    spare_d = mk("spare_d", "DEF", 89.0, adp=200.0, stdev=20.0)
+    scraps = [mk(f"rb{i}", "RB", 40.0 - i, adp=200.0, stdev=20.0) for i in range(3)]
+    available = [spare_k, spare_d, *scraps]
+
+    # The real late-round shape: nearly every kicker and defense is still
+    # undrafted, so the best remaining one sits ABOVE league replacement, while
+    # every remaining RB is far below it. That is what floats them to the top.
+    full_pool = available + (
+        [mk(f"k{i}", "K", 98.0 - i, adp=200.0, stdev=20.0) for i in range(14)]
+        + [mk(f"d{i}", "DEF", 88.0 - i, adp=200.0, stdev=20.0) for i in range(14)]
+        + [mk(f"stud{i}", "RB", 300.0 - i, adp=20.0, stdev=5.0) for i in range(40)]
+    )
+
+    board = build_board(available, roster, SLOTS, 12, 170, None, Tunables(),
+                        replacement_pool=full_pool)
+    order = [r.player.sleeper_id for r in board]
+    by = {r.player.sleeper_id: r for r in board}
+
+    assert by["spare_k"].vbd > by["rb0"].vbd, "premise: the spare K has the better VBD"
+    assert set(order[-2:]) == {"spare_k", "spare_d"}
+    assert order[0].startswith("rb"), "a real bench flyer should lead instead"
+
+
+def test_a_first_kicker_is_not_demoted():
+    """The rule is 'a SECOND kicker', not 'kickers'. With no K rostered, the
+    kicker must rank normally -- otherwise you would never be told to draft one."""
+    roster = [mk("have_qb", "QB", 300.0)]
+    k = mk("k", "K", 140.0, adp=100.0, stdev=10.0)
+    board = build_board([k], roster, SLOTS, 12, 90, None, Tunables())
+    assert not is_redundant(k, roster, SLOTS)
+    assert board[0].player.sleeper_id == "k"
 
 
 def test_is_bench_only_detects_a_full_starting_lineup():
