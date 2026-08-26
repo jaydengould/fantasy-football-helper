@@ -6,7 +6,7 @@ board testable without touching a network.
 import statistics
 from statistics import NormalDist
 
-from ffhelper.data import Player
+from ffhelper.data import ADP_UNKNOWN, Player
 
 
 def replacement_ranks(
@@ -182,18 +182,36 @@ def vona(players: list[Player], candidate: Player, at_pick: int) -> float:
     return candidate.proj_pts - expected
 
 
-def divergence(players: list[Player], scores: dict[str, float]) -> dict[str, int]:
-    """projection_rank - adp_rank. Positive means the model likes him more
-    than the market does.
+def divergence(players: list[Player], scores: dict[str, float]) -> dict[str, int | None]:
+    """adp_rank - projection_rank. Positive means the model likes him more
+    than the market does. None means the market has no opinion at all.
 
     NEVER average these two ranks. Blending pulls the board toward consensus,
     and a board that tracks consensus produces consensus results.
+
+    Players carrying the `ADP_UNKNOWN` sentinel are EXCLUDED from both rankings
+    and reported as None. A third of the real pool (209 of 632) has no ADP at
+    all; they all tie at the sentinel, so they sorted to the bottom of the ADP
+    ranking together and any of them with a respectable projection manufactured
+    an enormous fake divergence -- Darren Waller at +399, Matt Gay at +167. The
+    flag fired on 41.7% of top-20 rows in the Task 13 mock and was, at the top
+    end, pure artifact.
+
+    Both rankings are computed over the SAME rated subset. Ranking projections
+    over all 632 while ranking ADP over only the 423 rated would compare a rank
+    out of 632 to a rank out of 423 and bias every divergence positive.
+
+    None is returned rather than 0 because 0 asserts "model and market agree",
+    which is a fabrication when there is no market price to agree with.
     """
-    by_proj = sorted(players, key=lambda p: -scores.get(p.sleeper_id, 0.0))
-    by_adp = sorted(players, key=lambda p: p.adp)
+    rated = [p for p in players if p.adp < ADP_UNKNOWN]
+    by_proj = sorted(rated, key=lambda p: -scores.get(p.sleeper_id, 0.0))
+    by_adp = sorted(rated, key=lambda p: p.adp)
     proj_rank = {p.sleeper_id: i for i, p in enumerate(by_proj, 1)}
     adp_rank = {p.sleeper_id: i for i, p in enumerate(by_adp, 1)}
-    return {pid: adp_rank[pid] - proj_rank[pid] for pid in proj_rank}
+    out: dict[str, int | None] = {p.sleeper_id: None for p in players}
+    out.update({pid: adp_rank[pid] - proj_rank[pid] for pid in proj_rank})
+    return out
 
 
 def detect_run(recent_positions: list[str], window: int = 8) -> dict[str, int]:
@@ -237,7 +255,7 @@ class Row:
     marginal: float
     tier: int
     survival: float
-    divergence: int
+    divergence: int | None      # None = the market has no price for him at all
 
 
 def build_board(

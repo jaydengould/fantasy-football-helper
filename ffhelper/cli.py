@@ -198,14 +198,18 @@ def render(
         flags = []
         if r.player.injury_status:
             flags.append(r.player.injury_status)
-        if abs(r.divergence) >= divergence_flag_slots:
+        # divergence is None for a player the market has never priced -- a third
+        # of the pool. No opinion is not agreement, so he gets no flag and the
+        # column shows a dash rather than a fabricated 0.
+        if r.divergence is not None and abs(r.divergence) >= divergence_flag_slots:
             flags.append(f"{'MODEL' if r.divergence > 0 else 'MARKET'}+{abs(r.divergence)}")
         if r.player.bye:
             flags.append(f"bye{r.player.bye}")
+        div = "-" if r.divergence is None else f"{r.divergence:+d}"
         lines.append(
             f"{i:<3} {r.player.name[:24]:<24} {r.player.position:<4} {r.vona:>7.1f} "
             f"{r.vbd:>7.1f} {r.marginal:>7.1f} {r.tier:>4} {r.survival:>6.0%} "
-            f"{r.divergence:>+5}  {' '.join(flags)}"
+            f"{div:>5}  {' '.join(flags)}"
         )
     return "\n".join(lines)
 

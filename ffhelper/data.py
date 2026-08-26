@@ -110,6 +110,12 @@ CROSSWALK_URL = (
 )
 DRAFTABLE = {"QB", "RB", "WR", "TE", "K", "DEF"}
 
+# Sentinel for "no ADP data at all", not "goes at pick 999". A third of the real
+# pool carries it. Survival treats it correctly (those players genuinely do not
+# get drafted), but anything that RANKS by adp must exclude it -- see
+# value.divergence.
+ADP_UNKNOWN = 999.0
+
 
 @dataclass
 class Player:
@@ -120,7 +126,7 @@ class Player:
     yahoo_id: str | None = None
     injury_status: str | None = None
     proj_pts: float = 0.0
-    adp: float = 999.0
+    adp: float = ADP_UNKNOWN
     adp_stdev: float | None = None
     bye: int | None = None
 
@@ -331,7 +337,7 @@ def apply_sleeper_adp(
         if not pid or pid not in players:
             continue
         adp = stats.get(adp_field)
-        if adp is None or adp >= 999:
+        if adp is None or adp >= ADP_UNKNOWN:
             continue
         players[pid].adp = float(adp)
         players[pid].adp_stdev = curve_stdev(float(adp))

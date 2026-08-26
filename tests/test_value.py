@@ -2,7 +2,7 @@
 does not care whether the numbers are real."""
 import pytest
 
-from ffhelper.data import Player
+from ffhelper.data import ADP_UNKNOWN, Player
 from ffhelper.value import (
     assign_tiers, replacement_points, replacement_ranks, vbd,
     lineup_value, marginal_value,
@@ -441,6 +441,49 @@ def test_divergence_flags_projection_vs_market_gaps():
     assert div["a"] == 2, "projection rank 1, ADP rank 3"
     assert div["b"] == -1
     assert div["c"] == -1
+
+
+def test_divergence_is_none_for_a_player_the_market_never_priced():
+    """A third of the real pool (209 of 632) carries the ADP_UNKNOWN sentinel.
+    They all tie at the sentinel, so under the old code they sorted to the
+    bottom of the ADP ranking together and any of them with a decent projection
+    manufactured a huge fake divergence -- Darren Waller at +399.
+
+    `unpriced` here projects best in the pool but has no ADP. The old code
+    ranked him 1st by projection and last by ADP and reported +3. He must
+    report None instead: no opinion is not agreement, and it is not a +399
+    bargain either.
+    """
+    players = [
+        mk("a", "RB", 300.0, adp=30.0),
+        mk("b", "RB", 250.0, adp=10.0),
+        mk("c", "RB", 200.0, adp=20.0),
+        mk("unpriced", "RB", 400.0, adp=ADP_UNKNOWN),
+    ]
+    scores = {"a": 300.0, "b": 250.0, "c": 200.0, "unpriced": 400.0}
+    div = divergence(players, scores)
+
+    assert div["unpriced"] is None
+    # And his absence must not shift anyone else: the three rated players keep
+    # exactly the ranks they had without him.
+    assert (div["a"], div["b"], div["c"]) == (2, -1, -1)
+
+
+def test_divergence_ranks_both_sides_over_the_same_rated_subset():
+    """Ranking projections over ALL players while ranking ADP over only the
+    rated ones would compare a rank out of N to a rank out of a smaller M, and
+    bias every divergence positive. Adding unpriced players -- who project at
+    the very top -- must not move a single rated player's number."""
+    rated = [mk("a", "RB", 300.0, adp=30.0), mk("b", "RB", 250.0, adp=10.0),
+             mk("c", "RB", 200.0, adp=20.0)]
+    scores = {"a": 300.0, "b": 250.0, "c": 200.0}
+    before = divergence(rated, scores)
+
+    noise = [mk(f"n{i}", "RB", 500.0 + i, adp=ADP_UNKNOWN) for i in range(20)]
+    scores.update({p.sleeper_id: p.proj_pts for p in noise})
+    after = divergence([*rated, *noise], scores)
+
+    assert {k: after[k] for k in ("a", "b", "c")} == before
 
 
 def test_detect_run_counts_recent_positions():
