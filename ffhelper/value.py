@@ -206,6 +206,12 @@ def detect_run(recent_positions: list[str], window: int = 8) -> dict[str, int]:
 from dataclasses import dataclass
 
 
+# Below this, a player does not meaningfully improve the optimal starting
+# lineup. Not exactly 0: lineup_value sums floats, so an upgrade worth a
+# rounding error should not read as a real one.
+MARGINAL_EPS = 0.5
+
+
 @dataclass(frozen=True)
 class Row:
     player: Player
@@ -225,8 +231,31 @@ def build_board(
     current_pick: int,
     my_slot: int | None,
     tunables,
+    replacement_pool: list[Player] | None = None,
 ) -> list[Row]:
-    """Assemble the ranked board. Pure: same inputs, same output, always."""
+    """Assemble the ranked board. Pure: same inputs, same output, always.
+
+    `replacement_pool` is the pool the replacement BASELINE is drawn from, and
+    live callers must pass the FULL player pool, not the available one.
+    Replacement level is a property of the league -- "what the last startable
+    player at this position is worth" -- not of whoever happens to be left.
+
+    Measured against the real Task 13 mock, computing it from `available` made
+    the baseline collapse as the draft drained:
+
+        at pick      QB       RB       WR       TE
+              1   347.5   147.9   177.3   162.5
+            164   165.9    31.9    75.8   100.3
+
+    which gave a backup quarterback (Tyler Shough, 314.9 proj) a VBD of +149.0
+    where his true value over league replacement is -32.5. That inflation drove
+    every bad late-round recommendation in that draft, QB worst of all: only
+    ~14 QBs go in a 12-team 1-QB league, so QB12-of-remaining is a deep backup
+    by the late rounds while QB12-of-everyone never moves.
+
+    Defaults to `available` only so small unit tests can omit it; that default
+    reproduces the old behaviour and no live caller should rely on it.
+    """
     if not available:
         return []
 
@@ -236,7 +265,7 @@ def build_board(
         else current_pick + 1
     )
     ranks = replacement_ranks(settings_slots, num_teams, tunables.flex_share)
-    repl = replacement_points(available, ranks)
+    repl = replacement_points(replacement_pool if replacement_pool is not None else available, ranks)
     vbd_scores = vbd(available, repl)
     tiers = assign_tiers(available, vbd_scores, tunables.tier_break_sigma)
     divs = divergence(available, vbd_scores)
@@ -276,4 +305,33 @@ def build_board(
     # This does NOT blend the two: VONA decides outright wherever waiting has a
     # real cost, which is every pick that matters. VBD only fills in where VONA
     # has nothing to say.
-    return sorted(rows, key=lambda r: (-max(round(r.vona, 1), 0.0), -r.vbd))
+    #
+    # VONA is also gated by roster need. VONA is position-relative and
+    # roster-BLIND by construction: it asks "how much better than the next guy
+    # at his position", which stays large for a third quarterback you will
+    # never start. In the Task 13 mock that put Jayden Reed (marginal 0.0, he
+    # could not crack the starting lineup) above Brock Purdy at pick 92 when
+    # the user had no quarterback at all -- and it is why that draft ended with
+    # three QBs on one roster. A player who cannot improve your starters costs
+    # you nothing to pass on, whatever his positional scarcity.
+    #
+    # Gated in the SORT only; `Row.vona` keeps the true positional number so
+    # the column still reports real scarcity, and MARG beside it explains the
+    # ordering.
+    return sorted(
+        rows,
+        key=lambda r: (-max(round(r.vona, 1), 0.0) if r.marginal > MARGINAL_EPS else 0.0, -r.vbd),
+    )
+
+
+def is_bench_only(board: list[Row]) -> bool:
+    """True when no available player improves the optimal starting lineup.
+
+    Once every starting slot is filled, marginal value is 0 for the entire
+    pool -- 0 of 469 players at pick 164 of the Task 13 mock -- so there is no
+    signal left to rank on and any confident ordering is fabricated. Callers
+    must say so rather than presenting the resulting order as advice. The tool
+    has no model of bench value (upside, handcuffs, injury insurance) and
+    projections do not capture it.
+    """
+    return bool(board) and all(r.marginal <= MARGINAL_EPS for r in board)

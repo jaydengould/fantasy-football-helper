@@ -458,7 +458,7 @@ def test_detect_run_window_zero_or_negative_is_empty_not_everything():
 
 
 from ffhelper.config import Tunables
-from ffhelper.value import build_board
+from ffhelper.value import build_board, is_bench_only
 
 
 def test_board_sorts_by_vona_and_fills_all_fields():
@@ -598,6 +598,90 @@ def test_lineup_value_never_starts_a_qb_or_kicker_in_a_flex_slot():
     assert got == pytest.approx(expected)
     # The bench QB (390) and nothing else may sneak into the second FLEX slot.
     assert got < expected + 390
+
+
+def test_replacement_baseline_comes_from_the_full_pool_not_whats_left():
+    """Task 13 defect. Replacement level is a property of the league -- what the
+    last startable player at a position is worth -- not of whoever happens to
+    remain. Computing it from `available` made the baseline collapse as the
+    draft drained (QB 347.5 at pick 1 -> 165.9 by pick 164), which handed a
+    backup quarterback a VBD of +149.0 against a true value of -32.5.
+
+    Here the full pool has 20 RBs running 300 down to 110; only the top three
+    are still available. Against the full pool the baseline is the 20th RB;
+    against `available` it would be the 3rd, which is 170 points higher and
+    would flatten every VBD on the board.
+    """
+    full = [mk(f"rb{i}", "RB", 300.0 - i * 10, adp=float(i + 1), stdev=5.0) for i in range(20)]
+    available = full[:3]
+
+    board = build_board(
+        available=available, my_roster=[], settings_slots=SLOTS, num_teams=12,
+        current_pick=40, my_slot=None, tunables=Tunables(), replacement_pool=full,
+    )
+    top = next(r for r in board if r.player.sleeper_id == "rb0")
+
+    # RB replacement rank is 36 for this league; only 20 RBs exist, so the
+    # baseline is the worst of them -- 110.0. 300 - 110 = 190.
+    assert top.vbd == pytest.approx(190.0)
+    # Against `available` alone the baseline would be rb2 (280), giving 20.0.
+    assert top.vbd != pytest.approx(20.0)
+
+
+def test_a_player_who_cannot_start_never_outranks_one_who_can():
+    """Task 13 defect, and the reason that draft ended with three quarterbacks.
+
+    VONA is position-relative and roster-BLIND: it stays large for a third QB
+    you will never start. `filler` has the higher VONA but cannot crack the
+    starting lineup (marginal 0); `starter` fills a genuinely empty slot. The
+    board must lead with the one that helps.
+
+    Against the ungated sort this fails: filler's larger VONA wins outright.
+    """
+    roster = [mk("have_wr1", "WR", 250.0), mk("have_wr2", "WR", 240.0),
+              mk("have_rb1", "RB", 230.0), mk("have_rb2", "RB", 220.0),
+              mk("have_flex1", "RB", 210.0), mk("have_flex2", "WR", 200.0),
+              mk("have_te", "TE", 190.0), mk("have_k", "K", 100.0),
+              mk("have_def", "DEF", 90.0)]
+    # Every slot above is full EXCEPT QB.
+    filler = mk("filler", "WR", 120.0, adp=50.0, stdev=2.0)      # cannot start
+    starter = mk("starter", "QB", 300.0, adp=60.0, stdev=2.0)    # fills empty QB
+    others = [mk(f"wr{i}", "WR", 119.0 - i, adp=200.0, stdev=20.0) for i in range(4)]
+    qb2 = mk("qb2", "QB", 295.0, adp=200.0, stdev=20.0)
+
+    board = build_board(
+        available=[filler, starter, qb2, *others], my_roster=roster,
+        settings_slots=SLOTS, num_teams=12, current_pick=55, my_slot=None,
+        tunables=Tunables(),
+    )
+    by = {r.player.sleeper_id: r for r in board}
+    assert by["filler"].marginal == pytest.approx(0.0)
+    assert by["starter"].marginal > 0
+    assert by["filler"].vona > by["starter"].vona, "premise: filler has the bigger raw VONA"
+    order = [r.player.sleeper_id for r in board]
+    assert order.index("starter") < order.index("filler")
+    # The VONA column still reports true positional scarcity -- only the sort is gated.
+    assert by["filler"].vona > 0
+
+
+def test_is_bench_only_detects_a_full_starting_lineup():
+    """At pick 164 of the Task 13 mock, 0 of 469 available players improved the
+    starting lineup, so any confident ordering was fabricated. The caller has to
+    be able to detect that and say so."""
+    roster = [mk("have_wr1", "WR", 250.0), mk("have_wr2", "WR", 240.0),
+              mk("have_rb1", "RB", 230.0), mk("have_rb2", "RB", 220.0),
+              mk("have_flex1", "RB", 210.0), mk("have_flex2", "WR", 200.0),
+              mk("have_te", "TE", 190.0), mk("have_qb", "QB", 300.0),
+              mk("have_k", "K", 100.0), mk("have_def", "DEF", 90.0)]
+    scraps = [mk(f"x{i}", "WR", 50.0 - i, adp=200.0, stdev=20.0) for i in range(5)]
+
+    full = build_board(scraps, roster, SLOTS, 12, 170, None, Tunables())
+    assert is_bench_only(full) is True
+
+    # One genuine upgrade is enough to make the board meaningful again.
+    upgrade = mk("stud", "WR", 400.0, adp=200.0, stdev=20.0)
+    assert is_bench_only(build_board([*scraps, upgrade], roster, SLOTS, 12, 170,
+                                     None, Tunables())) is False
 
 
 def test_board_of_empty_pool_is_empty():

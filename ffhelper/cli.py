@@ -17,7 +17,7 @@ from ffhelper.data import (
     load_projections, load_sleeper_settings, norm_name,
 )
 from ffhelper.feeds import Pick, PickFeed, SleeperFeed
-from ffhelper.value import Row, build_board, detect_run, next_pick_number
+from ffhelper.value import Row, build_board, detect_run, is_bench_only, next_pick_number
 
 log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
@@ -173,6 +173,15 @@ def render(
         lines.append("--  MANUAL MODE: no pick feed -- picks are entered by hand only  --")
     elif stale_seconds > 15:
         lines.append(f"!!  FEED STALE {stale_seconds:.0f}s  -- board may be out of date")
+    if is_bench_only(board):
+        # Degrade, never fabricate. Every starting slot is full, so no available
+        # player improves the lineup and there is nothing left to rank on. Say
+        # that instead of presenting the residual ordering as a recommendation:
+        # at pick 164 of the Task 13 mock this state produced a confident case
+        # for a third quarterback, and then for a second kicker.
+        lines.append("--  STARTING LINEUP FULL: no player improves your starters.  --")
+        lines.append("--  These are BENCH picks, ordered by value over league replacement.  --")
+        lines.append("--  The tool has no model of upside or handcuffs -- trust yourself here.  --")
     if runs:
         summary = "  ".join(f"{pos} {n}" for pos, n in sorted(runs.items(), key=lambda kv: -kv[1]))
         lines.append(f"last 8 picks:  {summary}")
@@ -387,6 +396,10 @@ def _render_tick(
     board = build_board(
         available, my_roster, settings.roster_slots, settings.num_teams,
         current_pick=current_pick, my_slot=league.draft_slot, tunables=tunables,
+        # The FULL pool, not `available`: replacement level is a property of the
+        # league, and drawing it from the draining pool inflated every late-round
+        # number. See build_board's docstring.
+        replacement_pool=list(players.values()),
     )
     print("\033[2J\033[H", end="")                # clear screen
     stale_seconds = None if last_ok is None else time.time() - last_ok

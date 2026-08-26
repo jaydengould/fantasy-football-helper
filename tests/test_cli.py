@@ -78,6 +78,23 @@ def test_render_empty_board_does_not_crash():
     assert isinstance(render([], 10, 0.0, [], {}), str)
 
 
+def test_render_says_so_when_every_pick_is_a_bench_pick():
+    """Degrade, never fabricate. Once every starting slot is full, no player
+    improves the lineup, so the residual ordering carries no information -- at
+    pick 164 of the Task 13 mock that state produced a confident case for a
+    third quarterback, then a second kicker. The board must say the signal is
+    gone rather than present the order as advice."""
+    bench = [Row(player=Player("a", "Backup Guy", "QB", "SF", adp=170.0, adp_stdev=20.0),
+                 vbd=5.0, vona=0.0, marginal=0.0, tier=1, survival=0.9, divergence=0)]
+    out = render(bench, limit=5, stale_seconds=0.0, my_roster=[], runs={})
+    assert "STARTING LINEUP FULL" in out
+    assert "BENCH" in out
+
+    helpful = [Row(player=Player("b", "Real Starter", "RB", "SF", adp=40.0, adp_stdev=5.0),
+                   vbd=50.0, vona=10.0, marginal=80.0, tier=1, survival=0.4, divergence=0)]
+    assert "STARTING LINEUP FULL" not in render(helpful, 5, 0.0, [], {})
+
+
 def test_render_manual_mode_shows_status_and_never_a_stale_banner():
     """stale_seconds=None (no feed at all) must show a clear manual-entry
     status line and MUST NOT show the stale-feed banner -- there is no feed
