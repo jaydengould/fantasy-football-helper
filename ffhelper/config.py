@@ -13,6 +13,12 @@ class League:
     adp_format: str | None = None    # None means derive from league scoring
     adp_teams: int | None = None     # None means derive from league size
     settings: dict | None = None     # hand-entered [league.settings]; first-class, not a fallback
+    # Point the pick feed at a different draft than the one the league reports,
+    # keeping that league's synced scoring and roster. This is what makes a
+    # Sleeper MOCK draft usable as a rehearsal: a mock has a draft_id but no
+    # league of its own, so its settings cannot be fetched -- borrow the real
+    # league's and override only where the picks come from.
+    draft_id: str | None = None
 
 
 @dataclass(frozen=True)

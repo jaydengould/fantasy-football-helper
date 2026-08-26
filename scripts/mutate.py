@@ -70,6 +70,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("mark idempotency", "if player_id in self._marked:", "if False:"),
         ("draft_slot range check",
          "elif not 1 <= league.draft_slot <= settings.num_teams:", "elif False:"),
+        ("draft_id override",
+         "if league.draft_id and league.draft_id != settings.draft_id:", "if False:"),
     ],
     "data.py": [
         ("stale_ok honoured", "if not stale_ok:", "if False:"),

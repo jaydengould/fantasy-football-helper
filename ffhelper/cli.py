@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from ffhelper.config import League, Tunables, get_league, load_config
@@ -207,7 +208,22 @@ def resolve_settings(league: League, season: str = SEASON) -> LeagueSettings:
 
     Precedence: platform API when reachable, else the config block. A league that
     later gains API access starts syncing with no config change.
+
+    `league.draft_id`, when set, overrides whichever draft the settings name --
+    see `League.draft_id`. Announced on stderr, never silent: pointing the feed
+    at a different draft than the league's own is exactly the kind of thing that
+    must not be discovered halfway through a real draft.
     """
+    settings = _resolve_settings_source(league)
+    if league.draft_id and league.draft_id != settings.draft_id:
+        print(f"draft override  : feed points at draft {league.draft_id} "
+              f"(league {league.name!r} reports {settings.draft_id}); "
+              f"scoring and roster still come from {league.name!r}", file=sys.stderr)
+        settings = replace(settings, draft_id=league.draft_id)
+    return settings
+
+
+def _resolve_settings_source(league: League) -> LeagueSettings:
     if league.platform == "sleeper":
         return load_sleeper_settings(league.league_id)
     if league.settings is not None:

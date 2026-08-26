@@ -151,6 +151,40 @@ def test_resolve_settings_sleeper_prefers_api_even_with_settings_block(monkeypat
     assert resolve_settings(league) is sentinel
 
 
+def test_draft_id_override_repoints_the_feed_but_keeps_the_leagues_scoring(monkeypatch):
+    """A Sleeper MOCK draft has a draft_id but no league of its own, so its
+    settings cannot be fetched. `league.draft_id` borrows the real league's
+    synced scoring and roster and overrides only where picks come from -- which
+    is what makes a mock draft usable as a rehearsal for the real one.
+
+    Without the override the feed would poll the real league's draft, which sits
+    in `pre_draft` returning zero picks forever, and the mock would never appear.
+    """
+    api = LeagueSettings(
+        num_teams=12, scoring={"pass_td": 6.0}, roster_slots={"QB": 1}, rounds=1,
+        draft_id="real-draft",
+    )
+    monkeypatch.setattr("ffhelper.cli.load_sleeper_settings", lambda league_id: api)
+    league = League(name="mock", platform="sleeper", league_id="1", draft_id="mock-draft")
+
+    got = resolve_settings(league)
+
+    assert got.draft_id == "mock-draft"
+    assert got.scoring == {"pass_td": 6.0}, "scoring must still be the league's"
+    assert got.num_teams == 12
+
+
+def test_no_draft_id_override_leaves_settings_exactly_as_synced(monkeypatch):
+    """The override must be inert when unset -- the real league path is unchanged."""
+    api = LeagueSettings(
+        num_teams=12, scoring={"pass_td": 6.0}, roster_slots={"QB": 1}, rounds=1,
+        draft_id="real-draft",
+    )
+    monkeypatch.setattr("ffhelper.cli.load_sleeper_settings", lambda league_id: api)
+    league = League(name="sleeper-main", platform="sleeper", league_id="1")
+    assert resolve_settings(league) is api
+
+
 def test_load_board_inputs_manual_league_produces_correct_board(monkeypatch):
     """A config-only league (no platform API) produces a correct, ranked board."""
     players = {

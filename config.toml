@@ -19,6 +19,18 @@ league_id = "1395959490938966016"
 # Set this manually once the draft order is final. Never trust the API for it.
 # draft_slot = 3
 
+# Task 13 rehearsal. Borrows sleeper-main's synced scoring and roster and points
+# the pick feed at a Sleeper mock draft instead -- a mock has a draft_id but no
+# league of its own, so its settings cannot be fetched. Set draft_id from the
+# mock draft URL (the long number after /draft/), set draft_slot to the seat you
+# drew, then: python -m ffhelper.cli run --league mock
+# [[league]]
+# name = "mock"
+# platform = "sleeper"
+# league_id = "1395959490938966016"
+# draft_id = "PASTE_MOCK_DRAFT_ID_HERE"
+# draft_slot = 1
+
 [[league]]
 name = "yahoo-main"
 platform = "yahoo"
