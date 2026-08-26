@@ -5,25 +5,34 @@ Ordered by deadline.
 
 ## What is left, in one place
 
-**Task 13 is DONE** — a full 180-pick mock was run and every defect it exposed is
-fixed (section 11). Remaining work, in priority order:
+**Task 13 is DONE** (section 11). **The human mocks are DONE and `adp_source` is
+settled at n=3** (section 12a) — `yahoo-main` moved to `"sleeper"`. Remaining
+work, in priority order:
 
-1. **Run a HUMAN mock and settle `adp_source`.** Section 12. The single largest
-   remaining accuracy question. `sleeper-main` is now on `adp_source =
-   "sleeper"` on a mechanistic argument, NOT a measurement — one line to revert.
-   `scripts/calibrate.py <draft_id> <slot>` settles it.
-2. **Treat the top of each position as a tier, not a ranking.** Section 15 —
-   NEW. Across 2021–2025 no position ranks its own top 12 better than ~+0.35
+1. **Draft-day command cheat sheet. NOW THE TOP ITEM, and it is due.** Section
+   16. Its trigger was "after the human mock, no later than Aug 30" — the mocks
+   are done and the notation changed once more this session (comma batching), so
+   the reason for holding it back is gone. Six days to the Yahoo draft, which is
+   the one where every pick is hand-typed.
+2. **Treat the top of each position as a tier, not a ranking.** Section 15.
+   Across 2021–2025 no position ranks its own top 12 better than ~+0.35
    Spearman. The tier column already carries this; the board under-uses it.
    Awareness is probably the whole fix before Sept 1.
-3. **Draft-day command cheat sheet.** Section 16 — NEW. Held back on purpose
-   until the notation stops changing; trigger is after the human mock, and no
-   later than Aug 30.
+3. **SURV is now conditional and roughly twice as accurate** (section 2, shipped
+   2026-08-26). It still reads low — says 0–20%, 30% survive — so treat it as a
+   strong ordering rather than a literal probability, but it is no longer
+   misleading by ~25 points.
 4. **Bench-mode ordering.** Section 14. Honest but still weak once starters fill.
 5. **FantasyPros ECR local look.** Section 18 — 20 minutes, needs a manual
    download. Run the ECR-vs-ADP correlation first; it decides the rest.
 6. **Deferred minors.** Section 9 — two left, both trivial, neither load-bearing.
-7. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
+7. **Delete the `yahoo-mock` block** from `config.toml` once no more mocks are
+   planned. It is scratch, and its `draft_slot` has been edited three times.
+8. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
+
+**Optional, now cheap:** full-PPR 12-team mocks would test `sleeper-main`'s
+`adp_ppr` directly, which the half-PPR mocks did not. Join, do not type, paste
+the results page afterwards.
 
 **Phases 3, 4 and 5 can now be built in parallel with all of the above**, under
 one rule: **`value.py` and `data.py` are frozen until both drafts are done.**
@@ -103,7 +112,13 @@ regime changes.
 
 ---
 
-## 2. CLOSED 2026-08-25 — `survival_prob` stays unconditional. Do not reopen.
+## 2. REOPENED AND SHIPPED 2026-08-26 — conditioning was right after all
+
+**Read the 2026-08-26 note at the end of this section first.** The 2026-08-25
+rejection below stands as a record of correct reasoning on the evidence then
+available, and the reopen condition it set was met exactly as written.
+
+## 2 (historical). CLOSED 2026-08-25 — `survival_prob` stays unconditional.
 
 The final review's finding #4 said the SURV column is wrong for fallers, citing
 Nico Collins and George Pickens at pick 61 reading **SURV 0.00%** with inflated
@@ -156,6 +171,49 @@ conditional fix only.
 **If this is ever revisited, the conditional logistic is the option to take, and
 it needs validation data first** — historical per-draft pick results, which FFC
 does not expose but Sleeper's completed drafts do. Offseason work.
+
+### REOPENED AND SHIPPED 2026-08-26 — the condition above was met exactly
+
+**The validation data arrived**: three transcribed Yahoo mocks, 540 picks, rooms
+measurably not list-followers. And it said the problem is far bigger than the
+faller rows this section was arguing about.
+
+**What 2026-08-25 got right:** the option (variance-matched conditional
+logistic), the rejection of `S(at)/S(current)` on a gaussian, and refusing to
+ship on a constructed board state. All three held.
+
+**What it got wrong: the frequency.** This section costed the fix as repairing
+"one row every few drafts" — the extreme fallers. But the unconditional form is
+smaller than the conditional one for **every player on every board**, not just
+fallers, because every player being evaluated has by definition already survived
+to the current pick. So the bias is systematic, not tail-only:
+
+| model says | unconditional (shipped until now) | conditional logistic | ideal |
+| --- | --- | --- | --- |
+| 0-20% | 46% | **30%** | 10% |
+| 20-40% | 60% | **49%** | 30% |
+| 40-60% | 72% | **64%** | 50% |
+| 60-80% | 83% | **80%** | 70% |
+| 80-100% | 93% | 91% | 90% |
+
+**Weighted calibration error 0.145 → 0.081.** No fitted parameters — nothing is
+tuned to these three drafts; it is the same distribution asked the right
+question.
+
+**Blast radius measured before shipping, which is what made it safe a week out:**
+across board states at picks 2, 19, 42 and 79 on the real `yahoo-main` pool,
+**0–3 of the top 10 rows reorder and no new player enters the top 10 at any of
+them.** VONA raises survival proportionally within a position, so comparisons
+survive. The 2026-08-25 objection — "17/20 at pick 27, bad trade" — was measured
+on the *conditional gaussian*, not on this.
+
+Gaussian and logistic tie on accuracy (0.081 vs 0.082). The logistic ships
+because its tail degrades instead of lying: a gaussian's hazard explodes, so
+`S(at)/S(from)` divides by ~0 and reports a fabricated 0.00% for exactly the
+player most obviously still fallable.
+
+`value.py` was unfrozen once, deliberately, for this. Covered by three new tests
+(each verified red against pre-fix source) and five mutations.
 
 ---
 
@@ -400,6 +458,330 @@ but treat TE survival with suspicion until measured.
 It prints the table above for both sources. Pick whichever is closer to
 10/30/50/70/90 and set `adp_source` accordingly. **Yahoo stays on `ffc`** — those
 drafters are not in the Sleeper app.
+
+---
+
+## 12a. The human mock runs on YAHOO — set up 2026-08-26, ready to run
+
+Sleeper's mock drafts are against CPUs; there is no public lobby of strangers.
+Yahoo has one. So the human mock moves to Yahoo, which is a **better** rehearsal
+anyway: Yahoo has no pick feed, so every pick is hand-typed — exactly the Sept 1
+interface, at full length, under a real clock, for the first time.
+
+### What it can and cannot settle — read this before drawing a conclusion
+
+**It cannot settle `sleeper-main`'s `adp_source`.** Section 12's whole argument
+for `"sleeper"` is a mechanism: Sleeper drafters are anchored on the ADP Sleeper
+prints on their own draft board. A Yahoo room is anchored on **Yahoo's** ADP,
+which is a third number the tool does not carry. Whichever source wins on Yahoo
+says nothing about which one predicts the Sept 6 Sleeper room. Do not carry the
+result across.
+
+**What it does settle, and this is new:**
+
+- **Whether the manual-entry interface survives a full draft under a clock.**
+  ~180 picks typed by hand, with disambiguation and corrections, while the pick
+  timer runs. Nothing has ever tested this. It is the Sept 1 draft's *only*
+  interface, and it is a week out.
+- **The first non-circular calibration the model has ever had.** The Task 13
+  numbers are circular — CPU drafters picking off Sleeper's own list. Humans
+  anchored on a *third* ADP are an independent test of the model FORM (is a
+  gaussian around an ADP mean the right shape at all?), even though it cannot
+  rank the two means for a Sleeper room.
+- **`yahoo-main`'s `adp_source` directly**, which is on `ffc` and is the league
+  drafting first, on Sept 1.
+
+### Setup, done
+
+- **`config.toml` has a `yahoo-mock` block.** Three lines to set from the lobby
+  before starting: `num_teams`, `draft_slot` (random, only known at draft time),
+  and `rec` (1.0 / 0.5 / 0.0 for PPR / half / standard). Scoring is copied from
+  `yahoo-main`; it does not affect survival calibration at all — that is pure
+  ADP — and only mildly reorders the board. Delete the block afterwards.
+- **`scripts/calibrate.py` takes a `.draft/*.jsonl` journal** in place of a
+  Sleeper draft id. Pick order is reconstructed from the order marks were typed,
+  with taken-back and undone marks excluded from the numbering.
+- **It refuses to score a log it cannot trust.** Journal pick numbers are only
+  as good as the typing: miss one pick and every number after it shifts, which
+  silently moves every survival horizon. So the picks claimed with `me` must
+  land exactly on the seat's snake positions, or it prints both lists and stops.
+  Same rule `backtest.py` applies to a projection source — degrade, never
+  fabricate. Verified working on the Task 13 mock (reproduces 73/82/89/90/94 and
+  4/17/52/91/100) and on a constructed journal, both directions.
+
+### Running it
+
+1. Join a Yahoo mock. **Note the team count and scoring from the lobby**, edit
+   those into `yahoo-mock`, and note your seat once the order is drawn.
+2. `.venv/bin/python -m ffhelper.cli preflight --league yahoo-mock` — cheap, and
+   it is the only thing that proves the `draft_slot` edit actually took.
+3. `.venv/bin/python -m ffhelper.cli run --league yahoo-mock`
+4. Type **every** pick as it happens, `me <player>` for your own. Falling behind
+   costs the calibration but not the rehearsal — and the tool will say so rather
+   than score a drifted log. The journal replays on restart, so a config edit
+   mid-draft is recoverable: ctrl-C, edit, restart.
+5. `.venv/bin/python scripts/calibrate.py .draft/yahoo-mock-<date>.jsonl <slot>`
+
+### The thing most likely to go wrong
+
+**The clock.** Yahoo mock lobbies run short pick timers and the room drafts fast.
+Typing 12 picks per round while also making your own is the actual experiment.
+If it turns out to be impossible, that is the single most important finding this
+mock can produce, and it is worth knowing on Aug 26 rather than Sept 1 — the
+answer would be to widen `_handle_command`'s notation, not to hope.
+
+### RUN 1 (2026-08-26): ABANDONED IN ROUND 1 — and it was our bug
+
+Did not survive one round. Names typed took seconds to appear; five picks behind
+almost immediately. It read like a slow terminal. **It was `_run`.**
+
+`_run` ended each tick with `time.sleep(interval)` and drained typed commands
+only at tick boundaries, so a name typed just after a tick waited up to a full
+poll interval. On Yahoo that is `poll_seconds = 12` — **spent waiting on a feed
+that does not exist**, in the one mode where the board can only ever change
+because you typed something. Compounding over consecutive names is exactly the
+"five picks behind" that was observed.
+
+Fixed: the loop now blocks on the input queue (`_wait_for_input`) with the poll
+deadline as a *timeout*, so a keystroke wakes it at once and the interval paces
+the network and nothing else. **Measured on the real 632-player pool, yahoo-mock,
+12 names typed at 3/sec: median 34 ms, worst 39 ms from keystroke to redraw.**
+Was up to 12 000 ms.
+
+Two things worth keeping from how this was found:
+
+- **The first suspect was wrong and measuring killed it in one run.** `build_board`
+  looked like the obvious culprit — VONA re-sorts a position list per candidate.
+  It is **20 ms** on the full pool at every pick number tested. Never the problem.
+- **The first version of the fix's test was vacuous and `mutate.py` caught it.**
+  It asserted `all(0.0 <= t <= interval)` on the wait timeout, which a mutation to
+  a constant `0.0` passes happily — and a 0.0 timeout is not "instant", it is a
+  busy spin at 100% CPU. The assertion now pins the first wait at 0.0 (poll
+  immediately on startup) and every later one to the interval.
+
+### RUN 2 (2026-08-26): responsive, still not finished — and that is fine
+
+"Much better and much more responsive." Also abandoned: **the lobby clock is 30s
+a pick**, and with instant autopicks that is roughly one pick every eight
+seconds across 12 seats.
+
+**The mock lobby is the wrong draft to optimise for, and the arithmetic says so.**
+
+| | teams | hand-entry burden |
+| --- | --- | --- |
+| Sleeper, Sept 6 | 12, 120s | **none — it has a live feed** |
+| Yahoo, Sept 1 | 10, **90s+** (user-confirmed) | ~150 picks, ≈1 per 36s over a 90-min draft |
+| Yahoo mock | 12, 30s + autopicks | ~180 picks, ≈1 per 8s |
+
+Hand-entry matters for exactly ONE draft, and the mock demanded it 4× faster
+than that draft will. Run 2 did not fail; it passed a harder test than the real
+one. **Do not build for the 30s case.**
+
+Built anyway, because both are cheap and both help the real draft:
+
+- **Comma-batching.** `nacua, me chase, gibbs` is one round trip instead of
+  three, which is the catch-up path if Sept 1 ever gets ahead of you. This is
+  why the separate pick-counter resync command was NOT built — batching covers
+  the same need without letting the pool go knowingly stale.
+- **Every command in a batch now reports its own outcome.** The status line used
+  to be overwritten per command, so `a, nobody` showed only the last result.
+  That is invariant #3 broken in the mode that needs it most — a batch is
+  exactly where a miss hides, because the screen still looks like it worked.
+
+### Getting calibration WITHOUT live typing — `scripts/transcribe.py`
+
+Live entry and calibration were coupled only by accident. Survival is measured
+from the ORDER players left the board, and a finished results page carries that
+order with no clock on it. So paste the board in afterwards:
+
+    .venv/bin/python scripts/transcribe.py yahoo-mock <slot> results.txt
+    .venv/bin/python scripts/calibrate.py .draft/yahoo-mock-<date>-transcript.jsonl <slot>
+
+**A draft too fast to type into is still a measurable draft.** That closes the
+gap that made runs 1 and 2 feel wasted.
+
+Two guards worth knowing:
+
+- **It refuses to write unless every line resolves to exactly one player.** A
+  dropped or guessed line shifts every pick number after it. Position in
+  parentheses does the narrowing (Bijan vs Brian Robinson).
+- **Transcripts are written as `<league>-<date>-transcript.jsonl`, never
+  `<league>-<date>.jsonl`.** The latter is the live board's own journal and
+  `ffhelper.cli run` REPLAYS it on startup — a transcript under that name would
+  silently pour a finished draft into the next live board. Caught by running it,
+  not by a test.
+
+### Does your own autopicking corrupt the calibration? No.
+
+Asked during run 2, and worth recording because the intuition is reasonable and
+the answer is not obvious. `calibrate.py` never reads `my_roster`. Your picks
+enter only as the turn boundaries `cur`→`nxt` between which the ROOM's picks are
+scored, and those come from your SEAT, not your choices. Your one autopick per
+turn is one player among the ~11 taken in that window, and he is equally gone
+either way.
+
+**What does corrupt it is how many OTHER seats autopicked**, because Yahoo's
+autodraft picks straight down Yahoo's ADP — the Task 13 circularity arriving by a
+new route. So `calibrate.py` now prints **room discipline**: the median rank, in
+ADP order, of the player each pick took, plus the share that took the top
+available. Validated against the known-circular Task 13 mock, where it
+reproduces the numbers recorded in section 12 exactly — median 2, 36% at top —
+and fires ONLY on the Sleeper source, not on FFC (median 8), which is correct:
+those bots were picking off Sleeper's list, not FFC's.
+
+**Read that line before believing any table under it.**
+
+### FIRST NON-CIRCULAR CALIBRATION — 2026-08-26, 12-team Yahoo mock, seat 8
+
+180 picks, transcribed from Yahoo's results page in one pass (every row resolved
+first try — defenses, kickers and suffixed names included).
+
+**Room discipline: median rank taken 7 (ffc) / 5 (sleeper), 14–15% took the top
+available.** The Task 13 bot mock read median 2, 36%. So this room was
+substantially looser than a bot room — **the first calibration this project has
+that is not measuring an ADP list against itself.**
+
+| model says | FFC | Sleeper | ideal |
+| --- | --- | --- | --- |
+| 0-20% | 62% | **42%** | 10% |
+| 20-40% | 84% | **57%** | 30% |
+| 40-60% | 80% | **68%** | 50% |
+| 60-80% | 85% | **79%** | 70% |
+| 80-100% | 92% | 94% | 90% |
+
+Two readings, and they point opposite ways on confidence:
+
+1. **Sleeper ADP discriminated markedly better than FFC in a YAHOO room.** FFC is
+   near-flat and not even monotonic (84% then 80%); Sleeper is monotonic across
+   all five buckets. **This contradicts section 12's stated reasoning** — "Yahoo
+   stays on `ffc`, those drafters are not in the Sleeper app" — which was a
+   mechanism argument that has now been measured and lost. A plausible mechanism
+   for the reverse: Sleeper's ADP is simply a much larger national sample, and a
+   better-sampled consensus predicts *any* room better, Sleeper app or not.
+2. **Both are badly calibrated in the same direction**: everything survives more
+   often than predicted. When the model says 0-20%, 42-62% actually lasted. The
+   survival model is systematically too pessimistic against this room.
+
+**THIS IS ONE DRAFT. Per this project's own rule it is a hypothesis, not a
+finding, and `yahoo-main` has NOT been switched off `ffc` on the strength of it.**
+The mock is also 12-team half-PPR/4-pt-TD, while `yahoo-main` is 10-team with a
+completion bonus — a different room shape as well as a different sample.
+
+**Getting n=2 and n=3 is now nearly free, and that is the point.** A mock no
+longer has to be typed into: join, let it run, copy the results page, transcribe.
+Three more mocks is an evening's work with no clock pressure at all. **Do that
+before changing `adp_source` for either league.**
+
+### SETTLED 2026-08-26 at n=3 — `yahoo-main` moved to `adp_source = "sleeper"`
+
+Three 12-team half-PPR Yahoo mocks, **540 picks, seats 8 / 11 / 2**, pooled.
+Both mock and `yahoo-main` resolve to the same ADP format (`half-ppr`), so only
+team count differs between the test and the league.
+
+| model says | FFC | Sleeper | ideal |
+| --- | --- | --- | --- |
+| 0-20% | 68% | **46%** | 10% |
+| 20-40% | 82% | **60%** | 30% |
+| 40-60% | 83% | **72%** | 50% |
+| 60-80% | 87% | **83%** | 70% |
+| 80-100% | 92% | 93% | 90% |
+
+**FFC spans 24 points across its entire range and is not monotonic — close to no
+discriminating power. Sleeper spans 47 and rises in every bucket.** The pattern
+held in all three drafts individually, not just pooled.
+
+**Not circular:** room discipline was median ADP rank taken 7 / 9 / 10 with
+11–13% taking the top available, against the Task 13 bot mock's median 2 and 36%.
+These rooms were not following a list.
+
+This **reverses section 12's "Yahoo stays on `ffc`"**, which was a mechanism
+argument ("those drafters are not in the Sleeper app") that had never been
+measured. A mechanism that loses to a measurement is just a hypothesis. The
+likely replacement mechanism: Sleeper's ADP is a far larger national sample, and
+better sampling predicts any room, Sleeper app or not.
+
+**`sleeper-main` is unchanged, and this evidence does NOT directly validate it.**
+It is **full PPR** (synced from the API: `rec = 1.0`, `pass_td = 6.0`), so it
+resolves to `fmt = ppr` and reads Sleeper's `adp_ppr` — a different column from
+the `adp_half_ppr` these half-PPR mocks tested. It stays on `"sleeper"` for its
+original mechanism, which is far stronger there than anywhere else: that room
+literally sees Sleeper's own ADP printed on the draft board while picking.
+Confirming it properly would need full-PPR 12-team mocks, which is now cheap —
+join, don't type, paste the results page.
+
+### FIXED 2026-08-26 — the level error was a model-form bug, not the ADP mean
+
+**Superseded by section 2's reopen note; the diagnosis below was wrong and is
+kept because the wrong turn is instructive.** I concluded the level bias had to
+be the ADP mean, having ruled out the spread. It was neither: `survival_prob`
+was answering the UNCONDITIONAL question `P(X > at)` when the board only ever
+asks about players who are demonstrably still available, i.e. `P(X > at | X >
+now)`. The unconditional form is smaller by construction, so it was pessimistic
+for every row on every board.
+
+Conditioning cut weighted calibration error from **0.145 to 0.081** and shipped;
+board ordering barely moves (0–3 of the top 10 across four pick numbers). What
+remains after the fix is still pessimistic (says 0–20%, 30% survive) but is now
+roughly half the error it was, and the residue may genuinely be the ADP mean.
+
+**The lesson worth keeping: "not the spread" did not entitle me to "therefore the
+mean."** Those were not the only two options, and the third one — the model is
+computing the wrong quantity — was the actual answer. I had eliminated one
+suspect and announced the verdict.
+
+### Historical: both sources are badly wrong in LEVEL
+
+Not a tie-break between sources — it applies to whichever one is chosen. **The
+model says 0–20% and roughly half of those players survive.** The whole curve
+sits ~25–35 points below reality, worst in the low band and nearly right at the
+top (93% vs 90%).
+
+Consequence, since survival feeds VONA: **the board systematically overstates the
+cost of waiting, i.e. it leans toward reaching.** The error is largest exactly
+for the players it says are least likely to last — the top of the board.
+
+**Deliberately NOT fixed in code, on two grounds.** `value.py` is frozen until
+both drafts are done, and a shift fitted to three mock rooms containing autopick
+seats may not transfer to ten humans in a real league. Before Sept 1 the fix is
+awareness, exactly as with section 15: **read the SURV column as an ordering, not
+as a probability.**
+
+**Ruled out immediately: it is not the stdev.** The obvious suspect was that
+moving to `adp_source = "sleeper"` also dropped FFC's real per-player spread,
+leaving every player on the fitted `curve_stdev` the design calls weak. Measured
+on the same 540 picks — restoring FFC's real stdev for the 208 players that have
+one moves calibration from 46/60/72/83/93 to **43/62/72/86/92**, which is noise.
+**The level error is in the ADP MEAN, not the spread**: these Yahoo rooms simply
+drafted later than Sleeper's half-PPR ADP says. Third independent confirmation of
+"widening cannot fix a location error".
+
+Cheapest next investigation, offseason or if time allows: break the calibration
+down BY POSITION. If the bias is uniform it is a model-level problem (the
+gaussian's spread, or the ADP mean); if it is position-specific it is more likely
+an artifact of these mocks' half-PPR / 4-pt-passing-TD scoring differing from the
+full-PPR ADP the sources publish. Those have different fixes and only one of them
+transfers to the real leagues.
+
+### Scoring several drafts at once — added 2026-08-26
+
+Transcripts are named after their INPUT file, so a morning's mocks do not
+collide: `results2.txt` becomes `.draft/<league>-<date>-results2.jsonl`.
+
+    .venv/bin/python scripts/transcribe.py yahoo-mock .draft/results2.txt
+    .venv/bin/python scripts/calibrate.py .draft/yahoo-mock-2026-08-26-*.jsonl
+
+**Several journals are POOLED into one table per source**, which is the right
+statistic: the question is which ADP mean predicts a real room, and three rooms
+answer it three times better than one. Verified by pooling a draft with a copy of
+itself — n doubles, the percentages are identical.
+
+**The seat is no longer an argument.** It is read out of each journal (your own
+picks are recorded there, and the first of them is your seat in a snake) and
+then proven against the snake. This closes the hole that scored the first real
+transcript against another manager: `transcribe.py` takes the seat from
+`config.toml` and prints it, `calibrate.py` infers it, and neither can now
+disagree with the league. An explicit slot is still accepted as an override, and
+`calibrate.py` says so when it differs from the configured one.
 
 ---
 

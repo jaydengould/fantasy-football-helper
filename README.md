@@ -31,7 +31,7 @@ are planned but not built.
 Python 3.12+. One runtime dependency does the work: `requests`. (`yfpy` is
 declared for the Yahoo feed, which is blocked on developer approval and imports
 nowhere yet.) Everything else is standard library — `tomllib` for config,
-`statistics.NormalDist` for the survival math, `sqlite3` for season mode later.
+`statistics` for the tier maths, `sqlite3` for season mode later.
 Adding a dependency needs a reason a few lines of stdlib cannot cover.
 
 ```bash
@@ -64,15 +64,18 @@ left commented out fails silently in exactly the way this warning describes.
 Optionally, choose which ADP the survival model believes:
 
 ```toml
-adp_source = "ffc"      # default. "sleeper" is the other option.
+adp_source = "sleeper"   # or "ffc" (the code default)
 ```
 
 Survival calibration depends almost entirely on the accuracy of the ADP *mean*,
-so this matters more than it looks. Use `"sleeper"` when your league drafts
-inside the Sleeper app — the room is anchored on the number Sleeper shows them,
-which most drafters have never compared against anything else. Use `"ffc"`
-everywhere else. `scripts/calibrate.py` settles it with a measurement rather than
-an argument (see [Scripts](#scripts)).
+so this matters more than it looks. **Measured across three 12-team mock drafts
+(540 picks), Sleeper's ADP predicted the room roughly twice as well as FFC's** —
+including in Yahoo rooms, where the obvious guess is the other way round. FFC's
+calibration spanned 24 points across its whole range and was not monotonic;
+Sleeper's spanned 47 and rose in every bucket.
+
+Don't take that on faith for your own league: `scripts/calibrate.py` settles it
+with a measurement (see [Scripts](#scripts)), and one config line reverts it.
 
 ### A league without a platform API (Yahoo, ESPN, CBS, anywhere)
 
@@ -171,6 +174,7 @@ board:
 | `-nacua` | take that mark back — he returns to the board |
 | `2` | choose the 2nd option when a name is ambiguous |
 | `u` | undo the last change, whatever it was |
+| `nacua, me chase, gibbs` | several at once — one line instead of one round trip each |
 
 Partial names work, accents and suffixes are handled (`pineiro` finds Eddy
 Piñeiro, `harrison` finds Marvin Harrison Jr.). **Ambiguous names always prompt** —
@@ -222,12 +226,12 @@ A real board, 12-team full PPR, on the clock at pick 45:
 
 ```
 #   PLAYER                   POS     VONA     VBD    MARG TIER   SURV   DIV  FLAGS
-1   Drake Maye               QB       8.0    31.3   378.8    1    23%    +0  bye11
-2   D'Andre Swift            RB       6.5    60.1   208.0    1    61%    +3  bye10
-3   Tyler Warren             TE       6.2    38.6   201.1    1    21%    +0  Questionable bye13
-4   David Montgomery         RB       4.6    58.2   206.1    1    23%    -1  bye8
-5   Garrett Wilson           WR       3.5    47.6   224.9    1    12%    +0  bye13
-6   Sam LaPorta              TE       1.6    34.0   196.5    1    80%    +0  Questionable bye6
+1   Drake Maye               QB       7.4    31.3   378.8    1    25%    +0  bye11
+2   Tyler Warren             TE       5.3    38.6   201.1    1    28%    +0  Questionable bye13
+3   D'Andre Swift            RB       3.8    60.1   208.0    1    71%    +3  bye10
+4   Garrett Wilson           WR       2.8    47.6   224.9    1    20%    +0  bye13
+5   David Montgomery         RB       1.9    58.2   206.1    1    35%    -1  bye8
+6   Sam LaPorta              TE       0.7    34.0   196.5    1    84%    +0  Questionable bye6
 ```
 
 | Column | Meaning |
@@ -236,14 +240,14 @@ A real board, 12-team full PPR, on the clock at pick 45:
 | **VBD** | Points above a replacement-level player at that position |
 | **MARG** | How much this player improves your *starting lineup* — a third RB is worth less than a first |
 | **TIER** | Players in a tier are roughly interchangeable |
-| **SURV** | Probability of still being available at your next pick |
+| **SURV** | Probability of lasting to your next pick, **given he is on the board now** |
 | **DIV** | Projection rank minus market rank, **within position**. A flag, never blended into the score. `-` means the market never priced him — no opinion is not agreement. |
 
 That board is the whole argument. **Swift has the highest VBD on screen (60.1)
-and is not the pick.** He has a 61% chance of lasting to your next turn, so
-waiting costs you 6.5 points. Maye is worth half as much by VBD but only 23%
-likely to survive, so waiting costs 8.0 — and LaPorta, at 80% survival, costs
-1.6, which is the board telling you that tight end can wait a round.
+and is third.** He has a 71% chance of lasting to your next turn, so waiting
+costs you 3.8 points. Maye is worth half as much by VBD but only 25% likely to
+survive, so waiting costs 7.4 — and LaPorta, at 84% survival, costs 0.7, which
+is the board telling you that tight end can wait a round.
 
 A value-ranked cheat sheet puts Swift first and is wrong. The question is never
 "who is best available", it is "who will not be here next time".
@@ -321,11 +325,13 @@ be one.
 
 ## Scripts
 
-Three tools that answer questions the board cannot.
+Four tools that answer questions the board cannot.
 
 ```bash
 .venv/bin/python scripts/backtest.py [season ...]     # is source X actually better?
-.venv/bin/python scripts/calibrate.py <draft_id> <slot>
+.venv/bin/python scripts/calibrate.py <draft_id> <slot>       # Sleeper draft
+.venv/bin/python scripts/calibrate.py <log.jsonl> [more.jsonl ...]   # pooled
+.venv/bin/python scripts/transcribe.py <league> [slot] [results.txt]
 .venv/bin/python scripts/mutate.py
 ```
 
@@ -341,7 +347,32 @@ hurt — and a source that fails is named and skipped, never scored.
 "will this player last to my next pick?", then buckets the answers by what the
 model predicted. A well-calibrated model reads 10/30/50/70/90 down the actual
 column. Flat means it has no discriminating power. This is how `adp_source` gets
-settled by measurement.
+settled by measurement. Given `.draft/*.jsonl` journals instead of a Sleeper
+draft id it scores drafts entered by hand or transcribed, reconstructing pick
+order from the order marks were made. **Pass several and they are pooled into
+one table** — one draft is a hypothesis, not a finding. Your seat is read out of
+each journal and then proven against the snake; a log whose claimed picks don't
+land on a seat's snake positions is refused rather than scored, since a missing
+pick shifts every number after it.
+
+It also reports **room discipline** — the median rank, in ADP order, of the
+player each pick took. A room drafting straight down the list reads 1–2, which
+means the calibration below it is measuring that list against itself. Autodraft
+and CPU drafters do exactly this, so the number decides whether to believe the
+table.
+
+**`transcribe.py`** turns a finished draft's results page into a journal
+`calibrate.py` can score. Copy the results list, `pbpaste > .draft/results.txt`,
+and run it — the seat comes from the league's `draft_slot`. This is how a draft
+too fast to type into still yields a measurement.
+
+It reads rows like `(4) manager - Cook III, James (Buf - RB)`: surname-first
+names are put back in order (so suffix stripping lines them up with the pool),
+defenses join on their **team code** because "Los Angeles" names two of them,
+and rows are sorted by their reconstructed pick number rather than by where they
+appear — a snake's even rounds run right-to-left in the board view. It refuses
+to write if any row resolves to no player or two, or if the rows are not a
+complete `1..N` run, since a missing row shifts every pick after it.
 
 **`mutate.py`** breaks the engine on purpose, one line at a time, and checks the
 suite notices. It is the only mechanical check that a test does anything, and it
@@ -350,7 +381,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 199 tests, no network, runs in ~0.2s
+.venv/bin/pytest          # 236 tests, no network, runs in ~0.3s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

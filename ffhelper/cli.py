@@ -239,6 +239,23 @@ def _handle_command(
     return matches, action, f"multiple matches, type a number to {verb} -- {listing}"
 
 
+def _split_commands(line: str) -> list[str]:
+    """Split one typed line into commands on commas.
+
+    Catching up is where a hand-entered draft is won or lost: falling five picks
+    behind means five names, and one line of `a, b, c, d, e` is one round trip
+    instead of five. Measured need -- a 12-team Yahoo mock on a 30s clock hands
+    you roughly one pick every eight seconds and cannot be kept up with one name
+    at a time.
+
+    Safe to split unconditionally: no player, team or defense name in the pool
+    contains a comma, and a disambiguation number never does either. Empty
+    fragments (a trailing comma, a double comma) are dropped rather than sent on
+    as blank commands.
+    """
+    return [part for part in (p.strip() for p in line.split(",")) if part]
+
+
 def _stdin_reader(q: "queue.Queue[str]") -> None:
     """Daemon-thread target: blocks reading stdin lines so the render loop
     never has to. Runs in its own thread; any failure (stdin unavailable,
@@ -255,6 +272,27 @@ def _stdin_reader(q: "queue.Queue[str]") -> None:
                      "manual input is disabled for the rest of this session", exc)
     else:
         log.warning("stdin closed -- manual input is disabled for the rest of this session")
+
+
+def _wait_for_input(input_queue: "queue.Queue[str]", timeout: float) -> str | None:
+    """Block until a command is typed or `timeout` elapses. -> the line, or None.
+
+    This is what makes typing feel instant, and it is not a micro-optimisation:
+    the loop used to `time.sleep(interval)` and drain the queue only at tick
+    boundaries, so a name typed just after a tick sat unprocessed for up to a
+    full poll interval. On Yahoo that is 12 seconds -- spent waiting on a feed
+    that does not exist, in the one mode where the board can ONLY change because
+    you typed something. It cost a full round of a live mock draft before the
+    cause was found, because the delay looks exactly like a slow terminal.
+
+    Blocking on the queue instead means the poll clock still paces the network
+    and nothing else. A `queue.Queue` is already the hand-off between the stdin
+    thread and this loop; this just uses the part of it that waits.
+    """
+    try:
+        return input_queue.get(timeout=timeout)
+    except queue.Empty:
+        return None
 
 
 def render(
@@ -628,7 +666,8 @@ def _render_tick(
             print(f"\npick {current_pick}   your next pick: {nxt} "
                   f"({nxt - current_pick} away)")
     print("\nname = mark drafted | \"me \" = your own pick | \"-\" = take a mark "
-          "back | number = disambiguate | 'u' = undo")
+          "back | number = disambiguate | 'u' = undo"
+          "\ncommas enter several at once:  nacua, me chase, gibbs")
     if status:
         print(status)
     print("\n(ctrl-c to stop; run `preflight` before the draft)")
@@ -693,31 +732,56 @@ def _run(
     interval = max(interval, 1)  # ponytail: floor to 1s to prevent busy-loop / API rate limiting
 
     iterations = 0
+    next_poll = 0.0        # monotonic deadline; 0 forces a poll on the first tick
     while max_iterations is None or iterations < max_iterations:
         # Cleared every tick: a status set by a command belongs to the tick
         # it happened on. Without this reset, a message from an earlier tick
         # (when the queue was last non-empty) keeps re-printing on every
         # subsequent tick forever, since nothing else ever overwrites it.
         status = ""
+        # Wait for a typed command OR for the next poll to fall due, whichever
+        # comes first -- never a flat sleep. The poll interval paces the network
+        # and nothing else; a keystroke wakes the loop immediately. See
+        # `_wait_for_input`.
+        first = _wait_for_input(input_queue, max(0.0, next_poll - time.monotonic()))
+        lines = [] if first is None else [first]
         while not input_queue.empty():
-            # Guarded per COMMAND, not per drain: one bad line must not discard
-            # the rest of the queue. This is the third per-tick statement and
-            # obeys the same rule as the other two -- nothing here propagates.
-            line = input_queue.get_nowait()
-            try:
-                pending, pending_action, status = _handle_command(
-                    line, players, mark_state, pending, pending_action
-                )
-            except Exception as exc:                  # noqa: BLE001 - loop must never die
-                log.warning("command %r failed: %s", line, exc)
-                status = f"could not handle {line!r} -- try again"
+            lines.append(input_queue.get_nowait())
+        # Every command's message is KEPT, not overwritten. A batch of five
+        # names produces five outcomes and any of them can be a miss or an open
+        # disambiguation; showing only the last one would silently drop the
+        # rest, which is invariant #3 broken in the exact mode that needs it
+        # most. This also fixes the same overwrite for several lines typed
+        # between two ticks.
+        statuses: list[str] = []
+        for line in lines:
+            for command in _split_commands(line):
+                # Guarded per COMMAND, not per drain: one bad line must not
+                # discard the rest of the queue. This is the third per-tick
+                # statement and obeys the same rule as the other two -- nothing
+                # here propagates.
+                try:
+                    pending, pending_action, message = _handle_command(
+                        command, players, mark_state, pending, pending_action
+                    )
+                except Exception as exc:              # noqa: BLE001 - loop must never die
+                    log.warning("command %r failed: %s", command, exc)
+                    message = f"could not handle {command!r} -- try again"
+                if message:
+                    statuses.append(message)
+        status = "  |  ".join(statuses)
 
-        try:
-            picks = feed.get_picks()
-            if has_feed:
-                last_ok = time.time()
-        except Exception as exc:                      # noqa: BLE001 - loop must never die
-            log.warning("poll failed: %s", exc)
+        # Only when it actually falls due. Waking on a keystroke must not turn
+        # every character typed into a network request -- Sleeper IP-blocks
+        # above ~1000 req/min and Yahoo's limits are undocumented.
+        if time.monotonic() >= next_poll:
+            try:
+                picks = feed.get_picks()
+                if has_feed:
+                    last_ok = time.time()
+            except Exception as exc:                  # noqa: BLE001 - loop must never die
+                log.warning("poll failed: %s", exc)
+            next_poll = time.monotonic() + interval
 
         # Redraw only when something actually changed. Polling stays at
         # `interval` so the feed is never behind, but a full screen-clear every
@@ -740,8 +804,6 @@ def _run(
                 log.error("draft tick failed: %s", exc, exc_info=True)
 
         iterations += 1
-        if max_iterations is None or iterations < max_iterations:
-            time.sleep(interval)
     return 0
 
 

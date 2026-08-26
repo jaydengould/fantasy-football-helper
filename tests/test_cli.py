@@ -1,3 +1,4 @@
+import itertools
 import logging
 import queue
 import time
@@ -6,7 +7,7 @@ import pytest
 
 from ffhelper.cli import (
     MarkDrafted, NullFeed, _claims_overruled_by_feed, _combine_my_roster, _draft_log_path,
-    _handle_command, _restore_marks,
+    _handle_command, _restore_marks, _split_commands, _wait_for_input,
     _my_roster_from_picks, _preflight, _render_tick, _run, _select_feed, _stdin_reader,
     find_players, load_board_inputs, league_settings_from_config, main, render, resolve_settings,
 )
@@ -336,6 +337,22 @@ class _FakeFeed:
         return self._picks
 
 
+def _instant_ticks(monkeypatch):
+    """Drive `_run`'s loop with no real waiting.
+
+    Two things have to be faked together, not one. The loop blocks on the input
+    QUEUE (so typing wakes it immediately) but polls the feed on a monotonic
+    DEADLINE (so a keystroke does not become a network request). Stubbing only
+    the wait would spin iterations while the clock stood still, and the feed
+    would be polled once for the whole test. Advancing the clock by more than
+    any poll interval per call makes each test iteration equivalent to one real
+    interval elapsing, which is what these tests mean by a tick.
+    """
+    monkeypatch.setattr("ffhelper.cli._wait_for_input", lambda q, timeout: None)
+    clock = itertools.count(0.0, 1000.0)
+    monkeypatch.setattr("ffhelper.cli.time.monotonic", lambda: next(clock))
+
+
 def _loop_league(draft_slot=None):
     return League(name="loop-league", platform="sleeper", league_id="1", draft_slot=draft_slot)
 
@@ -364,7 +381,7 @@ def test_run_survives_render_failure_and_keeps_going(monkeypatch):
                          lambda league, tunables: (_loop_players(), _loop_settings()))
     fake_feed = _FakeFeed(picks=[])
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: fake_feed)
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
 
     render_calls = {"n": 0}
 
@@ -386,7 +403,7 @@ def test_run_survives_feed_failure_and_still_renders_with_stale_banner(monkeypat
                          lambda league, tunables: (_loop_players(), _loop_settings()))
     fake_feed = _FakeFeed(fail=True)
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: fake_feed)
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
 
     # Only the very first time.time() call (which seeds last_ok in _run) is
     # faked, 30s into the past -- everything else (the stale calc, and the
@@ -449,7 +466,7 @@ def test_identical_ticks_are_not_redrawn(monkeypatch):
                          lambda league, tunables: (_loop_players(), _loop_settings()))
     fake_feed = _FakeFeed(picks=[])
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: fake_feed)
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
 
     draws = {"n": 0}
     real = _render_tick
@@ -470,7 +487,7 @@ def test_a_new_pick_forces_a_redraw(monkeypatch):
     """The dedup must not suppress real updates."""
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_loop_players(), _loop_settings()))
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
 
     class GrowingFeed:
         def __init__(self):
@@ -599,7 +616,7 @@ def test_run_propagates_keyboard_interrupt_from_feed(monkeypatch):
             raise KeyboardInterrupt("user stop")
 
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _InterruptFeed())
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
 
     # KeyboardInterrupt should propagate out, not be caught internally.
     with pytest.raises(KeyboardInterrupt):
@@ -806,7 +823,7 @@ def test_run_wires_manual_marks_into_the_board(monkeypatch, capsys):
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_loop_players(), _loop_settings()))
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
 
     q: queue.Queue = queue.Queue()
     q.put("A")  # matches the sole player in _loop_players(), id "1"
@@ -863,7 +880,7 @@ def test_run_with_no_draft_id_starts_and_renders_a_board(monkeypatch, capsys):
                                rounds=1, draft_id=None)
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_loop_players(), settings))
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
     league = League(name="yahoo-main", platform="yahoo", league_id="1")
 
     result = _run(league, Tunables(), limit=10, max_iterations=2)
@@ -884,7 +901,7 @@ def test_run_with_no_draft_id_shows_manual_status_and_no_stale_banner(monkeypatc
                                rounds=1, draft_id=None)
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_loop_players(), settings))
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
     league = League(name="yahoo-main", platform="yahoo", league_id="1")
 
     result = _run(league, Tunables(), limit=10, max_iterations=2)
@@ -905,7 +922,7 @@ def test_run_sleeper_league_with_draft_id_is_unaffected_by_null_feed_path(monkey
                          lambda league, tunables: (_loop_players(), _loop_settings()))
     fake_feed = _FakeFeed(picks=[])
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: fake_feed)
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
 
     result = _run(_loop_league(), Tunables(), limit=10, max_iterations=1)
     out = capsys.readouterr().out
@@ -1372,7 +1389,7 @@ def test_run_self_mark_via_me_prefix_reaches_my_roster_end_to_end(monkeypatch, c
                                rounds=1, draft_id=None)
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_loop_players(), settings))
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
     league = League(name="yahoo-main", platform="yahoo", league_id="1")
 
     q: queue.Queue = queue.Queue()
@@ -1568,7 +1585,7 @@ def test_run_action_status_shows_on_its_tick_and_is_gone_the_next(monkeypatch, c
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_loop_players(), _loop_settings()))
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
 
     q: queue.Queue = queue.Queue()
     q.put("A")  # matches the sole player in _loop_players(), id "1"
@@ -1659,7 +1676,7 @@ def test_superscript_digit_at_a_disambiguation_prompt_does_not_kill_the_loop(mon
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_two_robinsons(), _loop_settings()))
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
 
     q: queue.Queue = queue.Queue()
     q.put("robinson")   # ambiguous -> opens the disambiguation list
@@ -1674,7 +1691,7 @@ def test_a_raising_command_leaves_the_rest_of_the_queue_drainable(monkeypatch, c
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_two_robinsons(), _loop_settings()))
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
-    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+    _instant_ticks(monkeypatch)
 
     calls = {"n": 0}
     real = _handle_command
@@ -1697,3 +1714,137 @@ def test_a_raising_command_leaves_the_rest_of_the_queue_drainable(monkeypatch, c
     assert result == 0
     assert calls["n"] == 2
     assert "marked Brian Robinson" in out
+
+
+def test_wait_for_input_returns_a_typed_line_at_once():
+    q = queue.Queue()
+    q.put("gibbs")
+    assert _wait_for_input(q, 30.0) == "gibbs"          # no waiting on the clock
+
+
+def test_wait_for_input_returns_none_when_nothing_is_typed():
+    assert _wait_for_input(queue.Queue(), 0.01) is None
+
+
+def test_the_loop_waits_on_the_queue_never_on_a_flat_sleep(monkeypatch):
+    """A name typed just after a tick must be handled at once.
+
+    The loop used to `time.sleep(interval)` and drain typed commands only at
+    tick boundaries, so on Yahoo -- 12s poll, and NO feed to poll, so the board
+    can only ever change because you typed something -- every name waited up to
+    12 seconds. That is what fell five picks behind in the first live Yahoo
+    mock, and it reads exactly like a slow terminal, which is why it needs a
+    test rather than a memory.
+
+    Pinned two ways: the wait must be on THE input queue (so a keystroke ends
+    it), and `time.sleep` must never be reached at all.
+    """
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                        lambda league, tunables: (_loop_players(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+
+    def no_sleeping(_seconds):
+        raise AssertionError("the loop slept instead of waiting on typed input")
+
+    monkeypatch.setattr("ffhelper.cli.time.sleep", no_sleeping)
+
+    waits = []
+
+    def fake_wait(q, timeout):
+        waits.append((q, timeout))
+        return None
+
+    monkeypatch.setattr("ffhelper.cli._wait_for_input", fake_wait)
+
+    q = queue.Queue()
+    tunables = Tunables(poll_seconds={"sleeper": 5})
+    assert _run(_loop_league(), tunables, limit=10, max_iterations=3, input_queue=q) == 0
+
+    assert [w[0] for w in waits] == [q, q, q]        # waited on the typed-input queue
+    # The first tick polls straight away, so it waits for nothing. Every wait
+    # after that must run out to the poll interval and no further: too long and
+    # the feed falls behind, and a floor of 0.0 is not "instant" but a busy
+    # spin at 100% CPU -- which is what a mutation of this line does, and what
+    # an `all(t <= interval)` assertion happily allowed through.
+    assert waits[0][1] == 0.0
+    assert all(4.9 < t <= 5.0 for _, t in waits[1:])
+
+
+def test_a_keystroke_does_not_become_a_network_request(monkeypatch):
+    """Waking on input must not re-poll. Sleeper IP-blocks above ~1000 req/min,
+    so a poll per typed character would be worse than the latency it fixes."""
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                        lambda league, tunables: (_loop_players(), _loop_settings()))
+    feed = _FakeFeed(picks=[])
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: feed)
+    # Clock stands still: no poll is ever due after the first.
+    monkeypatch.setattr("ffhelper.cli.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr("ffhelper.cli._wait_for_input", lambda q, timeout: None)
+
+    _run(_loop_league(), Tunables(), limit=10, max_iterations=5, input_queue=queue.Queue())
+
+    assert feed.calls == 1
+
+
+def test_split_commands_breaks_one_line_into_several():
+    assert _split_commands("nacua, me chase, gibbs") == ["nacua", "me chase", "gibbs"]
+    assert _split_commands("gibbs") == ["gibbs"]
+    assert _split_commands("a,,b,") == ["a", "b"]          # stray commas drop out
+    assert _split_commands("  ") == []
+
+
+def test_a_comma_batch_marks_every_name_in_one_tick(monkeypatch):
+    """Falling behind costs one line, not one line per pick.
+
+    A 12-team Yahoo mock on a 30s clock hands over roughly one pick every eight
+    seconds; catching up five picks one name at a time is what ended run 2.
+    """
+    pool = {
+        "1": Player("1", "Aaron Alpha", "RB", "ATL", proj_pts=100.0, adp=1.0, adp_stdev=1.0),
+        "2": Player("2", "Bobby Beta", "WR", "BUF", proj_pts=90.0, adp=2.0, adp_stdev=1.0),
+    }
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                        lambda league, tunables: (pool, _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    _instant_ticks(monkeypatch)
+
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+
+    q = queue.Queue()
+    q.put("alpha, me beta")
+    assert _run(_loop_league(draft_slot=1), Tunables(), limit=10,
+                max_iterations=1, input_queue=q) == 0
+
+    out = "\n".join(printed)
+    assert "marked Aaron Alpha" in out
+    assert "marked Bobby Beta" in out and "as yours" in out
+
+
+def test_every_command_in_a_batch_reports_its_own_outcome(monkeypatch):
+    """A miss inside a batch must not be swallowed by the command after it.
+
+    The status line used to be overwritten per command, so `a, nobody` showed
+    only the last outcome. Invariant #3 -- unmatched players are printed, never
+    silently dropped -- and in a batch it is precisely the failures that are
+    easy to miss, because the screen still looks like it worked.
+    """
+    pool = {
+        "1": Player("1", "Aaron Alpha", "RB", "ATL", proj_pts=100.0, adp=1.0, adp_stdev=1.0),
+        "2": Player("2", "Bobby Beta", "WR", "BUF", proj_pts=90.0, adp=2.0, adp_stdev=1.0),
+    }
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                        lambda league, tunables: (pool, _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    _instant_ticks(monkeypatch)
+
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+
+    q = queue.Queue()
+    q.put("alpha, nobody at all")
+    _run(_loop_league(), Tunables(), limit=10, max_iterations=1, input_queue=q)
+
+    out = "\n".join(printed)
+    assert "marked Aaron Alpha" in out              # the hit is still reported
+    assert "no match for 'nobody at all'" in out    # and so is the miss

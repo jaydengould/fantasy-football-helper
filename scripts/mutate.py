@@ -42,9 +42,19 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if i < len(gaps) and gaps[i] > threshold:", "if i < len(gaps) and gaps[i] >= threshold:"),
         ("tier sigma ignored",
          "sigma * statistics.pstdev(threshold_gaps)", "statistics.pstdev(threshold_gaps)"),
+        ("survival conditions on the current pick",
+         "return min(still_there(at_pick) / still_there(from_pick), 1.0)",
+         "return still_there(at_pick)"),
         ("survival inverted",
-         "return 1.0 - NormalDist(player.adp, max(stdev, 0.1)).cdf(at_pick)",
-         "return NormalDist(player.adp, max(stdev, 0.1)).cdf(at_pick)"),
+         "return 1.0 / (1.0 + math.exp(min((pick - player.adp) / scale, _EXP_CAP)))",
+         "return 1.0 - 1.0 / (1.0 + math.exp(min((pick - player.adp) / scale, _EXP_CAP)))"),
+        ("variance matching on the logistic scale",
+         "scale = max(stdev, 0.1) * math.sqrt(3) / math.pi", "scale = max(stdev, 0.1)"),
+        ("board conditions vona on current_pick",
+         "vona=vona(available, p, at_pick, current_pick),", "vona=vona(available, p, at_pick),"),
+        ("board conditions survival on current_pick",
+         "survival=survival_prob(p, at_pick, current_pick),",
+         "survival=survival_prob(p, at_pick),"),
         ("vona walk weight", "prob_all_gone *= 1.0 - surv", "prob_all_gone *= surv"),
         ("vona sign", "return candidate.proj_pts - expected", "return expected - candidate.proj_pts"),
         ("divergence sign",
@@ -90,6 +100,15 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "return False"),
     ],
     "cli.py": [
+        ("commas split one line into commands", 'line.split(",")', "[line]"),
+        ("every command in a batch is reported",
+         'status = "  |  ".join(statuses)', 'status = statuses[-1] if statuses else ""'),
+        ("input wait bounded by the poll interval",
+         "first = _wait_for_input(input_queue, max(0.0, next_poll - time.monotonic()))",
+         "first = _wait_for_input(input_queue, 0.0)"),
+        ("wait returns the typed line", "return input_queue.get(timeout=timeout)",
+         "input_queue.get(timeout=timeout)\n        return None"),
+        ("poll only when due", "if time.monotonic() >= next_poll:", "if True:"),
         ("current_pick horizon",
          "current_pick = max(len(drafted), highest) + 1", "current_pick = max(len(drafted), highest)"),
         ("stale threshold", "elif stale_seconds > 15:", "elif stale_seconds > 15000:"),
@@ -146,6 +165,45 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("pick draft_slot parsed",
          "draft_slot=int(slot) if slot is not None else None,", "draft_slot=None,"),
     ],
+    "scripts/transcribe.py": [
+        ("position and team narrow candidates",
+         "narrowed = [p for p in matches if narrowing(p)]", "narrowed = []"),
+        ("exact name beats a substring", "return exact or matches", "return matches"),
+        ("a defense joins on its team code",
+         'if position == "DEF" and team:', "if False:"),
+        ("D/ST survives tokenising", 'r"[\\s\\-,]+"', 'r"[\\s\\-,/]+"'),
+        ("column headers are skipped",
+         "if not line.strip() or ROUND.match(line) or SKIP.match(line):",
+         "if not line.strip() or ROUND.match(line):"),
+        ("surname-first names are put back in order",
+         'field = f"{given.strip()} {surname.strip()}".strip()',
+         'field = f"{surname.strip()} {given.strip()}".strip()'),
+        ("rows are ordered by pick number",
+         "picks.sort(key=lambda row: row[0])", "pass"),
+        ("an incomplete run is refused",
+         "elif sorted(numbered) != list(range(1, len(numbered) + 1)):", "elif False:"),
+    ],
+    "scripts/calibrate.py": [
+        ("room discipline counts only what is still available",
+         "if other not in gone:\n                rank += 1", "rank += 1"),
+        ("seat inferred from the first claimed pick",
+         "slot = slot_override or my_turns[0]", "slot = slot_override or 1"),
+        ("the first turn is scored once",
+         "return drafted_at, my_turns[:-1], slot",
+         "return drafted_at, [my_turns[0]] + my_turns[:-1], slot"),
+        ("a log is proven against the snake",
+         "if my_turns != expected:", "if False:"),
+        ("league name stops at the date",
+         r'r"^(?P<league>.+?)-\d{4}-\d{2}-\d{2}(?:-.*)?$"', r'r"^(?P<league>.+?)-.*$"'),
+        ("journal excludes taken-back marks",
+         'if op.get("op") == "mark" and pid in state.drafted and pid not in seen:',
+         'if op.get("op") == "mark" and pid not in seen:'),
+        ("journal my_turns are claimed picks",
+         "my_turns = [i for i, pid in enumerate(seq, 1) if pid in state.mine]",
+         "my_turns = [i for i, pid in enumerate(seq, 1)]"),
+        ("snake reverses on even rounds",
+         "(slot if rnd % 2 else num_teams - slot + 1)", "slot"),
+    ],
     "data.py": [
         ("stale_ok honoured", "if not stale_ok:", "if False:"),
         ("adp_source gates the ffc overwrite",
@@ -159,7 +217,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
 def main() -> int:
     results = []
     for fname, muts in MUTATIONS.items():
-        path = ROOT / "ffhelper" / fname
+        # A key with a slash is a path from ROOT (scripts/); anything else is a
+        # module in the package.
+        path = ROOT / fname if "/" in fname else ROOT / "ffhelper" / fname
         original = path.read_text()
         try:
             for label, old, new in muts:
@@ -175,10 +235,10 @@ def main() -> int:
         finally:
             path.write_text(original)              # always restore
 
-    print(f"\n{'file':<10} {'mutation':<28} result")
+    print(f"\n{'file':<22} {'mutation':<32} result")
     print("-" * 62)
     for f, label, r in results:
-        print(f"{f:<10} {label:<28} {r}")
+        print(f"{f:<22} {label:<32} {r}")
     bad = [r for r in results if "SURVIV" in r[2] or "STALE" in r[2]]
     print("-" * 62)
     print(f"{len(results)} mutations, {len(bad)} needing a look")
