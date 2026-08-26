@@ -5,3 +5,6 @@
 __pycache__/
 *.egg-info/
 .venv/
+
+# Hand-typed draft marks -- draft state, never source.
+.draft/

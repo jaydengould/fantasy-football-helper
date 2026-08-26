@@ -2,12 +2,14 @@
 identical either way.
 """
 import argparse
+import json
 import logging
 import queue
 import sys
 import threading
 import time
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 from ffhelper.config import League, Tunables, get_league, load_config
@@ -22,6 +24,13 @@ from ffhelper.value import Row, build_board, detect_run, is_bench_only, next_pic
 log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
 SEASON = "2026"
+
+# Hand-typed marks are journalled here so a mis-hit ctrl-C does not cost ~100
+# re-typed names in a league with no feed. Gitignored -- it is draft state.
+# Anchored to ROOT, not cwd: a relative path means the log you recover depends
+# on which directory you happened to launch from, and the one time that matters
+# is the restart mid-draft when you are not thinking about your shell.
+DRAFT_LOG_DIR = ROOT / ".draft"
 SLEEPER_DRAFT_URL = "https://api.sleeper.app/v1/draft/{draft_id}"
 # Validated at load, not at first use: an unknown value must fail at preflight,
 # not silently fall through to FFC halfway through a draft. "yahoo" is
@@ -63,26 +72,82 @@ class MarkDrafted:
     feed-less draft fold self-marked picks into `my_roster`.
     """
 
-    def __init__(self) -> None:
-        self._history: list[tuple[str, bool]] = []
+    def __init__(self, log_path: Path | None = None) -> None:
+        self._log_path = log_path
+        # (player_id, was in `drafted`, was in `mine`) BEFORE the call that
+        # pushed it. undo() restores that membership verbatim, which is why the
+        # same history serves mark, claim and unmark without a direction flag.
+        # An entry is pushed only when something actually changed, so `u` never
+        # burns a turn on a no-op.
+        self._history: list[tuple[str, bool, bool]] = []
         self._marked: set[str] = set()
         self._mine: set[str] = set()
 
+    def _record(self, player_id: str) -> None:
+        self._history.append((player_id, player_id in self._marked, player_id in self._mine))
+
+    def attach_log(self, path: Path) -> None:
+        """Start journalling from here on. Called after a replay, never before:
+        arming it first would append the restored log back onto itself."""
+        self._log_path = path
+
+    def _log(self, **op: object) -> None:
+        """Append one op to the draft log. NEVER raises.
+
+        Persistence is insurance, not a dependency: if the log cannot be
+        written the draft carries on without a safety net, because losing the
+        net is survivable and losing the board mid-pick is not. Opened and
+        closed per op so the bytes reach the OS immediately -- a killed process
+        cannot take a buffer down with it. No fsync: the failure being defended
+        against is ctrl-C or a closed terminal, not loss of power.
+        """
+        if self._log_path is None:
+            return
+        try:
+            with self._log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(op) + "\n")
+        except Exception as exc:                      # noqa: BLE001 - never fatal
+            log.warning("could not write draft log %s: %s", self._log_path, exc)
+            self._log_path = None                     # warn once, not per pick
+
     def mark(self, player_id: str, mine: bool = False) -> None:
-        if player_id in self._marked:
-            return                          # already marked: idempotent, no-op
+        """Idempotent per FIELD, not per call. Marking an already-marked player
+        again is a no-op, but CLAIMING an already-marked player still works --
+        recording a pick and then realising it was your own is a normal thing to
+        do against a pick clock, and dropping the claim silently would compute
+        MARG against a roster missing your own player.
+        """
+        if player_id in self._marked and (not mine or player_id in self._mine):
+            return                          # nothing would change
+        self._record(player_id)
         self._marked.add(player_id)
         if mine:
             self._mine.add(player_id)
-        self._history.append((player_id, mine))
+        self._log(op="mark", id=player_id, mine=mine)
+
+    def unmark(self, player_id: str) -> None:
+        """Take one mark back without unwinding everything made after it.
+
+        `undo` is a single LIFO, so correcting a mistake from ten picks ago used
+        to mean ten undos and nine retypes -- unusable against a pick clock in a
+        draft where every pick is hand-entered. This reaches the one player.
+        """
+        if player_id not in self._marked:
+            return                          # not marked: no-op, and no history
+        self._record(player_id)
+        self._marked.discard(player_id)
+        self._mine.discard(player_id)
+        self._log(op="unmark", id=player_id)
 
     def undo(self) -> None:
         if not self._history:
             return                          # nothing to undo: no-op, never raises
-        player_id, mine = self._history.pop()
-        self._marked.discard(player_id)
-        if mine:
-            self._mine.discard(player_id)
+        player_id, was_marked, was_mine = self._history.pop()
+        (self._marked.add if was_marked else self._marked.discard)(player_id)
+        (self._mine.add if was_mine else self._mine.discard)(player_id)
+        # Logged like any other op. An unlogged undo would be replayed away --
+        # a restart would resurrect a mark the user had already taken back.
+        self._log(op="undo")
 
     @property
     def drafted(self) -> set[str]:
@@ -93,57 +158,85 @@ class MarkDrafted:
         return set(self._mine)
 
 
+def _apply(mark_state: MarkDrafted, player: Player, action: str) -> str:
+    """Carry out one resolved command against one unambiguous player."""
+    where = f"({player.position} {player.team})"
+    if action == "unmark":
+        mark_state.unmark(player.sleeper_id)
+        return f"unmarked {player.name} {where} -- back on the board"
+    mark_state.mark(player.sleeper_id, mine=action == "mine")
+    return f"marked {player.name} {where}" + (" as yours" if action == "mine" else "")
+
+
 def _handle_command(
     line: str, pool: dict[str, Player], mark_state: MarkDrafted,
-    pending: list[Player], pending_mine: bool = False,
-) -> tuple[list[Player], bool, str]:
+    pending: list[Player], pending_action: str = "",
+) -> tuple[list[Player], str, str]:
     """Process one line of manual input; pure and stdin-free so it is directly
     testable. `pending` is the disambiguation list left open by the previous
-    command (empty when none is open); `pending_mine` says whether that open
-    disambiguation was started with "me " (so picking a number from it marks
-    the user's own pick, not just a drafted one). Returns the new pending
-    list, the new pending_mine, and a status line for the caller to print.
+    command (empty when none is open); `pending_action` says which command that
+    open disambiguation belongs to, so picking a number from it does what the
+    user originally asked for. Returns the new pending list, the new
+    pending_action, and a status line for the caller to print.
 
-    Protocol: "u"/"undo" undoes the last mark, self or not -- there is one
-    shared LIFO history. A bare number, while a disambiguation list is open,
-    selects from it. Anything else is a name search, optionally prefixed with
-    "me " to mark the match as the user's own pick instead of just drafted --
-    e.g. "me gibbs" is fast enough to type against a 120-second pick clock. A
-    search with exactly one match marks it directly -- that is not "picking
-    the first" because there is only one candidate. A search with several
-    matches opens the disambiguation list instead of guessing, for "me "
-    searches exactly as for plain ones -- disambiguation is never bypassed.
+    Actions are "" (mark drafted), "mine" and "unmark".
+
+    Protocol: "u"/"undo" reverses the last change, whatever it was -- there is
+    one shared LIFO history. A bare number, while a disambiguation list is open,
+    selects from it. Anything else is a name search, optionally prefixed:
+
+      "me " marks the match as the user's own pick rather than just drafted --
+      "me gibbs" is fast enough to type against a 120-second pick clock.
+
+      "-" takes a mark back -- "-gibbs". It searches ONLY players marked by
+      hand, because those are the only ones it can take back: a feed-reported
+      pick is not in `mark_state`, and pretending to un-draft one would put a
+      genuinely gone player back on the board. Scoping this way also resolves
+      "-robinson" outright when only one Robinson was marked.
+
+    A search with exactly one match applies directly -- that is not "picking the
+    first" because there is only one candidate. A search with several matches
+    opens the disambiguation list instead of guessing, for every action alike --
+    disambiguation is never bypassed, because taking the wrong player back onto
+    the board is the same class of error as marking the wrong one gone.
     """
     line = line.strip()
     if not line:
-        return pending, pending_mine, ""
+        return pending, pending_action, ""
     if line.lower() in ("u", "undo"):
         mark_state.undo()
-        return [], False, "undid last mark"
+        return [], "", "undid last change"
     # isdecimal(), not isdigit(): isdigit() is True for superscripts ('²') and
     # other numeric forms that int() then refuses. isdecimal() is exactly the
     # set int() accepts.
     if pending and line.isdecimal():
         idx = int(line)
         if 1 <= idx <= len(pending):
-            chosen = pending[idx - 1]
-            mark_state.mark(chosen.sleeper_id, mine=pending_mine)
-            tag = " as yours" if pending_mine else ""
-            return [], False, f"marked {chosen.name} ({chosen.position} {chosen.team}){tag}"
-        return pending, pending_mine, f"choose 1-{len(pending)}, or type a new search"
+            return [], "", _apply(mark_state, pending[idx - 1], pending_action)
+        return pending, pending_action, f"choose 1-{len(pending)}, or type a new search"
 
-    mine = line[:3].lower() == "me "
-    query = line[3:] if mine else line
-    matches = find_players(pool, query)
+    if line.startswith("-"):
+        action, query = "unmark", line[1:].strip()
+    elif line[:3].lower() == "me ":
+        action, query = "mine", line[3:]
+    else:
+        action, query = "", line
+
+    scope = pool
+    if action == "unmark":
+        marked = mark_state.drafted
+        scope = {pid: p for pid, p in pool.items() if pid in marked}
+
+    matches = find_players(scope, query)
     if not matches:
-        return [], False, f"no match for {line!r}"
+        if action == "unmark":
+            return [], "", f"no marked player matches {query!r}"
+        return [], "", f"no match for {line!r}"
     if len(matches) == 1:
-        p = matches[0]
-        mark_state.mark(p.sleeper_id, mine=mine)
-        tag = " as yours" if mine else ""
-        return [], False, f"marked {p.name} ({p.position} {p.team}){tag}"
+        return [], "", _apply(mark_state, matches[0], action)
     listing = "; ".join(f"{i}:{p.name} {p.position}-{p.team}" for i, p in enumerate(matches, 1))
-    return matches, mine, f"multiple matches, type a number -- {listing}"
+    verb = "unmark" if action == "unmark" else "mark"
+    return matches, action, f"multiple matches, type a number to {verb} -- {listing}"
 
 
 def _stdin_reader(q: "queue.Queue[str]") -> None:
@@ -337,6 +430,90 @@ def _my_roster_from_picks(
     return mine
 
 
+def _draft_log_path(league: League) -> Path:
+    """Where this league's hand-typed marks are journalled.
+
+    Dated, so a mock on one day and the real draft on another never share a
+    file -- replaying a mock's marks into a live draft would be far worse than
+    having no log at all.
+
+    ponytail: a draft crossing local midnight starts a fresh file. The restore
+    banner reports 0 marks, which is visible; the fix would be to key on
+    draft_id, which Yahoo (the platform that needs this) does not have.
+    """
+    return DRAFT_LOG_DIR / f"{league.name}-{date.today().isoformat()}.jsonl"
+
+
+def _restore_marks(path: Path) -> tuple[MarkDrafted, int, int]:
+    """Rebuild mark state from a draft log. -> (state, ops applied, lines skipped)
+
+    Replays OPS rather than restoring a snapshot, so `_history` is rebuilt too
+    and `u` still works for everything typed before the crash.
+
+    Never raises: a corrupt line -- most likely a final op truncated by the
+    hard kill this exists to survive -- costs that one op and is counted, not
+    the rest of the draft. Logging is armed only AFTER the replay, so reading
+    the log back does not append it to itself.
+    """
+    state = MarkDrafted()
+    applied = skipped = 0
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        lines = []
+    except Exception as exc:                          # noqa: BLE001 - never fatal
+        log.warning("could not read draft log %s: %s", path, exc)
+        lines = []
+
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            op = json.loads(line)
+            if op["op"] == "mark":
+                state.mark(op["id"], mine=bool(op.get("mine")))
+            elif op["op"] == "unmark":
+                state.unmark(op["id"])
+            elif op["op"] == "undo":
+                state.undo()
+            else:
+                raise ValueError(f"unknown op {op['op']!r}")
+        except Exception:                             # noqa: BLE001 - never fatal
+            skipped += 1
+            continue
+        applied += 1
+
+    state.attach_log(path)
+    return state, applied, skipped
+
+
+def _claims_overruled_by_feed(
+    picks: list, mine_ids: set[str], my_slot: int | None,
+) -> set[str]:
+    """Self-marked ids the feed attributes to a DIFFERENT seat.
+
+    `me <player>` is a claim, and the feed is the authority on who actually
+    drafted whom. A claim the feed contradicts is provably wrong, and leaving it
+    standing computes MARG against a roster the user does not have -- the same
+    class of wrongness as Task 13's empty `my_roster`, just inverted.
+
+    Two guards, both of which turn a helpful correction into a roster-wiping
+    disaster if dropped:
+
+    - `my_slot is None` returns nothing. With no slot configured, every pick's
+      slot differs from `None`, so a naive `!=` would overrule EVERY claim.
+    - A pick with no `draft_slot` attributes to nobody and is ignored. Guessing
+      from it would be fabrication, and it is the exact shape a Sleeper mock
+      once returned for every pick in a 180-pick draft.
+    """
+    if my_slot is None:
+        return set()
+    return {
+        p.sleeper_id for p in picks
+        if p.sleeper_id in mine_ids and p.draft_slot is not None and p.draft_slot != my_slot
+    }
+
+
 def _combine_my_roster(
     feed_roster: list[Player], mine_ids: set[str], players: dict[str, Player],
 ) -> list[Player]:
@@ -410,7 +587,10 @@ def _render_tick(
     current_pick = max(len(drafted), highest) + 1
     available = [p for pid, p in players.items() if pid not in drafted]
     feed_roster = _my_roster_from_picks(picks, players, my_slot)
-    my_roster = _combine_my_roster(feed_roster, manual_mine, players)
+    # A claim the feed contradicts is dropped from the roster but NOT from
+    # `manual_gone` -- the player really is drafted, just not by this user.
+    overruled = _claims_overruled_by_feed(picks, manual_mine, my_slot)
+    my_roster = _combine_my_roster(feed_roster, manual_mine - overruled, players)
     recent = [players[p.sleeper_id].position for p in picks[-8:] if p.sleeper_id in players]
 
     board = build_board(
@@ -425,6 +605,18 @@ def _render_tick(
     stale_seconds = None if last_ok is None else time.time() - last_ok
     print(render(board, limit, stale_seconds, my_roster, detect_run(recent),
                  tunables.divergence_flag_slots))
+    for pid in sorted(overruled):
+        seat = next(p.draft_slot for p in picks if p.sleeper_id == pid)
+        name = players[pid].name if pid in players else pid
+        # Stays up until the stale claim is cleared, which is the point: the
+        # roster on screen no longer matches what the user typed.
+        # ponytail: the message names the player and the help line below carries
+        # the notation, so no computed "-<handle>" hint. Both ways of building
+        # one are wrong: the raw last token of "Marvin Harrison Jr." is "Jr.",
+        # and norm_name collapses whitespace ("-brandonaubrey"). A hint that
+        # does not match is worse than no hint at the table.
+        print(f"CLAIM OVERRULED: the feed says {name} was taken from seat {seat}, "
+              f"not yours -- dropped from your roster. Clear the stale claim with '-<name>'.")
     if league.draft_slot:
         nxt = next_pick_number(current_pick, league.draft_slot, settings.num_teams)
         # Is the pick on the clock RIGHT NOW yours? `next_pick_number` is
@@ -435,8 +627,8 @@ def _render_tick(
         else:
             print(f"\npick {current_pick}   your next pick: {nxt} "
                   f"({nxt - current_pick} away)")
-    print("\ntype part of a name to mark drafted (\"me \" prefix for your own "
-          "pick), a number to disambiguate, 'u' to undo")
+    print("\nname = mark drafted | \"me \" = your own pick | \"-\" = take a mark "
+          "back | number = disambiguate | 'u' = undo")
     if status:
         print(status)
     print("\n(ctrl-c to stop; run `preflight` before the draft)")
@@ -469,9 +661,25 @@ def _run(
     """
     players, settings = load_board_inputs(league, tunables)
     feed, has_feed = _select_feed(league, settings)
-    mark_state = MarkDrafted()
+
+    # Journalled marks, restored first so a restart mid-draft picks up where the
+    # last process died. Guarded like every other startup step: losing the
+    # safety net must never be what stops the board from coming up.
+    log_path = _draft_log_path(league)
+    try:
+        DRAFT_LOG_DIR.mkdir(exist_ok=True)
+        mark_state, applied, skipped = _restore_marks(log_path)
+        if applied or skipped:
+            print(f"restored {applied} mark(s) from {log_path}"
+                  + (f" ({skipped} unreadable line(s) skipped)" if skipped else "")
+                  + f"\n  -> {len(mark_state.drafted)} drafted, {len(mark_state.mine)} yours."
+                  " Delete that file to start fresh.")
+    except Exception as exc:                          # noqa: BLE001 - never fatal
+        log.warning("draft log unavailable (%s); marks will not survive a restart", exc)
+        mark_state = MarkDrafted()
+
     pending: list[Player] = []
-    pending_mine = False
+    pending_action = ""
     status = ""
 
     if input_queue is None:
@@ -497,8 +705,8 @@ def _run(
             # obeys the same rule as the other two -- nothing here propagates.
             line = input_queue.get_nowait()
             try:
-                pending, pending_mine, status = _handle_command(
-                    line, players, mark_state, pending, pending_mine
+                pending, pending_action, status = _handle_command(
+                    line, players, mark_state, pending, pending_action
                 )
             except Exception as exc:                  # noqa: BLE001 - loop must never die
                 log.warning("command %r failed: %s", line, exc)

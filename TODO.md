@@ -12,13 +12,29 @@ fixed (section 11). Remaining work, in priority order:
    remaining accuracy question. `sleeper-main` is now on `adp_source =
    "sleeper"` on a mechanistic argument, NOT a measurement — one line to revert.
    `scripts/calibrate.py <draft_id> <slot>` settles it.
-2. **Set `draft_slot` for both leagues.** Section 6. One line each; the only
-   reason `preflight` reports INCOMPLETE for `sleeper-main`.
-3. **Add ESPN as a second projection source.** Section 13. Investigated and
-   found viable; needs a decision on reversing the "ESPN ruled out" call.
+2. **Treat the top of each position as a tier, not a ranking.** Section 15 —
+   NEW. Across 2021–2025 no position ranks its own top 12 better than ~+0.35
+   Spearman. The tier column already carries this; the board under-uses it.
+   Awareness is probably the whole fix before Sept 1.
+3. **Draft-day command cheat sheet.** Section 16 — NEW. Held back on purpose
+   until the notation stops changing; trigger is after the human mock, and no
+   later than Aug 30.
 4. **Bench-mode ordering.** Section 14. Honest but still weak once starters fill.
-5. **Yahoo `league_id`** placeholder — section 7. Nothing reads it, blocks nothing.
-6. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
+5. **FantasyPros ECR local look.** Section 18 — 20 minutes, needs a manual
+   download. Run the ECR-vs-ADP correlation first; it decides the rest.
+6. **Deferred minors.** Section 9 — two left, both trivial, neither load-bearing.
+7. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
+
+**Phases 3, 4 and 5 can now be built in parallel with all of the above**, under
+one rule: **`value.py` and `data.py` are frozen until both drafts are done.**
+Phase 3 lives behind its own entry point and never imports into the terminal
+path. Phase 3.5 is the exception to watch — opponent-needs and bye-clustering
+reach into the board.
+
+**Closed since:** `draft_slot` for both leagues (section 6 — `preflight` is now
+OK for `sleeper-main` and `yahoo-main`), the Yahoo `league_id` placeholder
+(section 7), and **ESPN as a second projection source (section 13 — measured,
+rejected, do not reopen without new data).**
 
 ## Deadlines
 
@@ -159,10 +175,25 @@ does not expose but Sleeper's completed drafts do. Offseason work.
   the mkstemp file is unlinked, which is the path the handler actually exists
   for; the crosswalk duplicate is deleted (both callers share the same function).
 
-**Know before you draft:** if you `me <player>` someone another team then drafts,
-he stays in `my_roster` forever and MARG is computed against a roster you don't
-have. The only remedy is `u`, a single shared LIFO — so undoing a mismark from ten
-picks ago means undoing and retyping ten marks.
+**RESOLVED 2026-08-25 — `-<name>` takes one mark back.** This previously read
+"know before you draft": a mismarked player stayed in `my_roster` forever, and
+the only remedy was `u`, a single shared LIFO, so correcting a mistake from ten
+picks ago meant ten undos and nine retypes. Unusable against a pick clock in the
+Yahoo draft, where all ~150 picks are hand-entered.
+
+`-<name>` now reaches one player directly. It searches **only hand-marked
+players**, which both cuts keystrokes (`-robinson` resolves outright when only
+one Robinson was marked) and makes it impossible to "un-draft" a feed-reported
+pick, which would put a genuinely gone player back on the board. Disambiguation
+still applies when the narrowed set is itself ambiguous.
+
+`u` restores the previous state verbatim, including whether the mark was claimed
+as yours — `MarkDrafted._history` records prior membership rather than a delta,
+which is why one history serves mark, claim and unmark with no direction flag.
+
+**Still open (section 9):** a self-mark contradicted by a *feed* pick from
+another seat is not dropped automatically. Only affects leagues that have a feed,
+where self-marking is rarely needed.
 
 ---
 
@@ -195,25 +226,35 @@ if wifi is cut for ~20s and clearing when it returns.
 
 ---
 
-## 6. Set `draft_slot` for both leagues
+## 6. DONE 2026-08-25 — `draft_slot` set for both leagues
 
-`config.toml` has it commented out. Preflight reports INCOMPLETE without it and
-the board degrades to next-pick survival instead of your real turn. Sleeper's
-`draft_order` had 11 of 12 slots assigned at design time, so it must be set by
-hand once the order is final — the tool deliberately never guesses it.
+`sleeper-main` is slot 5, `yahoo-main` is slot 2. Both `preflight` runs are now
+**OK**. Set by hand and never read from the API — the tool deliberately never
+guesses this, because a wrong slot produces the wrong next-pick number for every
+pick of the draft without ever erroring.
+
+**The trap that nearly ate this:** the Yahoo value was edited but left commented
+out (`# draft_slot = 2`), so it was still a TOML comment and preflight still read
+NOT SET. If the draft order is reshuffled before either draft, re-check both —
+and re-run `preflight` afterwards rather than trusting the edit.
 
 ---
 
-## 7. Yahoo `league_id` is still a placeholder
+## 7. DONE 2026-08-25 — Yahoo `league_id` is set
 
-The `[league.settings]` block is DONE (section 1c) — 10 teams, roster slots,
-full scoring, validated by `preflight`. Only `league_id` is still
-`"REPLACE_WITH_YAHOO_LEAGUE_ID"`.
+`league_id = "723573"`, alongside the `[league.settings]` block from section 1c
+(10 teams, roster slots, full scoring, validated by `preflight`).
 
-**This blocks nothing.** There is no Yahoo API access and no Yahoo feed, so
-`league_id` is dead config; the board runs entirely on hand-entered picks. It
-matters when Phase 2's Yahoo feed lands. The real id is in `.env`; deliberately
-not copied into `config.toml`, which is committed to a public repo.
+**Note the reversal.** This file previously said the id would stay in `.env`
+because `config.toml` is committed to a public repo. That is no longer true, and
+it is fine: a Yahoo league id is not a credential (reading a private league still
+needs OAuth *and* league membership), and **nothing in the codebase reads `.env`
+at all** — `grep -rn "environ\|getenv\|dotenv" ffhelper/ scripts/` is empty, so
+the `.env` plan was never actually wired up. The consumer key and secret are the
+real secrets and they stay out of `config.toml`.
+
+Still dead config until Phase 2's Yahoo feed lands — there is no API access, so
+the Yahoo board runs entirely on hand-entered picks.
 
 ---
 
@@ -252,8 +293,16 @@ left:
 
 - Suffix stripping in `norm_name` strips once, not in a loop. Harmless for real
   names; a malformed "X Y Jr III" keeps the inner suffix.
-- No test covers a self-marked player later contradicted by a feed pick carrying
-  someone else's `roster_id`.
+- ~~A self-mark contradicted by a feed pick from another seat is never
+  dropped.~~ **DONE 2026-08-25.** `_claims_overruled_by_feed` drops a claim the
+  feed attributes to a different seat, and `_render_tick` prints a standing
+  `CLAIM OVERRULED` banner naming the player and the seat — silently editing the
+  user's own roster would be a "degrade, never fabricate" violation. The player
+  stays in `drafted` (he really is gone, just not to you). Two guards, each of
+  which turns the feature into a roster-wiping disaster if dropped, and both
+  covered by tests and mutations: an unset `my_slot` overrules nothing (every
+  slot differs from `None`), and a pick with no `draft_slot` attributes to
+  nobody. Verified by replaying the real 180-pick mock.
 - `_stdin_reader`'s EOF warning path is never driven end-to-end through a real
   thread.
 
@@ -354,56 +403,231 @@ drafters are not in the Sleeper app.
 
 ---
 
-## 13. ESPN as a second projection source — investigated, viable, needs a decision
+## 13. CLOSED 2026-08-25 — ESPN is measurably WORSE than Rotowire. Not building it.
 
-Prompted by "are we sure Rotowire is the best data available?" Checked against
-the live endpoint rather than assumed.
+Originally "investigated, viable, needs a decision". The decision was taken on
+**measurement**, not preference: ESPN was backtested head-to-head against
+Rotowire on real outcomes and lost. `scripts/backtest.py` reproduces everything
+below in about a minute.
 
-**It clears every constraint:**
+### The result
 
-| Requirement | ESPN |
+2025 season projections, MAE in season points against actual 2025 finishes.
+Each source scored on ITS OWN top-N (20 QB/TE, 40 RB/WR) so neither is punished
+for covering players the other does not rank.
+
+| Position | Rotowire | ESPN | |
+| --- | --- | --- | --- |
+| QB | **75.3** | 93.2 | Rotowire by 18 points |
+| RB | 63.8 | **62.5** | ESPN by 1.3 |
+| WR | **75.0** | 80.3 | Rotowire |
+| TE | 46.3 | **44.5** | ESPN by 1.8 |
+| **ALL** | **66.5** | 70.5 | **Rotowire 6% better** |
+
+ESPN is also more optimistic at every position (QB +58.2 vs +42.0, RB +38.8 vs
++15.2). Selecting on each source's own top-N guarantees *some* positive bias, but
+both were selected identically, so the gap between them is real.
+
+### Why the numbers can be trusted
+
+**Both sources still serve preseason-FROZEN 2025 projections**, which is the only
+reason a real out-of-sample test was possible. This was verified, not assumed —
+a revised projection is hindsight in a projection's clothes and would have
+inverted the answer:
+
+- Sleeper/Rotowire: `gp = 18.0` for every player regardless of outcome. Ekeler
+  projected 156, scored 13.1. Anthony Richardson projected 130.7, scored 2.2.
+- ESPN 2025: 90% full-slate, median 17.0 games. Ekeler 207.8 over 17 games.
+
+**The join is `espn_id -> sleeper_id` through the DynastyProcess crosswalk we
+already fetch** (6223 pairs) — integer IDs, non-negotiable #1 intact.
+
+**The check that makes the comparison legal:** the two platforms' *actual* 2025
+point totals agree at **r = 0.9997**, mean difference 0.7 points over 573 joined
+players. Same scoring, so the two MAEs are directly comparable. `backtest.py`
+aborts if that ever drops below 0.99.
+
+### The trap this nearly walked into
+
+**ESPN's 2024 projections are CONTAMINATED** — median 15.12 projected games, 6%
+full-slate, **minimum 0.05 games**. Nothing written before week 1 projects a
+player for 0.05 games; those numbers were revised as the season played out.
+`backtest.py` refuses to score a source that fails the frozen test, and names it,
+rather than printing a flattering number.
+
+That contamination ran in ESPN's favour, and 2024 still came out Rotowire 51.8 /
+ESPN 58.7. The conclusion survives the ambiguity — but 2024 is **not** evidence
+and should not be quoted as if it were. **The clean sample is one season.**
+
+### The published record, which is the stronger evidence
+
+n=1 is thin. Fantasy Football Analytics has run 2014–2025 across 11 sources: for
+2023–2025 **ESPN ranks last overall (6.44 MAE) and last at QB by a wide margin
+(86.7 against a best of 71.2)** — the same position the backtest flagged, from an
+independent method and a longer sample. Rotowire is not in that study, so this
+does not prove Rotowire is *good*; it independently confirms ESPN is the weakest
+of the free majors.
+
+<https://fantasyfootballanalytics.net/which-projections-are-most-accurate>
+
+**On analyst reputation:** neither source's projections are elite. ESPN's are a
+proprietary model with no named analyst. Rotowire's are algorithm plus editorial.
+Neither appears on FantasyPros' 2023–2025 draft-accuracy leaderboard, which is
+led by Jody Smith (Draft Sharks), Sean Koerner (Action Network), Joey Wright and
+Dave Kluge (Footballguys), Jeff Ratcliffe (FTN). **Every measured accuracy leader
+is paywalled** — the same wall that ruled out FantasyPros. There is no free
+source demonstrably better than the one already in use.
+
+### Averaging is also dead
+
+Tested, because the published studies say "aggregation works":
+
+| | Rotowire | ESPN | Average |
+| --- | --- | --- | --- |
+| 2024 (ESPN contaminated) | **51.8** | 58.7 | 54.1 |
+| 2025 (clean) | **66.5** | 70.5 | 68.1 |
+
+The average lands between the two every time and never wins. FFA's aggregation
+result comes from pooling ~10 sources; averaging two, one of which is worse, just
+drags you toward the worse one.
+
+For the record, averaging projections would **not** have violated the no-blend
+rule — that rule forbids mixing projections with ADP, i.e. value with price.
+Averaging projections is a different axis. It is rejected on measurement, not on
+principle.
+
+### What was given up
+
+The honest case for ESPN was never better numbers — it was a `SPLIT` diagnostic
+flag for cases like Jayden Reed (Rotowire WR#83, ESPN WR#122), the player the
+board pushed for four straight picks and the user flagged as suspicious. That
+case survives, but it now costs ~2 sessions to add a flag sourced from the
+demonstrably weaker projection, days before a draft. Bad trade.
+
+**To reopen this, bring new data, not a fresh opinion:** run
+`.venv/bin/python scripts/backtest.py <season>` on a season where ESPN wins.
+
+---
+
+## 18. FantasyPros ECR — a 20-minute LOCAL look, not an integration
+
+Raised 2026-08-26: the ECR sheets download free by scoring format even though
+the API is paid. Worth a look, with the scope fixed in advance.
+
+**The ToU line is narrower than "FantasyPros is ruled out".** Downloading and
+reading it locally is fine. What is barred is *reproducing* their content:
+committing the sheet to this public repo, or shipping a fetcher. Their download
+also sits behind a login, so an auto-fetcher is a ToU problem in a way Sleeper's
+public endpoint is not — that is the difference from non-negotiable #5, which
+permits runtime fetching of Sleeper projections.
+
+**It cannot enter the engine regardless of quality.** ECR is RANKS. VBD is
+`proj_pts - replacement_pts` and needs points. Manufacturing points from a rank
+(borrowing Rotowire's points at that rank) is exactly the blend non-negotiable #2
+forbids — it launders market consensus into the value axis. Their free consensus
+PROJECTIONS pages carry real stat lines and would be the more useful artifact,
+same ToU line for shipping.
+
+**Do this test FIRST — it decides everything else.** ECR is expert consensus,
+ADP is crowd consensus; both are PRICE, and the board already carries price twice
+(FFC and Sleeper). **Correlate ECR rank against ADP rank.** Above ~0.95 and ECR is
+a restatement of what the divergence flag already shows, so stop there.
+
+**There is room for a third opinion, measured 2026-08-26 on the live board:**
+
+| Spearman(market ADP, Rotowire projection rank) | |
 | --- | --- |
-| Raw stat lines (custom scoring needs them) | yes — Gibbs 283 att / 1372 rush yds / 14.45 rush TD |
-| Integer-ID join (non-negotiable #1) | yes — `espn_id`, already in the crosswalk we fetch, 8152 populated |
-| Coverage | 584 season projections; 446 skill players overlap our pool |
-| Auth / cost | none |
+| all 409 priced players | 0.884 |
+| **top 100 by ADP** | **0.618** |
 
-    https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/2026
-        /segments/0/leaguedefaults/3?view=kona_player_info
-    header: X-Fantasy-Filter: {"players":{"limit":1500,...}}
-    season projection = statSourceId 1, statSplitTypeId 0
+Median rank gap in the top 100 is 28 places. Price and projected value genuinely
+disagree where it matters. (Do not quote the individual headline gaps — Aubrey
+139, Lawrence 93 — they are mostly cross-position artifacts of ranking globally,
+which the within-position divergence fix already addressed.)
 
-**And the sources disagree enough to be worth having:** median |rank difference|
-22 places; 210 of 446 differ by 25+; 95 by 50+. Notably **Jayden Reed is WR#83
-to Rotowire and WR#122 to ESPN** — the player the board pushed for four straight
-picks and the user flagged as suspicious. ESPN is also far higher on Breece Hall
-(#70 vs #31) and Josh Jacobs (#80 vs #43).
+**The catch: it cannot be backtested for free.** Historical preseason ECR is
+behind the paid API/HOF tier; free access is current-season only. So a 2026
+download shows WHERE Rotowire and the consensus disagree and never WHO IS RIGHT
+— the same limitation already recorded for the ADP divergence flag, and the exact
+standard that settled ESPN in section 13.
 
-**The one real risk, and its antidote.** ESPN keys stats numerically (24 = rush
-yds, 53 = receptions...) and a wrong mapping would silently corrupt projections
-— the worst failure mode this project has. But ESPN returns `appliedTotal`
-ALONGSIDE the raw stats: implement the map plus ESPN's own default scoring, and
-if it reproduces `appliedTotal` for every player, the mapping is *proven*. That
-turns the main risk into a mechanical check.
+FantasyPros rates at or near the top of the FFA study at every position
+2014–2025, but that measures their PROJECTIONS, not the free ECR sheet.
 
-**Two things to settle before building:**
-1. `CLAUDE.md` explicitly ruled out "ESPN/Yahoo scraping". This is an
-   undocumented JSON API, not HTML scraping, and the project already depends on
-   Sleeper's equally undocumented projections endpoint — but it IS a recorded
-   decision, and the repo is public and tied to a job search (the same reasoning
-   that killed FantasyPros). **User's call.**
-2. What to do with two sources. **Recommendation: do NOT average — surface the
-   disagreement.** A `SPLIT` flag where sources diverge 25+ places says "this is
-   one analyst's opinion, not a consensus", which is exactly what was needed
-   about Jayden Reed. Averaging would have moved him #83 -> ~#100 and explained
-   nothing. Same philosophy as the divergence flag: show disagreement, never
-   average it away.
+**Expected outcome: a better-informed human at the table, not a change to the
+board.** Worth 20 minutes to settle permanently.
 
-Note averaging PROJECTIONS does not violate the no-blend rule — that rule is
-about mixing projections with ADP, i.e. value with price. Averaging projections
-is a better estimate of value and never touches price. Different axis.
+---
 
-**Estimate: ~2 working sessions.** Fits before Sept 6.
+## 17. DONE 2026-08-26 — hand-typed marks survive a restart
+
+**The gap:** `MarkDrafted` lived only in memory. For Sleeper this never mattered
+— a restart replays the feed and re-derives `my_roster` from `draft_slot`, so it
+was crash-safe by accident. **Yahoo has no feed**, so all ~150 picks are typed by
+hand and a mis-hit ctrl-C (deliberately wired to exit cleanly) wiped the lot.
+
+Sized honestly before building: the loop is well guarded, so a real crash is
+unlikely — the realistic losses are ctrl-C, a closed terminal, or the laptop
+sleeping. Nor is it unrecoverable, since Yahoo's own UI shows every pick. It is
+5–10 minutes of frantic re-typing at the worst possible moment. Low probability,
+severe, survivable.
+
+**Deliberately NOT Phase 2's SQLite draft log** — that is designed for season
+mode and is over-built for this. `.draft/<league>-<date>.jsonl`, one JSON op per
+line, appended open-and-close so a killed process cannot take a buffer with it.
+No fsync: the threat is ctrl-C, not loss of power. Phase 2 can still do the real
+thing later.
+
+Design points that are load-bearing:
+
+- **Ops are journalled, not a state snapshot.** Replay rebuilds `_history`, so
+  `u` still works for everything typed before the crash. A snapshot would restore
+  the sets and silently leave the user with no undo.
+- **`undo` is itself an op.** Unlogged, replay would resurrect a mark the user
+  had already taken back.
+- **Logging is armed only AFTER the replay**, or reading the log would append it
+  to itself. `scripts/mutate.py` caught this one: disarming it left every test
+  green while silently losing the net for the REST of the draft — so surviving
+  one crash cost you the next. Now covered.
+- **The filename is dated**, so a mock on one day and the real draft on another
+  never share a file. Replaying a mock's marks into a live draft would be worse
+  than no log at all. ponytail: a draft crossing local midnight starts fresh; the
+  restore banner reports 0, which is visible.
+- **Write failures are never fatal.** Persistence is insurance, not a dependency:
+  losing the net is survivable, losing the board mid-pick is not.
+- **`DRAFT_LOG_DIR` is anchored to `ROOT`, not cwd.** A relative path means the
+  log you recover depends on which directory you launched from, and the one time
+  that matters is the restart when you are not thinking about your shell.
+
+`.draft/` is gitignored — it is draft state, never source.
+
+**Found by running the suite, not by design:** tests journalled into the real
+repo and the next `_run` test restored them, breaking an unrelated feed-staleness
+assertion. Worse, `_draft_log_path` calls `date.today()`, which consumes a
+`time.time()` read — and that test fakes only the FIRST `time.time()` to seed
+`last_ok`. The extra read stole the seed and the stale banner never fired. An
+autouse fixture now isolates both.
+
+---
+
+## 16. Draft-day command cheat sheet — BUILD IT LAST, deliberately
+
+A one-page reference for the manual-entry notation (`name`, `me name`, `-name`,
+`2`, `u`), to pull up on a phone at the table rather than scrolling a terminal
+back at pick 47.
+
+**Deliberately not built yet.** The command set changed twice on 2026-08-25 alone
+(the `me`-after-plain claim fix, then `-<name>`), and a cheat sheet that
+disagrees with the tool is worse than none — at the table it would be trusted
+over the screen. Build it once the notation has stopped moving.
+
+**Trigger: after the human mock (section 12) and any changes it prompts, and no
+later than Aug 30** — before the Sept 1 Yahoo draft, which is the one with no
+feed and therefore all ~150 picks hand-typed.
+
+Source of truth when writing it: `_handle_command`'s docstring in `ffhelper/cli.py`
+and the on-screen help line in `render()`. Check both still match the table before
+publishing, and re-check if anything in §3 or §9 lands afterwards.
 
 ---
 
@@ -419,3 +643,86 @@ The tool has no model of bench value: upside, handcuffs, injury insurance. The
 banner tells the user to trust themselves. Fixing it properly needs either a
 handcuff model (which RB backs up a starter you roster) or an explicit
 variance/upside signal, and projections do not carry either.
+
+---
+
+## 15. The top of every position is a TIER, not a ranking — OPEN, hits both drafts
+
+Found while backtesting ESPN (section 13). **This is not a bug report. The code
+is doing what it should; the question is how much confidence the input earns.**
+
+### The false start, recorded so it is not repeated
+
+The first version of this section said "projections cannot rank QBs", built on
+2025 alone: Rotowire's preseason top-12 QB ordering came out at Spearman
+**−0.287**, worse than a coin flip, and ESPN's was −0.232 independently.
+
+**That was overreading one season.** Sleeper serves preseason-frozen projections
+back to 2021 (verified: 100% full-slate for 2021–2025; 2020 fails), so the claim
+was checkable, and checking it killed it:
+
+| Rotowire, top-12 Spearman vs actual finish | 2021 | 2022 | 2023 | 2024 | 2025 | mean |
+| --- | --- | --- | --- | --- | --- | --- |
+| QB | +0.273 | +0.273 | +0.657 | +0.727 | **−0.287** | **+0.329** |
+| RB | −0.210 | +0.720 | +0.259 | +0.126 | +0.392 | +0.257 |
+| WR | +0.455 | +0.413 | +0.245 | +0.490 | +0.280 | +0.376 |
+| TE | +0.357 | +0.552 | +0.063 | +0.587 | +0.119 | +0.336 |
+
+**2025 was a QB outlier, not the normal state** — Burrow, Jackson, Daniels and
+Murray all missed significant time. QB's five-year mean is second-best of the
+four positions. There is nothing specifically wrong with the QB board.
+
+### The finding that actually survives
+
+Read the table by column instead of by row. **No position ranks its own top 12
+well, in any year.** Means run +0.26 to +0.38; every position has a near-zero or
+negative season (RB −0.210 in 2021, TE +0.063 in 2023, QB in 2025).
+
+Widen the pool and it improves — QB top-48 in 2025 reaches +0.714, and RB/WR/TE
+top-N beat their own top-12 in most years. Part of that is range restriction and
+therefore a mathematical inevitability, not a data failure. But the operational
+consequence is the same either way: **within the top tier of a position, the
+ordering carries very little information.** The gap between projected RB1 and RB6
+is real; the order of RB1 through RB6 is close to noise.
+
+### What this means for the two drafts
+
+`CLAUDE.md` records a validated Yahoo strategy: **"take QBs ~15 picks earlier"**
+(QB1 at pick 18 vs 24) and **"prefer volume passers — Burrow rises to QB2 while
+Jackson leaves the top four."**
+
+**The arithmetic is still correct and is not in question.** Yahoo's
+0.25/completion really is worth ~78 points on Allen's volume, and it really does
+favour pocket passers. What the five-season table says is that the *positional*
+call (QB is scarcer in Yahoo, so move it up) is far better supported than the
+*identity* call (Burrow specifically over Jackson specifically). Take the tier
+early if the board says to; do not agonise over which name inside it.
+
+### What to do about it
+
+The tool **already computes the right answer and under-uses it**: `tier` is a
+per-position column derived from real gaps in projected points. The board sorts
+by VONA within a flat ordering, but the tier column is what deserves the weight
+near the top.
+
+Options, cheapest first:
+
+1. **Awareness only.** At the top of the board, treat same-tier players as
+   interchangeable and break ties on your own read. Zero cost, and given the
+   Sept 1 deadline this is almost certainly the right call for this year.
+2. **Make the tier visually dominant** in the Phase 3 Dash UI rather than a
+   column — group rows by tier instead of listing them. Real, but Phase 3.
+3. **Give the board an interval instead of a point estimate.** The honest fix:
+   `backtest.py` can now produce the historical projection-vs-outcome error
+   distribution per position, which is exactly the input a confidence band needs.
+   Offseason work, not a 6-day job.
+
+**Do not** discount a position's VBD by a hand-picked factor. It invents a number
+the data does not supply, and the data says the problem is not position-specific.
+
+### Reproducing this
+
+`scripts/backtest.py` prints the projected-vs-actual name table automatically for
+any position whose rank correlation comes out negative — it self-selects, no flag
+needed. The multi-season table above is a five-line variation on the same
+loaders; fold it into the script if this gets picked up again.

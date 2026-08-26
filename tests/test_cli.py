@@ -5,7 +5,8 @@ import time
 import pytest
 
 from ffhelper.cli import (
-    MarkDrafted, NullFeed, _combine_my_roster, _handle_command,
+    MarkDrafted, NullFeed, _claims_overruled_by_feed, _combine_my_roster, _draft_log_path,
+    _handle_command, _restore_marks,
     _my_roster_from_picks, _preflight, _render_tick, _run, _select_feed, _stdin_reader,
     find_players, load_board_inputs, league_settings_from_config, main, render, resolve_settings,
 )
@@ -13,6 +14,24 @@ from ffhelper.config import League, Tunables
 from ffhelper.data import LeagueSettings, Player
 from ffhelper.feeds import Pick
 from ffhelper.value import Row, build_board
+
+
+@pytest.fixture(autouse=True)
+def _isolate_draft_log(tmp_path, monkeypatch):
+    """Never let a test write into the real `.draft/`.
+
+    Without this, `_run` tests journal marks to the repo and the NEXT test that
+    calls `_run` restores them -- which is exactly how this was found: a feed
+    staleness test started failing because it inherited two marks from an
+    unrelated test earlier in the same run.
+    """
+    monkeypatch.setattr("ffhelper.cli.DRAFT_LOG_DIR", tmp_path / ".draft")
+    # `_draft_log_path` calls date.today(), which consumes a time.time() read.
+    # `test_run_survives_feed_failure...` fakes only the FIRST time.time() to
+    # seed last_ok 30s in the past, so that extra read stole the seed and the
+    # stale banner never fired. Pinning the path keeps the clock fake honest.
+    monkeypatch.setattr("ffhelper.cli._draft_log_path",
+                        lambda league: tmp_path / ".draft" / f"{league.name}.jsonl")
 
 
 def row(pid: str, name: str, pos: str, vona: float, surv: float, div: int = 0,
@@ -665,9 +684,9 @@ def test_mark_drafted_marking_already_marked_player_is_idempotent():
 def test_handle_command_single_match_marks_directly():
     pool = _pool()
     state = MarkDrafted()
-    pending, pending_mine, status = _handle_command("gibbs", pool, state, [])
+    pending, pending_action, status = _handle_command("gibbs", pool, state, [])
     assert pending == []
-    assert pending_mine is False
+    assert pending_action == ""
     assert state.drafted == {"gibbs"}
     assert state.mine == set()             # plain mark, not a self-mark
     assert "Jahmyr Gibbs" in status
@@ -676,12 +695,12 @@ def test_handle_command_single_match_marks_directly():
 def test_handle_command_multiple_matches_opens_disambiguation_then_selects():
     pool = _pool()
     state = MarkDrafted()
-    pending, pending_mine, status = _handle_command("robinson", pool, state, [])
+    pending, pending_action, status = _handle_command("robinson", pool, state, [])
     assert state.drafted == set()  # nothing marked yet -- ambiguous query alone never marks
     assert len(pending) == 2
-    assert pending_mine is False
+    assert pending_action == ""
 
-    pending2, pending_mine2, status2 = _handle_command("1", pool, state, pending, pending_mine)
+    pending2, pending_action2, status2 = _handle_command("1", pool, state, pending, pending_action)
     assert state.drafted == {pending[0].sleeper_id}
     assert pending2 == []
 
@@ -927,10 +946,147 @@ def test_mark_drafted_undo_reverses_self_mark():
     assert state.mine == set()
 
 
+def test_mark_drafted_claiming_an_already_marked_player_still_reaches_mine():
+    """Recording a pick and THEN realising it was your own must still claim it.
+
+    The idempotency guard used to drop the whole call when the id was already
+    in `drafted`, so the `mine=True` was silently discarded -- the tool printed
+    "as yours" while `mine` stayed empty, and MARG was then computed against a
+    roster missing the user's own player. That is Task 13 defect #1 arriving by
+    a different route, and it is silent, which makes it worse than a crash.
+    """
+    state = MarkDrafted()
+    state.mark("bijan")                      # recorded as somebody's pick
+    state.mark("bijan", mine=True)           # ...actually it was mine
+    assert state.drafted == {"bijan"}
+    assert state.mine == {"bijan"}
+
+
+def test_mark_drafted_undo_reverses_only_the_claim_not_the_whole_mark():
+    """Undo must reverse exactly what the last call changed.
+
+    After a plain mark then a claim, one undo takes back the CLAIM only -- the
+    player is still drafted, just no longer yours. A second undo removes him
+    from the board. Discriminates against an undo that pops the id out of
+    `drafted` too, which would put a genuinely drafted player back on the board
+    mid-draft.
+    """
+    state = MarkDrafted()
+    state.mark("bijan")
+    state.mark("bijan", mine=True)
+
+    state.undo()
+    assert state.drafted == {"bijan"}        # still gone from the board
+    assert state.mine == set()               # but no longer counted as yours
+
+    state.undo()
+    assert state.drafted == set()
+
+
+def test_handle_command_claim_after_plain_mark_reports_truthfully():
+    """The status line must not claim something the state does not reflect."""
+    pool = _pool()
+    state = MarkDrafted()
+    _handle_command("gibbs", pool, state, [])
+    _, _, status = _handle_command("me gibbs", pool, state, [])
+    assert "yours" in status
+    assert state.mine == {"gibbs"}
+
+
+def test_mark_drafted_unmark_puts_a_player_back_and_undo_restores_the_mark():
+    """Targeted take-back: `unmark` must clear BOTH sets for one player without
+    disturbing anything else, and `u` must put the mark back exactly as it was
+    -- including whether it was claimed as yours."""
+    state = MarkDrafted()
+    state.mark("bijan")
+    state.mark("gibbs", mine=True)
+
+    state.unmark("gibbs")
+    assert state.drafted == {"bijan"}
+    assert state.mine == set()
+
+    state.undo()
+    assert state.drafted == {"bijan", "gibbs"}
+    assert state.mine == {"gibbs"}          # the claim comes back too
+
+
+def test_mark_drafted_unmark_of_an_unmarked_player_is_a_noop_with_no_history():
+    """Discriminates against an unmark that pushes a history entry regardless --
+    a stray `-typo` would then eat the next `u`, silently leaving a real mistake
+    in place while the user believes they undid it."""
+    state = MarkDrafted()
+    state.mark("bijan")
+    state.unmark("gibbs")                   # never marked
+    state.undo()
+    assert state.drafted == set()           # the undo reversed the BIJAN mark
+
+
+def test_handle_command_unmark_prefix_takes_a_player_back():
+    pool = _pool()
+    state = MarkDrafted()
+    _handle_command("gibbs", pool, state, [])
+    pending, action, status = _handle_command("-gibbs", pool, state, [])
+    assert pending == []
+    assert action == ""
+    assert state.drafted == set()
+    assert "unmarked" in status.lower()
+
+
+def test_handle_command_unmark_searches_only_marked_players():
+    """`-robinson` must not open a Bijan/Brian disambiguation when only one of
+    them is marked. Scoping the search to what is actually marked is both fewer
+    keystrokes against the clock and fewer chances to take back the wrong man.
+    """
+    pool = _pool()
+    state = MarkDrafted()
+    _handle_command("bijan", pool, state, [])
+    pending, _, status = _handle_command("-robinson", pool, state, [])
+    assert pending == []                    # resolved outright, no prompt
+    assert state.drafted == set()
+    assert "Bijan" in status
+
+
+def test_handle_command_unmark_still_disambiguates_when_both_are_marked():
+    """Scoping narrows the field; it never bypasses disambiguation. With both
+    Robinsons marked, `-robinson` must ask rather than guess -- taking the wrong
+    player back onto the board is the same class of error as marking him."""
+    pool = _pool()
+    state = MarkDrafted()
+    _handle_command("bijan", pool, state, [])
+    _handle_command("brian", pool, state, [])
+    pending, action, status = _handle_command("-robinson", pool, state, [])
+    assert {p.sleeper_id for p in pending} == {"bijan", "brian"}
+    assert action == "unmark"
+    assert state.drafted == {"bijan", "brian"}   # nothing taken back yet
+
+    _, _, status2 = _handle_command("1", pool, state, pending, action)
+    assert len(state.drafted) == 1
+
+
+def test_handle_command_unmark_with_nothing_marked_says_so():
+    pool = _pool()
+    state = MarkDrafted()
+    pending, _, status = _handle_command("-gibbs", pool, state, [])
+    assert pending == []
+    assert state.drafted == set()
+    assert "no marked player" in status.lower()
+
+
+def test_handle_command_unmark_cannot_reach_feed_reported_picks():
+    """`-` only ever takes back a MANUAL mark. Feed picks are not in
+    `mark_state`, and pretending to un-draft one would put a genuinely gone
+    player back on the board."""
+    pool = _pool()
+    state = MarkDrafted()
+    _, _, status = _handle_command("-gibbs", pool, state, [])   # gibbs is "feed-drafted"
+    assert state.drafted == set()
+    assert "no marked player" in status.lower()
+
+
 def test_handle_command_me_prefix_single_match_marks_as_mine():
     pool = _pool()
     state = MarkDrafted()
-    pending, pending_mine, status = _handle_command("me gibbs", pool, state, [])
+    pending, pending_action, status = _handle_command("me gibbs", pool, state, [])
     assert pending == []
     assert state.drafted == {"gibbs"}
     assert state.mine == {"gibbs"}
@@ -946,13 +1102,13 @@ def test_handle_command_me_prefix_ambiguous_query_opens_disambiguation_marks_not
     """
     pool = _pool()
     state = MarkDrafted()
-    pending, pending_mine, status = _handle_command("me robinson", pool, state, [])
+    pending, pending_action, status = _handle_command("me robinson", pool, state, [])
     assert state.drafted == set()          # nothing marked yet
     assert state.mine == set()
-    assert pending_mine is True
+    assert pending_action == "mine"
     assert len(pending) == 2
 
-    pending2, pending_mine2, status2 = _handle_command("1", pool, state, pending, pending_mine)
+    pending2, pending_action2, status2 = _handle_command("1", pool, state, pending, pending_action)
     assert state.drafted == {pending[0].sleeper_id}
     assert state.mine == {pending[0].sleeper_id}  # the chosen player is self-marked
     assert pending2 == []
@@ -986,6 +1142,189 @@ def test_combine_my_roster_adds_self_marked_players_the_feed_never_saw():
     players = _loop_players()
     combined = _combine_my_roster([], mine_ids={"1"}, players=players)
     assert [p.sleeper_id for p in combined] == ["1"]
+
+
+def test_draft_log_path_is_dated_so_a_mock_never_replays_into_a_real_draft():
+    """Same league, different day = different file. Replaying a mock's marks
+    into the live draft would be far worse than having no log at all.
+
+    (Calls the name imported at module load, which monkeypatch's module-attr
+    patch in `_isolate_draft_log` does not rebind -- so this exercises the real
+    implementation while `_run` still gets the pinned test path.)
+    """
+    from datetime import date
+    path = _draft_log_path(_loop_league())
+    assert path.name == f"loop-league-{date.today().isoformat()}.jsonl"
+    assert path.parent.name == ".draft"
+
+
+def test_mark_log_replay_restores_drafted_and_mine_exactly(tmp_path):
+    """The Yahoo draft has no feed, so hand-typed marks are the ONLY record of
+    it. A mis-hit ctrl-C at pick 90 must not cost ~100 re-typed names."""
+    path = tmp_path / "draft.jsonl"
+    state = MarkDrafted(log_path=path)
+    state.mark("bijan")
+    state.mark("gibbs", mine=True)
+    state.unmark("bijan")
+
+    restored, applied, skipped = _restore_marks(path)
+    assert (applied, skipped) == (3, 0)
+    assert restored.drafted == state.drafted == {"gibbs"}
+    assert restored.mine == state.mine == {"gibbs"}
+
+
+def test_marks_made_after_a_restore_are_journalled_too(tmp_path):
+    """Surviving one crash must not cost the safety net for the next one.
+
+    Caught by scripts/mutate.py: replacing `state.attach_log(path)` with `pass`
+    left every earlier test green while silently disarming the log for the rest
+    of the draft -- a second ctrl-C would then lose everything typed since the
+    first restart, which is the exact scenario this feature exists for.
+    """
+    path = tmp_path / "draft.jsonl"
+    first = MarkDrafted(log_path=path)
+    first.mark("bijan")
+
+    resumed, _, _ = _restore_marks(path)
+    resumed.mark("gibbs", mine=True)             # typed after the "restart"
+
+    again, applied, _ = _restore_marks(path)
+    assert applied == 2
+    assert again.drafted == {"bijan", "gibbs"}
+    assert again.mine == {"gibbs"}
+
+
+def test_mark_log_replay_restores_undo_history_too(tmp_path):
+    """Replaying ops (not a state snapshot) rebuilds `_history`, so `u` still
+    works after a restart. A snapshot would restore the sets but silently leave
+    the user with no undo for everything typed before the crash."""
+    path = tmp_path / "draft.jsonl"
+    state = MarkDrafted(log_path=path)
+    state.mark("bijan")
+    state.mark("gibbs", mine=True)
+
+    restored, _, _ = _restore_marks(path)
+    restored.undo()
+    assert restored.drafted == {"bijan"}
+    assert restored.mine == set()
+
+
+def test_mark_log_records_undo_so_it_is_not_replayed_away(tmp_path):
+    """An undo is an op like any other. If it were not logged, replay would
+    resurrect a mark the user had already taken back."""
+    path = tmp_path / "draft.jsonl"
+    state = MarkDrafted(log_path=path)
+    state.mark("bijan")
+    state.undo()
+
+    restored, applied, _ = _restore_marks(path)
+    assert applied == 2
+    assert restored.drafted == set()
+
+
+def test_mark_log_skips_corrupt_lines_without_dying(tmp_path):
+    """Degrade, never fabricate: a truncated final line (the likely shape after
+    a hard kill) must cost that one op, not the whole draft."""
+    path = tmp_path / "draft.jsonl"
+    state = MarkDrafted(log_path=path)
+    state.mark("bijan")
+    state.mark("gibbs")
+    with path.open("a") as fh:
+        fh.write('{"op": "mark", "id": "trunc')      # killed mid-write
+
+    restored, applied, skipped = _restore_marks(path)
+    assert (applied, skipped) == (2, 1)
+    assert restored.drafted == {"bijan", "gibbs"}
+
+
+def test_mark_log_replay_of_a_missing_file_is_empty_not_an_error(tmp_path):
+    restored, applied, skipped = _restore_marks(tmp_path / "nope.jsonl")
+    assert (applied, skipped) == (0, 0)
+    assert restored.drafted == set()
+
+
+def test_mark_still_works_when_the_log_cannot_be_written(tmp_path):
+    """Persistence is insurance, never a dependency. If the disk is read-only
+    the draft continues -- losing the safety net is survivable, losing the
+    board mid-pick is not."""
+    unwritable = tmp_path / "no-such-dir" / "draft.jsonl"
+    state = MarkDrafted(log_path=unwritable)
+    state.mark("bijan", mine=True)
+    assert state.drafted == {"bijan"}
+    assert state.mine == {"bijan"}
+
+
+def test_mark_without_a_log_path_writes_nothing(tmp_path):
+    state = MarkDrafted()
+    state.mark("bijan")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_claims_overruled_by_feed_drops_a_claim_the_feed_gives_another_seat():
+    """The feed is authoritative about WHO drafted whom. A `me <player>` on
+    someone another seat actually took is provably wrong, and left standing it
+    computes MARG against a roster the user does not have."""
+    picks = [Pick(pick_no=1, sleeper_id="gibbs", draft_slot=9)]
+    assert _claims_overruled_by_feed(picks, {"gibbs"}, my_slot=5) == {"gibbs"}
+
+
+def test_claims_overruled_by_feed_keeps_a_claim_the_feed_confirms():
+    """Same seat means the feed AGREES with the claim -- never drop it."""
+    picks = [Pick(pick_no=1, sleeper_id="gibbs", draft_slot=5)]
+    assert _claims_overruled_by_feed(picks, {"gibbs"}, my_slot=5) == set()
+
+
+def test_claims_overruled_by_feed_ignores_picks_carrying_no_slot():
+    """A pick with no `draft_slot` attributes to nobody. Overruling on it would
+    guess, and this is exactly the Sleeper-mock shape that once emptied
+    my_roster for a whole draft -- here it would silently DELETE the user's
+    hand-built roster instead."""
+    picks = [Pick(pick_no=1, sleeper_id="gibbs", draft_slot=None)]
+    assert _claims_overruled_by_feed(picks, {"gibbs"}, my_slot=5) == set()
+
+
+def test_claims_overruled_by_feed_is_inert_when_the_slot_is_unconfigured():
+    """With no draft_slot configured, every pick's slot differs from `None`.
+    A naive `!=` would overrule EVERY claim and wipe the roster -- the worst
+    possible outcome from an unset config value."""
+    picks = [Pick(pick_no=1, sleeper_id="gibbs", draft_slot=9),
+             Pick(pick_no=2, sleeper_id="bijan", draft_slot=3)]
+    assert _claims_overruled_by_feed(picks, {"gibbs", "bijan"}, my_slot=None) == set()
+
+
+def test_claims_overruled_by_feed_leaves_unclaimed_picks_alone():
+    picks = [Pick(pick_no=1, sleeper_id="bijan", draft_slot=9)]
+    assert _claims_overruled_by_feed(picks, {"gibbs"}, my_slot=5) == set()
+
+
+def test_render_tick_feed_overrules_a_bad_claim_and_says_so(monkeypatch, capsys):
+    """End-to-end: a self-marked player the feed gives to another seat must
+    leave my_roster, and the override must be VISIBLE -- silently editing the
+    user's own roster is exactly the 'degrade, never fabricate' violation this
+    project treats as the worst failure mode."""
+    players = {
+        "qb1": Player("qb1", "Roster QB", "QB", "SF", proj_pts=50.0, adp=50.0, adp_stdev=5.0),
+        "qb2": Player("qb2", "Candidate QB", "QB", "KC", proj_pts=300.0, adp=1.0, adp_stdev=1.0),
+    }
+    settings = LeagueSettings(num_teams=10, scoring={}, roster_slots={"QB": 1}, rounds=1,
+                              draft_id=None)
+    league = _loop_league(draft_slot=5)
+    captured = {}
+
+    def spy_render(board, limit, stale, my_roster, *a, **kw):
+        captured["my_roster"] = my_roster
+        return "ok"
+
+    monkeypatch.setattr("ffhelper.cli.render", spy_render)
+
+    _render_tick(
+        [Pick(pick_no=1, sleeper_id="qb1", draft_slot=9)], None, players, settings,
+        league, Tunables(), 10, manual_gone={"qb1"}, manual_mine={"qb1"}, my_slot=5,
+    )
+
+    assert [p.sleeper_id for p in captured["my_roster"]] == []   # claim dropped
+    out = capsys.readouterr().out
+    assert "Roster QB" in out and "seat 9" in out
 
 
 def test_render_tick_self_mark_adds_to_my_roster_and_depresses_marg(monkeypatch):
@@ -1108,7 +1447,7 @@ def test_render_tick_manual_marks_advance_pick_and_undo_reverses_it(monkeypatch,
     league = _loop_league(draft_slot=3)  # draft_slot needed for the footer line to print
     state = MarkDrafted()
     pending: list[Player] = []
-    pending_mine = False
+    pending_action = ""
 
     def tick() -> str:
         capsys.readouterr()
@@ -1119,7 +1458,7 @@ def test_render_tick_manual_marks_advance_pick_and_undo_reverses_it(monkeypatch,
     assert "pick 1   your next pick" in tick()
 
     for name in ["Aardvark", "Bobcat", "Cougar", "Dingo"]:
-        pending, pending_mine, _ = _handle_command(name, players, state, pending, pending_mine)
+        pending, pending_action, _ = _handle_command(name, players, state, pending, pending_action)
 
     assert "pick 5   your next pick" in tick()   # 4 marks -> current_pick advances to 5
 
@@ -1340,11 +1679,11 @@ def test_a_raising_command_leaves_the_rest_of_the_queue_drainable(monkeypatch, c
     calls = {"n": 0}
     real = _handle_command
 
-    def flaky(line, pool, mark_state, pending, pending_mine=False):
+    def flaky(line, pool, mark_state, pending, pending_action=""):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("boom")
-        return real(line, pool, mark_state, pending, pending_mine)
+        return real(line, pool, mark_state, pending, pending_action)
 
     monkeypatch.setattr("ffhelper.cli._handle_command", flaky)
 

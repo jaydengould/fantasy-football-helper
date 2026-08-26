@@ -10,8 +10,9 @@ running backs score higher.
 
 ## Status
 
-Draft mode is complete and tested against live data. Season mode and a web UI are
-planned but not built.
+Draft mode is complete and has been exercised end to end against a full 180-pick
+live draft, which is where most of its bugs came from. Season mode and a web UI
+are planned but not built.
 
 | Capability | State |
 | --- | --- |
@@ -21,12 +22,17 @@ planned but not built.
 | Live Sleeper draft feed | working |
 | Manual pick entry (any platform, no feed needed) | working |
 | Terminal board with auto-refresh | working |
+| Hand-typed picks survive a crash or restart | working |
 | Yahoo API feed | blocked on Yahoo developer approval |
 | Web dashboard, season mode, trade finder | planned |
 
 ## Requirements
 
-Python 3.12+. Two runtime dependencies: `requests` and `yfpy`.
+Python 3.12+. One runtime dependency does the work: `requests`. (`yfpy` is
+declared for the Yahoo feed, which is blocked on developer approval and imports
+nowhere yet.) Everything else is standard library — `tomllib` for config,
+`statistics.NormalDist` for the survival math, `sqlite3` for season mode later.
+Adding a dependency needs a reason a few lines of stdlib cannot cover.
 
 ```bash
 python3 -m venv .venv
@@ -52,7 +58,21 @@ draft_slot = 3                 # your draft position, 1-indexed
 
 `draft_slot` is deliberately manual. Draft order is often not final until the
 draft starts, and a wrong slot silently corrupts every survival number — so the
-tool never guesses it.
+tool never guesses it. Set it, then run `preflight` to confirm it took; a value
+left commented out fails silently in exactly the way this warning describes.
+
+Optionally, choose which ADP the survival model believes:
+
+```toml
+adp_source = "ffc"      # default. "sleeper" is the other option.
+```
+
+Survival calibration depends almost entirely on the accuracy of the ADP *mean*,
+so this matters more than it looks. Use `"sleeper"` when your league drafts
+inside the Sleeper app — the room is anchored on the number Sleeper shows them,
+which most drafters have never compared against anything else. Use `"ffc"`
+everywhere else. `scripts/calibrate.py` settles it with a measurement rather than
+an argument (see [Scripts](#scripts)).
 
 ### A league without a platform API (Yahoo, ESPN, CBS, anywhere)
 
@@ -94,7 +114,7 @@ syncing with no config change.
 ```toml
 [tunables]
 tier_break_sigma = 1.0        # higher = fewer, coarser tiers
-divergence_flag_slots = 25    # flag when model and market disagree by this much
+divergence_flag_slots = 10    # WITHIN-POSITION rank gap that earns a flag
 
 [tunables.flex_share]         # how flex slots split across positions
 RB = 0.5
@@ -148,19 +168,66 @@ board:
 | --- | --- |
 | `gibbs` | mark Jahmyr Gibbs drafted by someone |
 | `me nacua` | mark Puka Nacua drafted **by you** (counts toward your roster) |
+| `-nacua` | take that mark back — he returns to the board |
 | `2` | choose the 2nd option when a name is ambiguous |
-| `u` | undo the last mark |
+| `u` | undo the last change, whatever it was |
 
 Partial names work, accents and suffixes are handled (`pineiro` finds Eddy
 Piñeiro, `harrison` finds Marvin Harrison Jr.). **Ambiguous names always prompt** —
 typing `robinson` will not silently pick between Bijan and Brian.
 
-## Reading the board
+`me ` matters more than it looks: a plain mark only clears a player off the
+board, while `me ` also feeds your roster, which is what MARG is measured
+against. In a league with no feed, skipping it means every marginal-value number
+is computed against an empty roster.
+
+`-` searches only what *you* marked by hand, so `-robinson` resolves outright if
+only one Robinson was marked, and a feed-reported pick can never be un-drafted.
+Recording a pick and then realising it was yours needs no undo — just claim it:
+`nacua` followed by `me nacua`.
+
+`u` restores the exact prior state, including whether a mark was claimed as
+yours, and a no-op never consumes an undo.
+
+### If it crashes, you lose nothing
+
+Hand-typed marks are journalled to `.draft/<league>-<date>.jsonl` as they happen.
+Restart and the board picks up where it left off:
 
 ```
-#   PLAYER              POS     VONA     VBD    MARG TIER   SURV   DIV  FLAGS
-1   Brock Bowers        TE      36.9    91.0   253.5    1     7%    -2  bye13
-12  D'Andre Swift       RB       1.0   124.2   208.0    1    48%   +17  bye10
+restored 87 mark(s) from /…/.draft/my-yahoo-league-2026-09-01.jsonl
+  -> 87 drafted, 9 yours. Delete that file to start fresh.
+```
+
+Undo history is rebuilt too, so `u` still works for picks typed before the crash.
+The filename is dated so a mock never replays into a real draft. If the log can't
+be written the draft carries on without it — persistence is insurance, never a
+dependency.
+
+### When the feed disagrees with you
+
+If you claim a player the feed then reports from another seat, the claim is
+dropped from your roster and says so:
+
+```
+CLAIM OVERRULED: the feed says Puka Nacua was taken from seat 4, not yours --
+dropped from your roster. Clear the stale claim with '-<name>'.
+```
+
+He stays off the board — he really was drafted, just not by you.
+
+## Reading the board
+
+A real board, 12-team full PPR, on the clock at pick 45:
+
+```
+#   PLAYER                   POS     VONA     VBD    MARG TIER   SURV   DIV  FLAGS
+1   Drake Maye               QB       8.0    31.3   378.8    1    23%    +0  bye11
+2   D'Andre Swift            RB       6.5    60.1   208.0    1    61%    +3  bye10
+3   Tyler Warren             TE       6.2    38.6   201.1    1    21%    +0  Questionable bye13
+4   David Montgomery         RB       4.6    58.2   206.1    1    23%    -1  bye8
+5   Garrett Wilson           WR       3.5    47.6   224.9    1    12%    +0  bye13
+6   Sam LaPorta              TE       1.6    34.0   196.5    1    80%    +0  Questionable bye6
 ```
 
 | Column | Meaning |
@@ -170,11 +237,42 @@ typing `robinson` will not silently pick between Bijan and Brian.
 | **MARG** | How much this player improves your *starting lineup* — a third RB is worth less than a first |
 | **TIER** | Players in a tier are roughly interchangeable |
 | **SURV** | Probability of still being available at your next pick |
-| **DIV** | Projection rank minus market rank. A flag, never blended into the score. |
+| **DIV** | Projection rank minus market rank, **within position**. A flag, never blended into the score. `-` means the market never priced him — no opinion is not agreement. |
 
-Swift above is the whole point: the highest VBD on screen, but VONA of 1.0 — he
-has a 48% chance of lasting to your next pick, so spending this pick on him costs
-you the tight end you cannot get back.
+That board is the whole argument. **Swift has the highest VBD on screen (60.1)
+and is not the pick.** He has a 61% chance of lasting to your next turn, so
+waiting costs you 6.5 points. Maye is worth half as much by VBD but only 23%
+likely to survive, so waiting costs 8.0 — and LaPorta, at 80% survival, costs
+1.6, which is the board telling you that tight end can wait a round.
+
+A value-ranked cheat sheet puts Swift first and is wrong. The question is never
+"who is best available", it is "who will not be here next time".
+
+`FLAGS` carries injury status, bye week, and — where the model and the market
+disagree by more than `divergence_flag_slots` places within a position —
+`MODEL+n` or `MARKET+n`. `MODEL+` means the projection likes him more than the
+room does. It is a prompt to look, never an instruction, and it is deliberately
+rare: about 6% of top-20 rows.
+
+VONA is rounded to the displayed tenth before sorting and floored at zero, so the
+board agrees with the numbers on screen and ties break on value. Without the
+floor, every negative VONA is comparable only within its own position, and at
+pick 1 — and on both sides of every snake turn — kickers sort above McCaffrey.
+
+Two banners replace the ranking when ranking would mislead:
+
+- **`STARTING LINEUP FULL`** — every starting slot is filled, so no available
+  player improves your lineup and there is nothing honest left to rank on. The
+  remaining order is bench value over league replacement, and the tool says
+  plainly that it has no model of upside or handcuffs.
+- **`MANUAL MODE`** / **`FEED STALE 23s`** — the board is running without a feed,
+  or the feed stopped answering. It keeps rendering the last known state rather
+  than dying, but it never pretends to be current.
+
+`TIER` deserves more weight than its width suggests. Measured across 2021–2025,
+no position's preseason top 12 was ordered better than about +0.35 rank
+correlation with what actually happened. The gaps *between* tiers are real; the
+order *within* one is close to noise.
 
 ## Data sources
 
@@ -187,6 +285,13 @@ you the tight end you cannot get back.
 - **DynastyProcess player IDs** — cross-platform ID crosswalk. Required because
   Sleeper's own `yahoo_id` is unpopulated for every rookie and most second-year
   players.
+
+**Deliberately single-source on projections.** ESPN was the obvious second
+opinion and was tested rather than assumed: on 2025, Rotowire beat it 66.5 to
+70.5 MAE overall and 75.3 to 93.2 at quarterback, and averaging the two never
+beat Rotowire alone. Run `scripts/backtest.py` to reproduce that. The remaining
+risk is real — every projection is poor in absolute terms — but the honest
+upgrade is a confidence interval on the board, not another opinion.
 
 ## Design notes
 
@@ -201,17 +306,66 @@ consensus produces consensus results. The disagreement is surfaced as a flag for
 you to judge.
 
 **Degrade, never fabricate.** Unknown draft slot, unreachable feed, ambiguous
-name, missing settings — each produces a visible, labelled degradation rather than
-a plausible guess.
+name, missing settings, a claim the feed contradicts — each produces a visible,
+labelled degradation rather than a plausible guess. This extends to analysis:
+`scripts/backtest.py` refuses to score a projection source that cannot prove it
+was frozen before the season it predicts.
+
+**Replacement level is a property of the league, not of who is left.** Drawing it
+from the draining pool makes the baseline collapse as the draft runs down — at
+pick 164 of a test draft that gave a backup quarterback a VBD of +149 against a
+true −32.5, and produced a confident case for drafting a third one.
+
+**The tool advises; it never drafts.** There is no auto-pick and there will not
+be one.
+
+## Scripts
+
+Three tools that answer questions the board cannot.
+
+```bash
+.venv/bin/python scripts/backtest.py [season ...]     # is source X actually better?
+.venv/bin/python scripts/calibrate.py <draft_id> <slot>
+.venv/bin/python scripts/mutate.py
+```
+
+**`backtest.py`** scores a projection source against what actually happened.
+Its real work is refusing to be fooled: both Sleeper and ESPN will serve a
+"season projection" for a season already played, and some of those numbers were
+revised *during* that season. A revised projection scores brilliantly and means
+nothing. So a source must prove it was frozen before week 1 — a preseason
+projection gives nearly everyone a full slate, because it cannot know who gets
+hurt — and a source that fails is named and skipped, never scored.
+
+**`calibrate.py`** replays a completed draft and asks, at each of your turns,
+"will this player last to my next pick?", then buckets the answers by what the
+model predicted. A well-calibrated model reads 10/30/50/70/90 down the actual
+column. Flat means it has no discriminating power. This is how `adp_source` gets
+settled by measurement.
+
+**`mutate.py`** breaks the engine on purpose, one line at a time, and checks the
+suite notices. It is the only mechanical check that a test does anything, and it
+has caught several tests that passed against deliberately broken code.
 
 ## Development
 
 ```bash
-.venv/bin/pytest          # 144 tests, no network, runs in ~0.15s
+.venv/bin/pytest          # 199 tests, no network, runs in ~0.2s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire
 ranking engine tests without a network.
+
+Two conventions worth knowing before contributing:
+
+- **A new test must be shown to fail before the fix.** `git stash push -- ffhelper
+  && pytest -k <name>`. A test written after a fix and never seen red is not
+  evidence that it works.
+- **Add a mutation to `scripts/mutate.py` alongside non-trivial logic.** It is one
+  line, and it is the only thing that distinguishes a test from a decoration.
+
+Neither is bureaucracy. Every serious defect this project has had was found by
+running the code against real data while a full green suite looked on.
 
 ## License and attribution
 

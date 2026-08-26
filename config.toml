@@ -64,8 +64,8 @@ platform = "yahoo"
 # the Sept 1 draft, so league_id is unused today -- there is no feed and no
 # settings sync. Everything below is hand-entered, which is the FIRST-CLASS
 # path for this platform, not a fallback. Picks are entered by hand.
-league_id = "REPLACE_WITH_YAHOO_LEAGUE_ID"
-# draft_slot = 4
+league_id = "723573"
+draft_slot = 2
 
 [league.settings]
 num_teams = 10
