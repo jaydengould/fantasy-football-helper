@@ -227,6 +227,59 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
 
 ## Session log
 
+### 2026-08-25 (second session) — Review findings cleared; one rejected on data
+
+**State:** branch `draft-night-fixes` off `main`, 2 commits, **151 tests**.
+Everything actionable from the final review is done. **Outstanding work is in
+`TODO.md`; the only item with real risk left is Task 13.**
+
+Done: both draft-night blockers (unreachable STALE banner, unguarded input
+drain), all four cheap fixes, and the Yahoo `[league.settings]` block. Every new
+test was verified failing against pre-fix source with
+`git stash push -- ffhelper` before the fix landed.
+
+#### A ninth defect found by running the code, not by testing it
+
+**The opening board ranked four kickers in the top ten, above McCaffrey.** A
+150-test suite passed over it completely. VONA compresses toward 0 for everyone
+whenever the next pick is a pick or two away — pick 1, and **both sides of every
+snake turn**, so this would have hit on draft night. Below the top four the board
+sorted on VONA differences of 1e-12; below that, on negative-VONA magnitudes that
+are not comparable across positions.
+
+Sort key is now `(-max(round(vona, 1), 0.0), -r.vbd)` — round to the displayed
+tenth of a point so the sort agrees with the screen, floor at 0 because every
+negative VONA means the same thing and once waiting is free, value decides.
+`Row.vona` is untouched; only the sort key is floored. Boards at picks 27 and 51
+are byte-identical.
+
+#### The review's survival finding was rejected — do not re-litigate
+
+Finding #4 (`survival_prob` unconditional, SURV 0.00% for fallers) is **closed as
+won't-fix**, with the full costing in `TODO.md` section 2. Three reasons:
+
+1. **Its evidence was a constructed board state, not an observation.** "Live
+   check, real pool, pick 61 with two WRs slid past their ADP" was built by hand.
+   No draft has ever been run with this tool.
+2. **The gaussian tail is well calibrated.** FFC's `low` field records the latest
+   pick each player was ever taken across ~836 real drafts each. Predicted worst
+   fall over that many drafts: 3.0 sigma. Observed median worst case: **2.9
+   sigma.** Players ever falling >= 8 sigma: **zero**. The cited Collins case is
+   13.8 sigma.
+3. **Frequency doesn't justify blast radius.** The fabricated 0.00% does start at
+   2 sigma (an 11-pick slide), but expected available players that far past ADP
+   run 0.02–0.11 per board state — one row every few drafts.
+
+The best fix, if ever revisited, is a **variance-matched conditional logistic**
+(`s = stdev*sqrt(3)/pi`), not the conditioning the review proposed: a gaussian's
+hazard rate explodes in the tail, so `S(at)/S(cur)` returns 0.01% for Collins and
+divides by zero past 8.3 sigma. It needs real validation data first.
+
+**The lesson worth keeping:** this project's rule is "run it against real data,
+never trust a green suite." That rule cuts both ways — it also means **not acting
+on a finding whose evidence is synthetic.** Both defects this session were found
+by running real data; the one rejection was justified by real data too.
+
 ### 2026-08-24 — Brainstorming and spec
 
 Researched all data sources against live endpoints rather than assumption.
