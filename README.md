@@ -31,7 +31,7 @@ are planned but not built.
 Python 3.12+. One runtime dependency does the work: `requests`. (`yfpy` is
 declared for the Yahoo feed, which is blocked on developer approval and imports
 nowhere yet.) Everything else is standard library — `tomllib` for config,
-`statistics.NormalDist` for the survival math, `sqlite3` for season mode later.
+`statistics` for the tier maths, `sqlite3` for season mode later.
 Adding a dependency needs a reason a few lines of stdlib cannot cover.
 
 ```bash
@@ -64,15 +64,18 @@ left commented out fails silently in exactly the way this warning describes.
 Optionally, choose which ADP the survival model believes:
 
 ```toml
-adp_source = "ffc"      # default. "sleeper" is the other option.
+adp_source = "sleeper"   # or "ffc" (the code default)
 ```
 
 Survival calibration depends almost entirely on the accuracy of the ADP *mean*,
-so this matters more than it looks. Use `"sleeper"` when your league drafts
-inside the Sleeper app — the room is anchored on the number Sleeper shows them,
-which most drafters have never compared against anything else. Use `"ffc"`
-everywhere else. `scripts/calibrate.py` settles it with a measurement rather than
-an argument (see [Scripts](#scripts)).
+so this matters more than it looks. **Measured across three 12-team mock drafts
+(540 picks), Sleeper's ADP predicted the room roughly twice as well as FFC's** —
+including in Yahoo rooms, where the obvious guess is the other way round. FFC's
+calibration spanned 24 points across its whole range and was not monotonic;
+Sleeper's spanned 47 and rose in every bucket.
+
+Don't take that on faith for your own league: `scripts/calibrate.py` settles it
+with a measurement (see [Scripts](#scripts)), and one config line reverts it.
 
 ### A league without a platform API (Yahoo, ESPN, CBS, anywhere)
 
@@ -223,12 +226,12 @@ A real board, 12-team full PPR, on the clock at pick 45:
 
 ```
 #   PLAYER                   POS     VONA     VBD    MARG TIER   SURV   DIV  FLAGS
-1   Drake Maye               QB       8.0    31.3   378.8    1    23%    +0  bye11
-2   D'Andre Swift            RB       6.5    60.1   208.0    1    61%    +3  bye10
-3   Tyler Warren             TE       6.2    38.6   201.1    1    21%    +0  Questionable bye13
-4   David Montgomery         RB       4.6    58.2   206.1    1    23%    -1  bye8
-5   Garrett Wilson           WR       3.5    47.6   224.9    1    12%    +0  bye13
-6   Sam LaPorta              TE       1.6    34.0   196.5    1    80%    +0  Questionable bye6
+1   Drake Maye               QB       7.4    31.3   378.8    1    25%    +0  bye11
+2   Tyler Warren             TE       5.3    38.6   201.1    1    28%    +0  Questionable bye13
+3   D'Andre Swift            RB       3.8    60.1   208.0    1    71%    +3  bye10
+4   Garrett Wilson           WR       2.8    47.6   224.9    1    20%    +0  bye13
+5   David Montgomery         RB       1.9    58.2   206.1    1    35%    -1  bye8
+6   Sam LaPorta              TE       0.7    34.0   196.5    1    84%    +0  Questionable bye6
 ```
 
 | Column | Meaning |
@@ -237,14 +240,14 @@ A real board, 12-team full PPR, on the clock at pick 45:
 | **VBD** | Points above a replacement-level player at that position |
 | **MARG** | How much this player improves your *starting lineup* — a third RB is worth less than a first |
 | **TIER** | Players in a tier are roughly interchangeable |
-| **SURV** | Probability of still being available at your next pick |
+| **SURV** | Probability of lasting to your next pick, **given he is on the board now** |
 | **DIV** | Projection rank minus market rank, **within position**. A flag, never blended into the score. `-` means the market never priced him — no opinion is not agreement. |
 
 That board is the whole argument. **Swift has the highest VBD on screen (60.1)
-and is not the pick.** He has a 61% chance of lasting to your next turn, so
-waiting costs you 6.5 points. Maye is worth half as much by VBD but only 23%
-likely to survive, so waiting costs 8.0 — and LaPorta, at 80% survival, costs
-1.6, which is the board telling you that tight end can wait a round.
+and is third.** He has a 71% chance of lasting to your next turn, so waiting
+costs you 3.8 points. Maye is worth half as much by VBD but only 25% likely to
+survive, so waiting costs 7.4 — and LaPorta, at 84% survival, costs 0.7, which
+is the board telling you that tight end can wait a round.
 
 A value-ranked cheat sheet puts Swift first and is wrong. The question is never
 "who is best available", it is "who will not be here next time".
@@ -378,7 +381,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 232 tests, no network, runs in ~0.3s
+.venv/bin/pytest          # 236 tests, no network, runs in ~0.3s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

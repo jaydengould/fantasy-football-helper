@@ -3,8 +3,8 @@
 Everything here is a function of its arguments, which is what makes the whole
 board testable without touching a network.
 """
+import math
 import statistics
-from statistics import NormalDist
 
 from ffhelper.data import ADP_UNKNOWN, Player
 
@@ -147,17 +147,52 @@ def next_pick_number(current_pick: int, slot: int, num_teams: int) -> int:
         r += 1
 
 
-def survival_prob(player: Player, at_pick: int) -> float:
-    """P(player is still available at `at_pick`), from ADP mean and spread.
+# exp() overflows around 710; the survival curve is flat long before that.
+_EXP_CAP = 700.0
+
+
+def survival_prob(player: Player, at_pick: int, from_pick: int = 0) -> float:
+    """P(player lasts to `at_pick`) GIVEN he is still available at `from_pick`.
+
+    The conditioning is the whole point and it is a correctness fix, not a
+    tuning. At your turn you already KNOW he is on the board, so the question is
+    P(X > at | X > from), never the unconditional P(X > at) -- and the
+    unconditional form is smaller by construction, so it was biased pessimistic
+    for every player on every board. Measured across three Yahoo mocks (540
+    picks, `scripts/calibrate.py`), the unconditional form said 0-20% for players
+    who survived 46% of the time; weighted calibration error was 0.145 against
+    0.081 conditional. `from_pick <= 0` keeps the unconditional form for callers
+    with no board position to condition on.
+
+    The distribution is a LOGISTIC variance-matched to the gaussian this used to
+    use (`s = stdev*sqrt(3)/pi`), which is what `CLAUDE.md` named as the right
+    fix if the question were ever reopened with real data. Accuracy is a dead
+    heat (0.081 gaussian vs 0.082 logistic); the logistic wins on the tail. A
+    gaussian's hazard rate explodes, so `S(at)/S(from)` divides by ~0 for a
+    player who has slid far past his ADP and reports a FABRICATED 0.00% for the
+    one case where he is most obviously still fallable. The logistic decays to a
+    constant per-pick hazard instead, which degrades rather than lies.
 
     FFC's per-player stdev cannot be synthesized -- fitting it from ADP alone
     leaves 42.6% of the variance unexplained -- so the curve is only a fallback.
+    Since both leagues moved to Sleeper ADP it is in fact the only path, which
+    measurement says costs nothing: real stdev moved calibration by ~0.001.
     """
     stdev = player.adp_stdev if player.adp_stdev is not None else curve_stdev(player.adp)
-    return 1.0 - NormalDist(player.adp, max(stdev, 0.1)).cdf(at_pick)
+    scale = max(stdev, 0.1) * math.sqrt(3) / math.pi
+
+    def still_there(pick: int) -> float:
+        return 1.0 / (1.0 + math.exp(min((pick - player.adp) / scale, _EXP_CAP)))
+
+    if from_pick <= 0:
+        return still_there(at_pick)
+    # Capped at 1.0: `at_pick` before `from_pick` is a caller error, not a
+    # player who is somehow more than certain to survive.
+    return min(still_there(at_pick) / still_there(from_pick), 1.0)
 
 
-def vona(players: list[Player], candidate: Player, at_pick: int) -> float:
+def vona(players: list[Player], candidate: Player, at_pick: int,
+         from_pick: int = 0) -> float:
     """Value Over Next Available: what it costs to wait rather than take him now.
 
     Expected best-at-position at `at_pick`, computed as a survival-weighted
@@ -174,7 +209,7 @@ def vona(players: list[Player], candidate: Player, at_pick: int) -> float:
     expected = 0.0
     prob_all_gone = 1.0
     for p in same_pos:
-        surv = survival_prob(p, at_pick)
+        surv = survival_prob(p, at_pick, from_pick)
         expected += prob_all_gone * surv * p.proj_pts
         prob_all_gone *= 1.0 - surv
         if prob_all_gone < 1e-6:
@@ -322,10 +357,10 @@ def build_board(
         Row(
             player=p,
             vbd=vbd_scores[p.sleeper_id],
-            vona=vona(available, p, at_pick),
+            vona=vona(available, p, at_pick, current_pick),
             marginal=marginal_value(my_roster, p, settings_slots),
             tier=tiers[p.sleeper_id],
-            survival=survival_prob(p, at_pick),
+            survival=survival_prob(p, at_pick, current_pick),
             divergence=divs[p.sleeper_id],
         )
         for p in available

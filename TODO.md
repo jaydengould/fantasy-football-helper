@@ -18,10 +18,10 @@ work, in priority order:
    Across 2021–2025 no position ranks its own top 12 better than ~+0.35
    Spearman. The tier column already carries this; the board under-uses it.
    Awareness is probably the whole fix before Sept 1.
-3. **Read SURV as an ordering, not a probability.** Section 12a. Measured on 540
-   picks: the model says 0–20% and about half survive. Not a code fix before the
-   drafts — `value.py` is frozen and the correction may not transfer — but it
-   means the board leans toward reaching, and you should know that at the table.
+3. **SURV is now conditional and roughly twice as accurate** (section 2, shipped
+   2026-08-26). It still reads low — says 0–20%, 30% survive — so treat it as a
+   strong ordering rather than a literal probability, but it is no longer
+   misleading by ~25 points.
 4. **Bench-mode ordering.** Section 14. Honest but still weak once starters fill.
 5. **FantasyPros ECR local look.** Section 18 — 20 minutes, needs a manual
    download. Run the ECR-vs-ADP correlation first; it decides the rest.
@@ -112,7 +112,13 @@ regime changes.
 
 ---
 
-## 2. CLOSED 2026-08-25 — `survival_prob` stays unconditional. Do not reopen.
+## 2. REOPENED AND SHIPPED 2026-08-26 — conditioning was right after all
+
+**Read the 2026-08-26 note at the end of this section first.** The 2026-08-25
+rejection below stands as a record of correct reasoning on the evidence then
+available, and the reopen condition it set was met exactly as written.
+
+## 2 (historical). CLOSED 2026-08-25 — `survival_prob` stays unconditional.
 
 The final review's finding #4 said the SURV column is wrong for fallers, citing
 Nico Collins and George Pickens at pick 61 reading **SURV 0.00%** with inflated
@@ -165,6 +171,49 @@ conditional fix only.
 **If this is ever revisited, the conditional logistic is the option to take, and
 it needs validation data first** — historical per-draft pick results, which FFC
 does not expose but Sleeper's completed drafts do. Offseason work.
+
+### REOPENED AND SHIPPED 2026-08-26 — the condition above was met exactly
+
+**The validation data arrived**: three transcribed Yahoo mocks, 540 picks, rooms
+measurably not list-followers. And it said the problem is far bigger than the
+faller rows this section was arguing about.
+
+**What 2026-08-25 got right:** the option (variance-matched conditional
+logistic), the rejection of `S(at)/S(current)` on a gaussian, and refusing to
+ship on a constructed board state. All three held.
+
+**What it got wrong: the frequency.** This section costed the fix as repairing
+"one row every few drafts" — the extreme fallers. But the unconditional form is
+smaller than the conditional one for **every player on every board**, not just
+fallers, because every player being evaluated has by definition already survived
+to the current pick. So the bias is systematic, not tail-only:
+
+| model says | unconditional (shipped until now) | conditional logistic | ideal |
+| --- | --- | --- | --- |
+| 0-20% | 46% | **30%** | 10% |
+| 20-40% | 60% | **49%** | 30% |
+| 40-60% | 72% | **64%** | 50% |
+| 60-80% | 83% | **80%** | 70% |
+| 80-100% | 93% | 91% | 90% |
+
+**Weighted calibration error 0.145 → 0.081.** No fitted parameters — nothing is
+tuned to these three drafts; it is the same distribution asked the right
+question.
+
+**Blast radius measured before shipping, which is what made it safe a week out:**
+across board states at picks 2, 19, 42 and 79 on the real `yahoo-main` pool,
+**0–3 of the top 10 rows reorder and no new player enters the top 10 at any of
+them.** VONA raises survival proportionally within a position, so comparisons
+survive. The 2026-08-25 objection — "17/20 at pick 27, bad trade" — was measured
+on the *conditional gaussian*, not on this.
+
+Gaussian and logistic tie on accuracy (0.081 vs 0.082). The logistic ships
+because its tail degrades instead of lying: a gaussian's hazard explodes, so
+`S(at)/S(from)` divides by ~0 and reports a fabricated 0.00% for exactly the
+player most obviously still fallable.
+
+`value.py` was unfrozen once, deliberately, for this. Covered by three new tests
+(each verified red against pre-fix source) and five mutations.
 
 ---
 
@@ -660,7 +709,27 @@ literally sees Sleeper's own ADP printed on the draft board while picking.
 Confirming it properly would need full-PPR 12-team mocks, which is now cheap —
 join, don't type, paste the results page.
 
-### STILL OPEN and more interesting: both sources are badly wrong in LEVEL
+### FIXED 2026-08-26 — the level error was a model-form bug, not the ADP mean
+
+**Superseded by section 2's reopen note; the diagnosis below was wrong and is
+kept because the wrong turn is instructive.** I concluded the level bias had to
+be the ADP mean, having ruled out the spread. It was neither: `survival_prob`
+was answering the UNCONDITIONAL question `P(X > at)` when the board only ever
+asks about players who are demonstrably still available, i.e. `P(X > at | X >
+now)`. The unconditional form is smaller by construction, so it was pessimistic
+for every row on every board.
+
+Conditioning cut weighted calibration error from **0.145 to 0.081** and shipped;
+board ordering barely moves (0–3 of the top 10 across four pick numbers). What
+remains after the fix is still pessimistic (says 0–20%, 30% survive) but is now
+roughly half the error it was, and the residue may genuinely be the ADP mean.
+
+**The lesson worth keeping: "not the spread" did not entitle me to "therefore the
+mean."** Those were not the only two options, and the third one — the model is
+computing the wrong quantity — was the actual answer. I had eliminated one
+suspect and announced the verdict.
+
+### Historical: both sources are badly wrong in LEVEL
 
 Not a tie-break between sources — it applies to whichever one is chosen. **The
 model says 0–20% and roughly half of those players survive.** The whole curve

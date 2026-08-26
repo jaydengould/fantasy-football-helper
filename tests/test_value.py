@@ -259,11 +259,14 @@ def test_survival_falls_back_to_curve_when_stdev_missing():
     where the curve's stdev actually drives the number.
 
     curve_stdev(20) = 0.287 * 20**0.809 = 3.239031... (see ffhelper/data.py).
-    survival = 1 - NormalDist(20, 3.239031).cdf(25) = 0.061334 (computed via
-    statistics.NormalDist directly, not re-derived from the implementation).
+    The distribution is a logistic variance-matched to a gaussian of that
+    stdev, so scale = 3.239031 * sqrt(3)/pi and
+    survival = 1 / (1 + exp((25 - 20)/scale)) = 0.057329 -- computed from the
+    formula directly, not read off the implementation. (Was 0.061334 under the
+    unconditional gaussian; the small move is the variance-matched swap.)
     """
     p = Player("a", "A", "RB", "SF", proj_pts=200.0, adp=20.0, adp_stdev=None)
-    assert survival_prob(p, at_pick=25) == pytest.approx(0.061334, abs=1e-4)
+    assert survival_prob(p, at_pick=25) == pytest.approx(0.057329, abs=1e-4)
 
 
 def test_survival_uses_real_zero_stdev_not_curve_fallback():
@@ -381,17 +384,18 @@ def test_vona_urgency_tracks_scarcity_not_just_value():
     a shared pool would make the VONA delta collapse to just the ~0-point
     proj_pts gap between the two candidates, which would not test this at all.
 
-    Derivation (via statistics.NormalDist directly):
-    low: adp=40, stdev=11 -> survival(at_pick=46) = 0.292720...
-    high: adp=60, stdev=11 -> survival(at_pick=46) = 0.898443...
-    filler: proj_pts=60, adp=140, stdev=15 -> survival(46) = 0.99999999982,
+    Derivation, from the variance-matched logistic directly
+    (S(x) = 1/(1+exp((x-adp)/s)), s = stdev*sqrt(3)/pi):
+    low: adp=40, stdev=11 -> survival(at_pick=46) = 0.271041...
+    high: adp=60, stdev=11 -> survival(at_pick=46) = 0.909576...
+    filler: proj_pts=60, adp=140, stdev=15 -> survival(46) = 0.99998842,
       i.e. ~1.0 (essentially certain to still be on the board).
 
-    expected_low  = 0.292720*150 + (1-0.292720)*1.0*60 = 43.908 + 42.437 = 86.345
-    vona_low      = 150 - 86.345 = 63.655
+    expected_low  = 0.271041*150 + (1-0.271041)*0.99998842*60 = 84.393
+    vona_low      = 150 - 84.393 = 65.607
 
-    expected_high = 0.898443*150 + (1-0.898443)*1.0*60 = 134.766 + 6.094 = 140.860
-    vona_high     = 150 - 140.860 = 9.140
+    expected_high = 0.909576*150 + (1-0.909576)*0.99998842*60 = 141.862
+    vona_high     = 150 - 141.862 = 8.138
     """
     low_surv = mk("low", "RB", 150.0, adp=40.0, stdev=11.0)
     high_surv = mk("high", "RB", 150.0, adp=60.0, stdev=11.0)
@@ -400,8 +404,8 @@ def test_vona_urgency_tracks_scarcity_not_just_value():
     vona_low = vona([low_surv, filler], low_surv, at_pick=46)
     vona_high = vona([high_surv, filler], high_surv, at_pick=46)
 
-    assert vona_low == pytest.approx(63.655, abs=0.05)
-    assert vona_high == pytest.approx(9.140, abs=0.05)
+    assert vona_low == pytest.approx(65.607, abs=0.05)
+    assert vona_high == pytest.approx(8.138, abs=0.05)
     assert vona_low > vona_high, "lower survival must mean strictly higher VONA"
 
 
@@ -414,23 +418,23 @@ def test_vona_accumulates_across_multiple_mid_band_survivors():
 
     Four RBs, all with survival in [0.42, 0.66] at pick 46 (adp=44,46,48,50,
     stdev=10 each): cand(140), p2(135), p3(130), p4(125).
-    survival(cand)=0.420740 (adp=44, off-center, needs NormalDist)
+    survival(cand)=0.410292 (adp=44, off-centre, needs the formula)
     survival(p2)=0.5 exactly (adp=46 == at_pick, symmetric, no computation)
-    survival(p3)=0.579260, survival(p4)=0.655422 (both computed directly).
+    survival(p3)=0.589708, survival(p4)=0.673821 (both computed directly).
 
     Bounds, derived from the walk arithmetic without needing p3/p4's exact
     values:
     - Upper bound on VONA: use only the first two terms (cand, p2) and drop
       p3/p4, whose contributions can only ever be >= 0 and so can only push
-      expected up / VONA down. expected_2term = 0.420740*140 +
-      (1-0.420740)*0.5*135 = 58.904 + 39.100 = 98.004 -> VONA <= 140-98.004
-      = 41.996.
+      expected up / VONA down. expected_2term = 0.410292*140 +
+      (1-0.410292)*0.5*135 = 57.441 + 39.805 = 97.246 -> VONA <= 140-97.246
+      = 42.754.
     - Lower bound on VONA: cap the entire remaining (1-survival(cand)) mass
       at the highest-value remaining player's points (p2=135) as if it were
       certain to be there (survival=1), which over-estimates expected and so
-      under-estimates VONA: expected_cap = 0.420740*140 +
-      (1-0.420740)*135 = 58.904 + 78.200 = 137.104 -> VONA >= 140-137.104
-      = 2.896.
+      under-estimates VONA: expected_cap = 0.410292*140 +
+      (1-0.410292)*135 = 57.441 + 79.611 = 137.051 -> VONA >= 140-137.051
+      = 2.949.
 
     The true 4-term result (10.20, computed directly via NormalDist) falls
     well inside (2.896, 41.996) -- and well below the single-term-only
@@ -444,8 +448,8 @@ def test_vona_accumulates_across_multiple_mid_band_survivors():
     p4 = mk("p4", "RB", 125.0, adp=50.0, stdev=10.0)
 
     result = vona([cand, p2, p3, p4], cand, at_pick=46)
-    assert 2.896 < result < 41.996
-    assert result == pytest.approx(10.20, abs=0.05)
+    assert 2.949 < result < 42.754
+    assert result == pytest.approx(9.960, abs=0.05)
 
 
 def test_divergence_flags_projection_vs_market_gaps():
@@ -942,3 +946,60 @@ def test_board_at_realistic_scale_holds_up():
     # At least one position genuinely clusters into multiple tiers.
     rb_tiers = {r.tier for r in board if r.player.position == "RB"}
     assert len(rb_tiers) >= 2
+
+
+def test_survival_conditions_on_being_available_now():
+    """The board only ever asks about players who ARE still there, so the
+    question is P(lasts to `at` | still here at `from`). The unconditional form
+    is smaller by construction and was pessimistic for every row on every board:
+    measured across three Yahoo mocks it said 0-20% for players who survived 46%
+    of the time. Conditioning halved the calibration error.
+    """
+    p = Player("a", "A", "RB", "SF", proj_pts=200.0, adp=30.0, adp_stdev=10.0)
+    unconditional = survival_prob(p, at_pick=61)
+    conditional = survival_prob(p, at_pick=61, from_pick=50)
+    assert conditional > unconditional
+    # A player 20 picks past his ADP is far likelier to keep falling than his
+    # unconditional curve says: single digits versus a realistic double.
+    assert unconditional < 0.05 < conditional
+
+
+def test_survival_never_fabricates_zero_for_a_big_faller():
+    """The reason for a logistic rather than a conditional gaussian. A gaussian's
+    hazard rate explodes, so S(at)/S(from) divides by ~0 and reports 0.00% for a
+    player who has slid 100+ picks past his ADP -- fabricated certainty in the
+    one case where he is most obviously still on the board and still falling.
+    """
+    faller = Player("a", "A", "WR", "SF", proj_pts=200.0, adp=20.0, adp_stdev=8.0)
+    p = survival_prob(faller, at_pick=161, from_pick=150)
+    assert p > 0.0, "a player who has already fallen 130 picks is not certain to go"
+    assert p < 1.0
+
+
+def test_survival_is_unconditional_without_a_board_position():
+    """`from_pick=0` is the no-context default and must not shift the answer."""
+    p = Player("a", "A", "RB", "SF", proj_pts=200.0, adp=30.0, adp_stdev=10.0)
+    assert survival_prob(p, at_pick=40, from_pick=0) == survival_prob(p, at_pick=40)
+
+
+def test_conditioning_reaches_the_board_not_just_the_column():
+    """`build_board` must pass `current_pick` through to BOTH the SURV column and
+    the VONA walk. Wiring one and not the other leaves the recommendation
+    computed from a number the screen disagrees with.
+
+    Asserted against the conditional value directly rather than by comparing two
+    board states: `at_pick` moves with `current_pick`, so two boards do not share
+    a horizon and comparing their survivals tests nothing.
+    """
+    a = mk("a", "RB", 200.0, adp=30.0, stdev=10.0)
+    b = mk("b", "RB", 190.0, adp=35.0, stdev=10.0)
+    pool, slots, current = [a, b], {"RB": 1}, 50
+    rows = build_board(pool, [], slots, 12, current_pick=current, my_slot=1,
+                       tunables=Tunables(), replacement_pool=pool)
+    at_pick = next_pick_number(current, 1, 12)
+    row = next(r for r in rows if r.player.sleeper_id == "a")
+
+    assert row.survival == pytest.approx(survival_prob(a, at_pick, current))
+    assert row.survival != pytest.approx(survival_prob(a, at_pick))   # not the old form
+    assert row.vona == pytest.approx(vona(pool, a, at_pick, current))
+    assert row.vona != pytest.approx(vona(pool, a, at_pick))

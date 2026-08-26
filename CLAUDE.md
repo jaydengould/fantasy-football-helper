@@ -29,6 +29,11 @@ Endpoints serve "projections" for seasons already played, and some were revised
 mid-season. `scripts/backtest.py` makes a source prove it was frozen and refuses
 to score it otherwise; do the same for any new source.
 
+**Eliminating one suspect is not a verdict.** Twice now a confident diagnosis
+has been announced after ruling out a single alternative ("not the spread,
+therefore the mean" — it was neither; the model was computing the wrong
+quantity). Before naming a cause, ask what the third option is.
+
 **Update this CLAUDE.md at the end of each working session** — record decisions
 made, schema/config changes, and what's next. It's the memory that survives
 between sessions.
@@ -212,8 +217,16 @@ fresh opinion.
   fitted curve for FFC's real stdev on the 208 players that have one moved
   calibration from 46/60/72/83/93 to 43/62/72/86/92 — noise. **Every player now
   uses `curve_stdev` and it costs nothing measurable.** Independent confirmation
-  of the older "mean >> spread" result, and it means the survival model's level
-  error is a MEAN problem, not a spread one.
+  of the older "mean >> spread" result. (I then concluded the level error must
+  therefore be the MEAN. Wrong — see the next entry; the model was computing the
+  wrong quantity. Ruling out the spread eliminated one suspect, not two.)
+- **Survival is CONDITIONAL on the player still being available**, as a
+  variance-matched logistic. Changed 2026-08-26 after three transcribed mocks
+  (540 picks) showed the old unconditional form was pessimistic for every row on
+  every board, not just fallers: calibration error 0.145 → 0.081. `TODO.md` §2
+  carries the full reopen note, including what the 2026-08-25 rejection got right
+  and what it got wrong. Board ordering barely moves; the SURV column changes a
+  lot.
 - **Engine is VBD + survival-weighted VONA.** Rejected: a static VBD board (a
   printed cheatsheet that never answers the question at the clock) and
   Monte-Carlo simulation (no data to fit an opponent model, too slow for a 120s
@@ -576,7 +589,59 @@ deliberately held until the notation stopped moving; the notation moved once mor
 this session (comma batching) and has now stopped, the mocks are done, and the
 Yahoo draft — the one where all ~150 picks are hand-typed — is six days out.
 
-#### The bigger finding is unfixed on purpose: both sources are wrong in LEVEL
+#### SHIPPED: survival is now CONDITIONAL. `value.py` unfrozen once, deliberately.
+
+**State: 236 tests, 76 mutations (75 killed).**
+
+The user pushed back on "nothing we can do about SURV", and the pushback was
+right. **The level error was not the ADP mean. `survival_prob` was computing the
+wrong quantity.** It returned the unconditional `P(X > at_pick)` when the board
+only ever asks about players who are demonstrably still available — the question
+is `P(X > at | X > now)`. The unconditional form is smaller by construction, so
+it was pessimistic for **every row on every board**, not just the fallers
+`TODO.md` §2 had been arguing about.
+
+Fixed as a variance-matched conditional logistic (`s = stdev*sqrt(3)/pi`) —
+which is exactly what §2 named as the right option "if this is ever revisited,
+and it needs validation data first". **The validation data was the three
+transcribed mocks.** The reopen condition set by a previous session was met as
+written, which is the process working.
+
+| model says | before | after | ideal |
+| --- | --- | --- | --- |
+| 0-20% | 46% | **30%** | 10% |
+| 20-40% | 60% | **49%** | 30% |
+| 40-60% | 72% | **64%** | 50% |
+| 60-80% | 83% | **80%** | 70% |
+| 80-100% | 93% | 91% | 90% |
+
+**Weighted calibration error 0.145 → 0.081, with no fitted parameters.**
+
+**Blast radius was measured BEFORE shipping, and that is what made it safe six
+days out**: across board states at picks 2/19/42/79 on the real pool, 0–3 of the
+top 10 rows reorder and no new player enters the top 10 at any of them. VONA
+raises survival proportionally within a position, so comparisons survive.
+
+Logistic over conditional gaussian on a tie (0.081 vs 0.082): a gaussian's hazard
+explodes, so `S(at)/S(from)` divides by ~0 and reports a **fabricated 0.00%** for
+the player most obviously still fallable. Degrade, never fabricate.
+
+**Three of my own errors on the way, all caught by the discipline rather than by
+luck.** (1) I told the user the level error "is a MEAN problem" after ruling out
+the spread — but eliminating one suspect is not a verdict, and the real answer
+was a third option. (2) My first board-comparison test asserted survival rises
+when you stand later in the draft; it does not, because `at_pick` moves with
+`current_pick`, so two boards share no horizon — the test caught my sloppy
+premise. (3) Three existing tests failed on hardcoded gaussian constants; each
+derivation was recomputed from the logistic formula independently rather than
+read off the implementation.
+
+**`README.md`'s sample board was regenerated by running the code**, per the rule
+that samples are never hand-edited. It argues the thesis better now: Swift's
+survival reads 71% rather than 61%, so "highest VBD on screen and still not the
+pick" lands harder.
+
+#### Historical: the level error, before it was diagnosed correctly
 
 This is not a tie-break, it applies to whichever source wins. **The model says
 0–20% and about half survive.** The curve sits ~25–35 points below reality,

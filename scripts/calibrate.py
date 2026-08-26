@@ -253,7 +253,7 @@ def main(argv: list[str]) -> int:
                 for pid, p in players.items():
                     if drafted_at.get(pid, 10**9) < cur:
                         continue                              # already gone
-                    pred = survival_prob(p, nxt)
+                    pred = survival_prob(p, nxt, cur)
                     if pred < 0.02 or pred > 0.98:
                         continue                              # uninformative band
                     key = int(pred * BUCKETS) / BUCKETS
