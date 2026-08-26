@@ -24,12 +24,15 @@ league_id = "1395959490938966016"
 # league of its own, so its settings cannot be fetched. Set draft_id from the
 # mock draft URL (the long number after /draft/), set draft_slot to the seat you
 # drew, then: python -m ffhelper.cli run --league mock
-# [[league]]
-# name = "mock"
-# platform = "sleeper"
-# league_id = "1395959490938966016"
-# draft_id = "PASTE_MOCK_DRAFT_ID_HERE"
-# draft_slot = 1
+# Confirmed a `league_mock` of league 1395959490938966016: same 12 teams, PPR,
+# 15 rounds, same roster slots -- so sleeper-main's synced scoring is correct
+# for it. draft_order confirms seat 5. Delete this block after Task 13.
+[[league]]
+name = "mock"
+platform = "sleeper"
+league_id = "1395959490938966016"
+draft_id = "1398139615038185472"
+draft_slot = 5
 
 [[league]]
 name = "yahoo-main"
