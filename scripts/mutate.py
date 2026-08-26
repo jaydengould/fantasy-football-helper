@@ -95,6 +95,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if False:"),
         ("redraw dedup",
          "if frame != last_frame or stale or iterations == 0:", "if True:"),
+        ("adp_source validated",
+         "if league.adp_source not in ADP_SOURCES:", "if False:"),
     ],
     "feeds.py": [
         ("pick draft_slot parsed",
@@ -102,6 +104,10 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
     ],
     "data.py": [
         ("stale_ok honoured", "if not stale_ok:", "if False:"),
+        ("adp_source gates the ffc overwrite",
+         "if set_adp and row.get(\"adp\") is not None:", "if row.get(\"adp\") is not None:"),
+        ("ffc bye is taken regardless of adp_source",
+         "if row.get(\"bye\"):", "if set_adp and row.get(\"bye\"):"),
     ],
 }
 

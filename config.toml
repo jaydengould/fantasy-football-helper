@@ -15,6 +15,12 @@ yahoo = 12
 name = "sleeper-main"
 platform = "sleeper"
 league_id = "1395959490938966016"
+# Which ADP the survival model believes. "ffc" (default) or "sleeper".
+# Left on ffc deliberately: Sleeper ADP calibrated near-perfectly against the
+# Task 13 mock, but that mock's CPU drafters pick off Sleeper's own list, so the
+# result is circular. Flip to "sleeper" only after a HUMAN mock says to --
+# `scripts/calibrate.py` measures it. See TODO.
+adp_source = "ffc"
 # draft_slot: Sleeper draft_order had 11 of 12 slots at design time.
 # Set this manually once the draft order is final. Never trust the API for it.
 # draft_slot = 3

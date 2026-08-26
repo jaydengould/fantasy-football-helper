@@ -347,8 +347,15 @@ def apply_sleeper_adp(
 _AMBIGUOUS_PREFIX = "AMBIGUOUS: "
 
 
-def apply_ffc_adp(players: dict[str, Player], ffc_rows: list[dict]) -> list[str]:
+def apply_ffc_adp(
+    players: dict[str, Player], ffc_rows: list[dict], set_adp: bool = True
+) -> list[str]:
     """Non-load-bearing enrichment. Supplies adp/adp_stdev/bye where matched.
+
+    `set_adp=False` takes ONLY the bye week and leaves adp/adp_stdev alone --
+    for leagues whose ADP source is not FFC. Bye weeks come from nowhere else
+    (Sleeper's player DB has no bye field), so this join always runs; only the
+    ADP overwrite is optional.
 
     FFC carries no cross-platform ID, so this is the one fuzzy join in the
     system. It runs LAST, on an already-complete ID-keyed board, so the blast
@@ -391,9 +398,9 @@ def apply_ffc_adp(players: dict[str, Player], ffc_rows: list[dict]) -> list[str]
         if target is None:
             unmatched.append(name)
             continue
-        if row.get("adp") is not None:
+        if set_adp and row.get("adp") is not None:
             target.adp = float(row["adp"])
-        if row.get("stdev"):
+        if set_adp and row.get("stdev"):
             target.adp_stdev = float(row["stdev"])
         if row.get("bye"):
             target.bye = int(row["bye"])

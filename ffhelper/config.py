@@ -19,6 +19,27 @@ class League:
     # league of its own, so its settings cannot be fetched -- borrow the real
     # league's and override only where the picks come from.
     draft_id: str | None = None
+    # Which ADP the survival model believes: "ffc" (default) or "sleeper".
+    #
+    # This is the single biggest lever on survival accuracy. Measured against
+    # the Task 13 mock, FFC ADP gave near-flat calibration (says 0-20% ->
+    # 74% actually survived, says 80-100% -> 94%) while Sleeper ADP gave
+    # 4/17/52/91/100 -- nearly perfect. That test is circular, since the mock's
+    # CPU drafters pick off Sleeper's list, but it does establish that the model
+    # FORM is sound and that only the ADP mean was wrong.
+    #
+    # There is no universally right answer, which is why this is a knob:
+    #   - FFC's sample is exactly 12-team PPR 15-round on a rolling 7-day window,
+    #     matching this league's shape.
+    #   - Sleeper's `adp_ppr` is what leaguemates see in the app while drafting,
+    #     but folds in TE-premium leagues (TEs run ~20 picks earlier).
+    # QB and RB are near-identical between them; the disagreement is TE and WR.
+    #
+    # "yahoo" is NOT implemented: Yahoo's API exposes ADP via draft_analysis
+    # (average_pick, average_round, average_cost, percent_drafted) and is the
+    # right source for a Yahoo league once access is granted -- but access has
+    # not arrived, so it cannot be built or tested. See TODO.
+    adp_source: str = "ffc"
 
 
 @dataclass(frozen=True)

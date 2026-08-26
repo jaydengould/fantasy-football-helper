@@ -202,6 +202,55 @@ def test_no_draft_id_override_leaves_settings_exactly_as_synced(monkeypatch):
     assert resolve_settings(league) is api
 
 
+def _adp_source_fixture(monkeypatch, calls):
+    """Sleeper ADP puts the player at 10.0; FFC would move him to 90.0."""
+    players = {"1": Player("1", "Guy", "WR", "SF")}
+    monkeypatch.setattr("ffhelper.cli.load_players", lambda: players)
+    monkeypatch.setattr("ffhelper.cli.load_projections",
+                         lambda season: [{"player_id": "1", "stats": {"rec": 100.0, "adp_ppr": 10.0}}])
+    monkeypatch.setattr("ffhelper.cli.load_ffc_adp", lambda f, t, y: [
+        {"name": "Guy", "position": "WR", "team": "SF", "adp": 90.0, "stdev": 7.0, "bye": 9}])
+    monkeypatch.setattr(
+        "ffhelper.cli.resolve_settings",
+        lambda lg, season=None: LeagueSettings(
+            num_teams=12, scoring={"rec": 1.0}, roster_slots={"WR": 1}, rounds=1, draft_id="d"),
+    )
+    return players
+
+
+def test_adp_source_ffc_lets_ffc_overwrite_the_sleeper_baseline(monkeypatch):
+    _adp_source_fixture(monkeypatch, [])
+    league = League(name="l", platform="sleeper", league_id="1", adp_source="ffc")
+    out, _ = load_board_inputs(league, Tunables())
+    assert out["1"].adp == pytest.approx(90.0)
+    assert out["1"].adp_stdev == pytest.approx(7.0)
+
+
+def test_adp_source_sleeper_keeps_the_sleeper_adp_but_still_takes_the_bye(monkeypatch):
+    """Survival is only as good as its ADP mean, so the source is a per-league
+    knob. But bye weeks come from FFC and nowhere else -- Sleeper's player DB
+    has no bye field -- so the FFC join must still run for enrichment even when
+    it is not allowed to touch adp.
+
+    Against an implementation that simply skips apply_ffc_adp, `bye` is None
+    and this fails.
+    """
+    _adp_source_fixture(monkeypatch, [])
+    league = League(name="l", platform="sleeper", league_id="1", adp_source="sleeper")
+    out, _ = load_board_inputs(league, Tunables())
+    assert out["1"].adp == pytest.approx(10.0), "Sleeper's ADP must survive"
+    assert out["1"].bye == 9, "but the bye week still comes from FFC"
+
+
+def test_unknown_adp_source_fails_loudly_naming_the_league(monkeypatch):
+    """An unknown value must raise at load, not silently fall through to FFC
+    partway through a draft."""
+    _adp_source_fixture(monkeypatch, [])
+    league = League(name="typo-league", platform="sleeper", league_id="1", adp_source="yahoo")
+    with pytest.raises(ValueError, match="typo-league"):
+        load_board_inputs(league, Tunables())
+
+
 def test_load_board_inputs_manual_league_produces_correct_board(monkeypatch):
     """A config-only league (no platform API) produces a correct, ranked board."""
     players = {
@@ -241,7 +290,7 @@ def test_load_board_inputs_keeps_ambiguous_prefix_visible(monkeypatch, capsys):
     monkeypatch.setattr("ffhelper.cli.load_players", lambda: players)
     monkeypatch.setattr("ffhelper.cli.load_projections", lambda season: projections)
     monkeypatch.setattr("ffhelper.cli.load_ffc_adp", lambda fmt, teams, year: [])
-    monkeypatch.setattr("ffhelper.cli.apply_ffc_adp", lambda players, rows: ["AMBIGUOUS: Robinson"])
+    monkeypatch.setattr("ffhelper.cli.apply_ffc_adp", lambda players, rows, set_adp=True: ["AMBIGUOUS: Robinson"])
 
     league = League(name="manual-league", platform="yahoo", league_id="1", settings=MANUAL_SETTINGS)
     load_board_inputs(league, Tunables(), season="2026")
@@ -464,7 +513,7 @@ def test_standard_scoring_uses_sleepers_adp_std_not_adp_standard(monkeypatch):
     monkeypatch.setattr("ffhelper.cli.load_projections", lambda season: [])
     monkeypatch.setattr("ffhelper.cli.apply_projections", lambda p, pr, sc: None)
     monkeypatch.setattr("ffhelper.cli.load_ffc_adp", lambda f, t, y: [])
-    monkeypatch.setattr("ffhelper.cli.apply_ffc_adp", lambda p, rows: [])
+    monkeypatch.setattr("ffhelper.cli.apply_ffc_adp", lambda p, rows, set_adp=True: [])
     monkeypatch.setattr("ffhelper.cli.apply_sleeper_adp",
                          lambda players, proj, field: seen.update(field=field))
     monkeypatch.setattr(

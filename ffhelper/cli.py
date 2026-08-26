@@ -23,6 +23,10 @@ log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
 SEASON = "2026"
 SLEEPER_DRAFT_URL = "https://api.sleeper.app/v1/draft/{draft_id}"
+# Validated at load, not at first use: an unknown value must fail at preflight,
+# not silently fall through to FFC halfway through a draft. "yahoo" is
+# deliberately absent -- see League.adp_source.
+ADP_SOURCES = {"ffc", "sleeper"}
 
 
 def find_players(pool: dict[str, Player], query: str) -> list[Player]:
@@ -263,7 +267,12 @@ def league_settings_from_config(raw: dict) -> LeagueSettings:
 def load_board_inputs(
     league: League, tunables: Tunables, season: str = SEASON
 ) -> tuple[dict[str, Player], LeagueSettings]:
-    """Cold start: fetch everything, join by ID, then enrich with FFC."""
+    """Cold start: fetch everything, join by ID, then enrich with FFC.
+
+    Sleeper ADP is applied first as the ID-keyed baseline, then FFC's fuzzy
+    join runs. Whether FFC OVERWRITES that baseline is `league.adp_source`; the
+    join itself always runs, because bye weeks come from nowhere else.
+    """
     settings = resolve_settings(league, season)
     players = load_players()
     projections = load_projections(season)
@@ -272,8 +281,15 @@ def load_board_inputs(
     fmt = league.adp_format or adp_format_for(settings)
     apply_sleeper_adp(players, projections, SLEEPER_ADP_FIELD.get(fmt, f"adp_{fmt.replace('-', '_')}"))
 
+    if league.adp_source not in ADP_SOURCES:
+        raise ValueError(
+            f"league {league.name!r} has adp_source={league.adp_source!r}; "
+            f"expected one of {sorted(ADP_SOURCES)}. "
+            f"(\"yahoo\" is not implemented -- the API is not available yet.)"
+        )
     teams = league.adp_teams or settings.num_teams
-    unmatched = apply_ffc_adp(players, load_ffc_adp(fmt, teams, int(season)))
+    unmatched = apply_ffc_adp(players, load_ffc_adp(fmt, teams, int(season)),
+                              set_adp=league.adp_source == "ffc")
     if unmatched:
         # Printed, never silently dropped.
         print(f"FFC: {len(unmatched)} unmatched -> {', '.join(unmatched[:15])}"
@@ -525,6 +541,7 @@ def _preflight(league: League, tunables: Tunables) -> int:
     print(f"teams           : {settings.num_teams}")
     print(f"roster slots    : {settings.roster_slots}")
     print(f"scoring keys    : {len(settings.scoring)}  (pass_td={settings.scoring.get('pass_td')})")
+    print(f"adp source      : {league.adp_source}")
     print(f"draft_id        : {settings.draft_id}")
     print(f"players w/ proj : {len(players)}")
 
