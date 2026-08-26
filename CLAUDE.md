@@ -113,6 +113,11 @@ Sleeper. The RB tilt comes from half PPR plus 10-team shallower replacement.
   the upgrade path.
 - Non-trivial logic leaves one runnable check behind. One `test_value.py` plus
   `preflight`. No mocking the network — the pure core doesn't need it.
+- **A new test must be shown to fail before the fix**, by
+  `git stash push -- ffhelper && pytest -k <name>`. A test written after a fix
+  and never seen red is not evidence.
+- **Add a mutation to `scripts/mutate.py` alongside non-trivial logic.** It is
+  one line and it is the only mechanical check that a test does anything.
 
 ## Non-negotiables
 
@@ -279,6 +284,45 @@ divides by zero past 8.3 sigma. It needs real validation data first.
 never trust a green suite." That rule cuts both ways — it also means **not acting
 on a finding whose evidence is synthetic.** Both defects this session were found
 by running real data; the one rejection was justified by real data too.
+
+#### Audit of the review process itself, after that miss
+
+Prompted by "what stops other bad findings getting through". Classifying the
+final review's six substantive findings by the evidence behind each:
+
+| Evidence type | Findings | Verdict |
+| --- | --- | --- |
+| Mechanically reproducible (a failing test, or a literal in a file) | 1, 2, 3, 5, 6 | **all five real** |
+| Judgement about what a number *means* | 4 (survival) | **the only wrong one** |
+
+The existing discipline — "write a test that fails before the fix" — is a strong
+filter, and it filtered correctly. The gap is precisely for claims that cannot be
+reduced to a failing test. Those need a different standard: **record whether the
+evidence was observed or constructed, and quantify how often it occurs.**
+
+**`scripts/mutate.py` added.** Breaks the engine on purpose, one line at a time,
+and checks the suite notices. First run: **4 of 18 mutations survived**, 3 were
+real coverage gaps —
+
+- `lineup_value` would start a QB or kicker at FLEX; nothing caught it. Inflates
+  MARG, and Phase 5's trade finder inherits the same function.
+- `MarkDrafted`'s idempotency guard: `me gibbs` then `gibbs` then `u` leaves the
+  player *out* of `drafted` but still in `mine` — back on the board and still
+  counted in `my_roster`.
+- The `isdecimal` fix from this same session: reverting it kept the suite green,
+  because the loop guard added beside it swallows the error. **The test I wrote
+  to prove that fix proved nothing.** Now driven directly against
+  `_handle_command`.
+
+Now 18 of 19 killed. The survivor is a genuine equivalent mutant (`>` vs `>=` on
+float gaps, never exactly equal) and is documented in the script.
+
+**Two doc claims were also false and are corrected:** `scripts/yahoo_auth.py`
+was described as "written and untested" — it never existed and never was
+committed. And finding 7's `adp_format_for` note was right: Sleeper emits
+`adp_std`, not `adp_standard`, so a standard-scoring league silently kept adp 999
+for every player and rendered a board that looked healthy. Fixed with an explicit
+`SLEEPER_ADP_FIELD` map plus a warning when the field matches nothing.
 
 ### 2026-08-24 — Brainstorming and spec
 

@@ -314,6 +314,49 @@ def test_preflight_reports_ok_with_reachable_feed(monkeypatch, capsys):
     assert "PREFLIGHT OK" in out
 
 
+def test_preflight_rejects_a_draft_slot_outside_the_league_size(monkeypatch, capsys):
+    """draft_slot is hand-entered and deliberately never guessed, so a typo is
+    likely. Slot 13 in a 10-team league silently yields wrong next-pick numbers
+    for the entire draft -- preflight is the one place that can catch it."""
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+
+    result = _preflight(_loop_league(draft_slot=13), Tunables())   # _loop_settings is 10 teams
+    out = capsys.readouterr().out
+
+    assert result == 1
+    assert "OUT OF RANGE" in out
+    assert "PREFLIGHT INCOMPLETE" in out
+
+
+def test_standard_scoring_uses_sleepers_adp_std_not_adp_standard(monkeypatch):
+    """Sleeper emits `adp_std`; the format string is "standard". Deriving the key
+    by string munging produced `adp_standard`, which does not exist, so every
+    player silently kept adp 999 and the board rendered as if healthy.
+
+    Against that code this asserts on a field name of 'adp_standard' and fails.
+    """
+    seen = {}
+    monkeypatch.setattr("ffhelper.cli.load_players", lambda: _loop_players())
+    monkeypatch.setattr("ffhelper.cli.load_projections", lambda season: [])
+    monkeypatch.setattr("ffhelper.cli.apply_projections", lambda p, pr, sc: None)
+    monkeypatch.setattr("ffhelper.cli.load_ffc_adp", lambda f, t, y: [])
+    monkeypatch.setattr("ffhelper.cli.apply_ffc_adp", lambda p, rows: [])
+    monkeypatch.setattr("ffhelper.cli.apply_sleeper_adp",
+                         lambda players, proj, field: seen.update(field=field))
+    monkeypatch.setattr(
+        "ffhelper.cli.resolve_settings",
+        lambda lg, season=None: LeagueSettings(
+            num_teams=10, scoring={"rec": 0.0}, roster_slots={"QB": 1}, rounds=1,
+            draft_id="d1"),
+    )
+
+    load_board_inputs(_loop_league(), Tunables())
+
+    assert seen["field"] == "adp_std"
+
+
 def test_main_dispatches_preflight_and_returns_its_exit_code(monkeypatch):
     league = _loop_league()
     monkeypatch.setattr("ffhelper.cli.load_config", lambda path: ([league], Tunables()))
@@ -1036,6 +1079,50 @@ def test_current_pick_follows_the_feeds_highest_pick_no_not_the_row_count(capsys
         manual_gone=set(), manual_mine=set(), roster_id=None,
     )
     assert "pick 4 " in capsys.readouterr().out
+
+
+def test_disambiguation_accepts_only_real_decimal_digits():
+    """Found by mutation testing: reverting `isdecimal()` to `isdigit()` in
+    `_handle_command` left the full suite green, because the loop-level guard
+    added alongside it swallows the ValueError -- so the loop-survival test
+    passes either way and proves nothing about the parse.
+
+    This drives `_handle_command` directly, with no guard in the way: '²' must
+    be treated as a NEW SEARCH (isdigit True, isdecimal False), never fed to
+    int(). Under `isdigit()` this raises ValueError instead of returning.
+    """
+    pool = _two_robinsons()
+    state = MarkDrafted()
+    pending = list(pool.values())
+
+    new_pending, _, status = _handle_command("²", pool, state, pending)
+
+    assert state.drafted == set()          # nothing was marked
+    assert "no match" in status            # fell through to the search branch
+    assert new_pending == []
+
+
+def test_remarking_your_own_pick_as_a_plain_mark_cannot_desync_mine_from_drafted():
+    """Found by mutation testing: deleting the idempotency guard in
+    `MarkDrafted.mark` left the full suite green.
+
+    The guard matters for one specific interleaving. "me gibbs" then later
+    "gibbs" (easy to do out of habit at the clock) pushes a second history
+    entry carrying mine=False. Undo then pops THAT entry: it discards from
+    `_marked` but -- because the entry says mine=False -- leaves `_mine`
+    holding the player. He is now absent from `drafted` while still in `mine`,
+    so he is back on the board AND still counted in `my_roster`, which is what
+    MARG is computed against.
+
+    The guard makes the second mark a no-op, so undo reverses the original.
+    """
+    state = MarkDrafted()
+    state.mark("a", mine=True)
+    state.mark("a", mine=False)          # no-op under the guard
+    state.undo()
+
+    assert state.drafted == set()
+    assert state.mine == set(), "mine must never outlive drafted"
 
 
 def _two_robinsons():

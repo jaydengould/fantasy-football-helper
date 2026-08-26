@@ -11,9 +11,9 @@ from pathlib import Path
 
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import (
-    LeagueSettings, Player, adp_format_for, apply_ffc_adp, apply_projections,
-    apply_sleeper_adp, fetch_json, load_ffc_adp, load_players, load_projections,
-    load_sleeper_settings, norm_name,
+    LeagueSettings, Player, SLEEPER_ADP_FIELD, adp_format_for, apply_ffc_adp,
+    apply_projections, apply_sleeper_adp, fetch_json, load_ffc_adp, load_players,
+    load_projections, load_sleeper_settings, norm_name,
 )
 from ffhelper.feeds import Pick, PickFeed, SleeperFeed
 from ffhelper.value import Row, build_board, detect_run, next_pick_number
@@ -245,7 +245,7 @@ def load_board_inputs(
 
     apply_projections(players, projections, settings.scoring)
     fmt = league.adp_format or adp_format_for(settings)
-    apply_sleeper_adp(players, projections, f"adp_{fmt.replace('-', '_')}")
+    apply_sleeper_adp(players, projections, SLEEPER_ADP_FIELD.get(fmt, f"adp_{fmt.replace('-', '_')}"))
 
     teams = league.adp_teams or settings.num_teams
     unmatched = apply_ffc_adp(players, load_ffc_adp(fmt, teams, int(season)))
@@ -491,6 +491,13 @@ def _preflight(league: League, tunables: Tunables) -> int:
     print(f"missing stdev   : {len(no_stdev)}")
     if league.draft_slot is None:
         print("draft_slot      : NOT SET -- board will degrade to next-pick survival")
+        ok = False
+    elif not 1 <= league.draft_slot <= settings.num_teams:
+        # Hand-entered and never guessed, so a typo is entirely possible -- and
+        # an out-of-range slot silently produces wrong next-pick numbers for the
+        # whole draft rather than failing.
+        print(f"draft_slot      : {league.draft_slot} is OUT OF RANGE for "
+              f"{settings.num_teams} teams -- every next-pick number will be wrong")
         ok = False
     else:
         print(f"draft_slot      : {league.draft_slot}")

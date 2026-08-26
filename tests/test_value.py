@@ -572,6 +572,34 @@ def test_compressed_vona_falls_back_to_value_instead_of_ranking_a_kicker_first()
     assert by_id["elite_rb"].vona == pytest.approx(-50.0, abs=1.0)
 
 
+def test_lineup_value_never_starts_a_qb_or_kicker_in_a_flex_slot():
+    """Found by mutation testing: deleting the `p.position in FLEX_ELIGIBLE`
+    guard in `lineup_value`'s FLEX loop left the full suite green.
+
+    Without it the FLEX slots take the highest-projection unused player of ANY
+    position, so a second QB or a kicker starts at FLEX. That inflates
+    `lineup_value`, which inflates `marginal_value`, which is the MARG column --
+    and Phase 5's trade finder inherits the same function.
+
+    Roster here has exactly one flex-worthy player left (rb2) and a high-scoring
+    spare QB. SLOTS is QB1/RB2/WR2/TE1/FLEX2/K1/DEF1, so after the named slots
+    fill, two FLEX slots are open and only rb2 may legally fill one.
+    """
+    roster = [
+        mk("qb1", "QB", 400.0), mk("qb2", "QB", 390.0),      # qb2 is a bench QB
+        mk("rb1", "RB", 200.0), mk("rb2", "RB", 190.0), mk("rb3", "RB", 180.0),
+        mk("wr1", "WR", 150.0), mk("wr2", "WR", 140.0),
+        mk("te1", "TE", 100.0), mk("k1", "K", 130.0), mk("d1", "DEF", 120.0),
+    ]
+    got = lineup_value(roster, SLOTS)
+    # QB1 + RB1,RB2 + WR1,WR2 + TE1 + K + DEF + FLEX(rb3, wr-none left) ...
+    # the only legal FLEX fills are rb3 (180) and then nothing else eligible.
+    expected = 400 + 200 + 190 + 150 + 140 + 100 + 130 + 120 + 180
+    assert got == pytest.approx(expected)
+    # The bench QB (390) and nothing else may sneak into the second FLEX slot.
+    assert got < expected + 390
+
+
 def test_board_of_empty_pool_is_empty():
     assert build_board([], [], SLOTS, 12, 1, 3, Tunables()) == []
 

@@ -304,10 +304,27 @@ def curve_stdev(adp: float) -> float:
     return _STDEV_A * max(adp, 0.1) ** _STDEV_B
 
 
+# Sleeper's own key names, NOT derivable from the FFC format string: FFC says
+# "standard" where Sleeper's key is `adp_std`. Deriving the key by string
+# munging produced `adp_standard`, which Sleeper does not emit, so every player
+# in a standard-scoring league silently kept adp 999 -- a fabricated board that
+# renders as if healthy. Explicit map, and apply_sleeper_adp warns on 0 matches.
+SLEEPER_ADP_FIELD = {
+    "ppr": "adp_ppr",
+    "half-ppr": "adp_half_ppr",
+    "standard": "adp_std",
+}
+
+
 def apply_sleeper_adp(
     players: dict[str, Player], projections: list[dict], adp_field: str
 ) -> None:
-    """ID-keyed ADP. Runs BEFORE the FFC join so every player has a value."""
+    """ID-keyed ADP. Runs BEFORE the FFC join so every player has a value.
+
+    Degrade, never fabricate: a field name that matches nothing leaves every
+    player at adp 999, which looks like a working board. Say so instead.
+    """
+    matched = 0
     for row in projections:
         pid = row.get("player_id")
         stats = row.get("stats") or {}
@@ -318,6 +335,13 @@ def apply_sleeper_adp(
             continue
         players[pid].adp = float(adp)
         players[pid].adp_stdev = curve_stdev(float(adp))
+        matched += 1
+    if not matched:
+        log.warning(
+            "no projection row carried ADP field %r -- every player keeps adp 999, "
+            "so survival and VONA are meaningless. Known Sleeper fields: %s",
+            adp_field, sorted(SLEEPER_ADP_FIELD.values()),
+        )
 
 
 _AMBIGUOUS_PREFIX = "AMBIGUOUS: "

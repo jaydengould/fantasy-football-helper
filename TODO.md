@@ -217,10 +217,16 @@ not copied into `config.toml`, which is committed to a public repo.
 
 Blocked on Yahoo's approval of the Fantasy Sports API application submitted
 2026-08-24. `.env` already holds the consumer key, secret, and league id.
-`scripts/yahoo_auth.py` is written and untested against a live account.
+
+**Correction 2026-08-25: `scripts/yahoo_auth.py` DOES NOT EXIST.** This file
+previously said it was "written and untested against a live account." It was
+never written and never committed — `git log --all -- 'scripts/*'` is empty and
+nothing in `.gitignore` covers it. Deliberately still not written: an untested
+OAuth handshake against an API nobody can reach is speculative work, and the
+yfpy constructor arguments cannot be verified without access anyway.
 
 When approval arrives:
-1. Run `.venv/bin/python scripts/yahoo_auth.py`
+1. **Write** `scripts/yahoo_auth.py` first — it does not exist
 2. Expect the yfpy constructor arguments to need adjustment — they change across
    versions and could not be verified without access. See
    https://yfpy.uberfastman.com/query/
