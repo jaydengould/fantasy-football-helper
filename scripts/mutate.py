@@ -72,6 +72,17 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "elif not 1 <= league.draft_slot <= settings.num_teams:", "elif False:"),
         ("draft_id override",
          "if league.draft_id and league.draft_id != settings.draft_id:", "if False:"),
+        ("my_roster slot match",
+         "if p.draft_slot == my_slot and p.sleeper_id in players", "if p.sleeper_id in players"),
+        ("on-the-clock banner",
+         "if next_pick_number(current_pick - 1, league.draft_slot, settings.num_teams) == current_pick:",
+         "if False:"),
+        ("redraw dedup",
+         "if frame != last_frame or stale or iterations == 0:", "if True:"),
+    ],
+    "feeds.py": [
+        ("pick draft_slot parsed",
+         "draft_slot=int(slot) if slot is not None else None,", "draft_slot=None,"),
     ],
     "data.py": [
         ("stale_ok honoured", "if not stale_ok:", "if False:"),

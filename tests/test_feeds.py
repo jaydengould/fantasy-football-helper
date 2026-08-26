@@ -16,6 +16,25 @@ def test_parses_picks_in_order():
     assert picks[0] == Pick(pick_no=1, sleeper_id="9221", roster_id=10)
 
 
+def test_parses_draft_slot_including_when_roster_id_is_null():
+    """A real row from the Task 13 mock. Sleeper mock drafts set `roster_id` to
+    None on EVERY pick while populating `draft_slot` normally -- which is why
+    my_roster is matched on draft_slot. If the parser drops draft_slot, the
+    whole roster resolution silently returns nothing, exactly as it did for a
+    full 180-pick draft.
+    """
+    raw = [{"pick_no": 5, "player_id": "4034", "roster_id": None, "draft_slot": 5,
+            "round": 1, "picked_by": ""}]
+    pick = parse_sleeper_picks(raw)[0]
+    assert pick.draft_slot == 5
+    assert pick.roster_id is None
+
+
+def test_draft_slot_is_none_when_the_row_omits_it():
+    raw = [{"pick_no": 1, "player_id": "9221", "roster_id": 10}]
+    assert parse_sleeper_picks(raw)[0].draft_slot is None
+
+
 def test_skips_picks_without_a_player():
     """A pick object can exist before the player is assigned."""
     raw = [

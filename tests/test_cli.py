@@ -5,7 +5,7 @@ import time
 import pytest
 
 from ffhelper.cli import (
-    MarkDrafted, NullFeed, _combine_my_roster, _handle_command, _lookup_roster_id,
+    MarkDrafted, NullFeed, _combine_my_roster, _handle_command,
     _my_roster_from_picks, _preflight, _render_tick, _run, _select_feed, _stdin_reader,
     find_players, load_board_inputs, league_settings_from_config, main, render, resolve_settings,
 )
@@ -336,6 +336,77 @@ def test_run_survives_feed_failure_and_still_renders_with_stale_banner(monkeypat
     assert "FEED STALE" in out             # banner showed once the threshold passed
 
 
+def test_board_says_you_are_on_the_clock_only_on_your_own_pick(capsys):
+    """Reported from the live mock: no indication of whose pick it is. Seat 3 in
+    a 10-team snake owns picks 3, 18, 23 ... With 2 players gone the board is on
+    pick 3 -- yours. With 3 gone it is on pick 4 -- not yours."""
+    players = {str(i): Player(str(i), f"P{i}", "RB", "SF", proj_pts=100.0 - i,
+                              adp=float(i), adp_stdev=3.0) for i in range(1, 6)}
+    common = dict(last_ok=time.time(), players=players, settings=_loop_settings(),
+                  league=_loop_league(draft_slot=3), tunables=Tunables(), limit=5,
+                  manual_mine=set(), my_slot=None)
+
+    _render_tick(picks=[], manual_gone={"1", "2"}, **common)
+    assert "PICK 3 IS YOURS" in capsys.readouterr().out
+
+    _render_tick(picks=[], manual_gone={"1", "2", "3"}, **common)
+    out = capsys.readouterr().out
+    assert "IS YOURS" not in out
+    assert "your next pick: 18" in out
+
+
+def test_identical_ticks_are_not_redrawn(monkeypatch):
+    """Reported from the live mock: a full screen clear every 5 seconds is
+    unreadable churn -- you cannot tell a real update from a repaint. Polling
+    still happens every tick; only the redraw is skipped when nothing changed.
+    """
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), _loop_settings()))
+    fake_feed = _FakeFeed(picks=[])
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: fake_feed)
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+
+    draws = {"n": 0}
+    real = _render_tick
+
+    def counting(*a, **kw):
+        draws["n"] += 1
+        return real(*a, **kw)
+
+    monkeypatch.setattr("ffhelper.cli._render_tick", counting)
+
+    _run(_loop_league(), Tunables(), limit=10, max_iterations=4, input_queue=queue.Queue())
+
+    assert draws["n"] == 1, "nothing changed across 4 ticks -- draw once"
+    assert fake_feed.calls == 4, "but keep polling every tick"
+
+
+def test_a_new_pick_forces_a_redraw(monkeypatch):
+    """The dedup must not suppress real updates."""
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                         lambda league, tunables: (_loop_players(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.time.sleep", lambda s: None)
+
+    class GrowingFeed:
+        def __init__(self):
+            self.n = 0
+
+        def get_picks(self):
+            self.n += 1
+            return [Pick(pick_no=i, sleeper_id="1", draft_slot=i) for i in range(1, self.n + 1)]
+
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: GrowingFeed())
+
+    draws = {"n": 0}
+    real = _render_tick
+    monkeypatch.setattr("ffhelper.cli._render_tick",
+                         lambda *a, **kw: (draws.__setitem__("n", draws["n"] + 1), real(*a, **kw))[1])
+
+    _run(_loop_league(), Tunables(), limit=10, max_iterations=3, input_queue=queue.Queue())
+
+    assert draws["n"] == 3
+
+
 def test_preflight_reports_ok_with_reachable_feed(monkeypatch, capsys):
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_loop_players(), _loop_settings()))
@@ -557,48 +628,54 @@ def test_handle_command_undo_via_u_or_undo():
     assert state.drafted == set()
 
 
-# --- Wiring my_roster from slot_to_roster_id so MARG is truthful. ---
+# --- Wiring my_roster from the user's own draft_slot so MARG is truthful. ---
 
 
-def test_lookup_roster_id_is_none_when_draft_slot_unset():
-    # Never guesses: no draft_slot means no lookup at all.
-    assert _lookup_roster_id(_loop_league(draft_slot=None), _loop_settings()) is None
-
-
-def test_lookup_roster_id_maps_configured_slot_to_roster_id(monkeypatch):
-    league = _loop_league(draft_slot=3)
-    settings = _loop_settings()
-    monkeypatch.setattr(
-        "ffhelper.cli.fetch_json",
-        lambda url, key, **kw: {"slot_to_roster_id": {"3": 7, "1": 2}},
-    )
-    assert _lookup_roster_id(league, settings) == 7
-
-
-def test_lookup_roster_id_degrades_to_none_on_fetch_failure(monkeypatch):
-    league = _loop_league(draft_slot=3)
-    settings = _loop_settings()
-
-    def boom(*a, **kw):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr("ffhelper.cli.fetch_json", boom)
-    assert _lookup_roster_id(league, settings) is None
-
-
-def test_my_roster_from_picks_filters_by_roster_id():
+def test_my_roster_from_picks_filters_by_draft_slot():
     players = _loop_players()
     players["2"] = Player("2", "B", "WR", "ATL", proj_pts=50.0)
-    picks = [Pick(pick_no=1, sleeper_id="1", roster_id=5), Pick(pick_no=2, sleeper_id="2", roster_id=9)]
+    picks = [Pick(pick_no=1, sleeper_id="1", draft_slot=5),
+             Pick(pick_no=2, sleeper_id="2", draft_slot=9)]
 
-    roster = _my_roster_from_picks(picks, players, roster_id=5)
+    roster = _my_roster_from_picks(picks, players, my_slot=5)
 
     assert [p.sleeper_id for p in roster] == ["1"]
 
 
-def test_my_roster_from_picks_empty_when_roster_id_none():
-    picks = [Pick(pick_no=1, sleeper_id="1", roster_id=5)]
-    assert _my_roster_from_picks(picks, _loop_players(), roster_id=None) == []
+def test_my_roster_from_picks_uses_draft_slot_when_roster_id_is_absent():
+    """The Task 13 defect, found in a real 180-pick mock draft.
+
+    Sleeper mock drafts return `roster_id: None` on EVERY pick while populating
+    `draft_slot` normally. Matching on roster_id therefore produced an empty
+    my_roster for the entire draft, silently -- and an empty roster makes MARG
+    meaningless, which is what let the board keep recommending a quarterback
+    after one had already been drafted.
+
+    Against the roster_id version this returns [] and fails.
+    """
+    players = _loop_players()
+    players["2"] = Player("2", "B", "WR", "ATL", proj_pts=50.0)
+    picks = [Pick(pick_no=1, sleeper_id="1", roster_id=None, draft_slot=5),
+             Pick(pick_no=2, sleeper_id="2", roster_id=None, draft_slot=9)]
+
+    roster = _my_roster_from_picks(picks, players, my_slot=5)
+
+    assert [p.sleeper_id for p in roster] == ["1"]
+
+
+def test_my_roster_from_picks_empty_when_slot_unset():
+    picks = [Pick(pick_no=1, sleeper_id="1", draft_slot=5)]
+    assert _my_roster_from_picks(picks, _loop_players(), my_slot=None) == []
+
+
+def test_my_roster_from_picks_warns_when_no_pick_carries_a_slot(caplog):
+    """Degrade, never fabricate: an empty roster is indistinguishable from
+    "you have not picked yet", and that silence is how the roster_id version
+    hid for an entire draft. If no pick carries a slot at all, say so."""
+    picks = [Pick(pick_no=1, sleeper_id="1", roster_id=3, draft_slot=None)]
+    with caplog.at_level(logging.WARNING):
+        assert _my_roster_from_picks(picks, _loop_players(), my_slot=5) == []
+    assert "draft_slot" in caplog.text
 
 
 def test_render_tick_wires_my_roster_and_marg_reflects_it(monkeypatch):
@@ -612,7 +689,7 @@ def test_render_tick_wires_my_roster_and_marg_reflects_it(monkeypatch):
         "qb1": Player("qb1", "Roster QB", "QB", "SF", proj_pts=50.0, adp=50.0, adp_stdev=5.0),
         "qb2": Player("qb2", "Candidate QB", "QB", "KC", proj_pts=300.0, adp=1.0, adp_stdev=1.0),
     }
-    picks = [Pick(pick_no=1, sleeper_id="qb1", roster_id=5)]
+    picks = [Pick(pick_no=1, sleeper_id="qb1", draft_slot=5)]
     settings = LeagueSettings(num_teams=10, scoring={}, roster_slots={"QB": 1}, rounds=1, draft_id="d1")
     league = _loop_league(draft_slot=3)
 
@@ -626,7 +703,7 @@ def test_render_tick_wires_my_roster_and_marg_reflects_it(monkeypatch):
 
     _render_tick(
         picks, time.time(), players, settings, league, Tunables(), 10,
-        manual_gone=set(), manual_mine=set(), roster_id=5,
+        manual_gone=set(), manual_mine=set(), my_slot=5,
     )
 
     rows = {r.player.sleeper_id: r for r in captured["board"]}
@@ -830,8 +907,8 @@ def test_combine_my_roster_merges_feed_and_self_marked_without_double_counting()
     appear exactly once in the combined roster -- never twice.
     """
     players = _loop_players()               # {"1": Player("1", "A", "RB", ...)}
-    picks = [Pick(pick_no=1, sleeper_id="1", roster_id=5)]
-    feed_roster = _my_roster_from_picks(picks, players, roster_id=5)
+    picks = [Pick(pick_no=1, sleeper_id="1", draft_slot=5)]
+    feed_roster = _my_roster_from_picks(picks, players, my_slot=5)
 
     combined = _combine_my_roster(feed_roster, mine_ids={"1"}, players=players)
     assert [p.sleeper_id for p in combined] == ["1"]
@@ -871,7 +948,7 @@ def test_render_tick_self_mark_adds_to_my_roster_and_depresses_marg(monkeypatch)
 
     _render_tick(
         [], None, players, settings, league, Tunables(), 10,
-        manual_gone={"qb1"}, manual_mine={"qb1"}, roster_id=None,
+        manual_gone={"qb1"}, manual_mine={"qb1"}, my_slot=None,
     )
 
     rows = {r.player.sleeper_id: r for r in captured["board"]}
@@ -970,7 +1047,7 @@ def test_render_tick_manual_marks_advance_pick_and_undo_reverses_it(monkeypatch,
     def tick() -> str:
         capsys.readouterr()
         _render_tick([], None, players, settings, league, Tunables(), 10,
-                     state.drafted, state.mine, roster_id=None)
+                     state.drafted, state.mine, my_slot=None)
         return capsys.readouterr().out
 
     assert "pick 1   your next pick" in tick()
@@ -1001,7 +1078,7 @@ def test_render_tick_self_mark_advances_pick_count_same_as_plain_mark(monkeypatc
 
     capsys.readouterr()
     _render_tick([], None, players, settings, league, Tunables(), 10,
-                 state.drafted, state.mine, roster_id=None)
+                 state.drafted, state.mine, my_slot=None)
     out = capsys.readouterr().out
 
     assert "pick 2   your next pick" in out
@@ -1036,13 +1113,13 @@ def test_render_tick_survival_decreases_as_manual_marks_accumulate(monkeypatch):
 
     state = MarkDrafted()
     _render_tick([], None, players, settings, league, Tunables(), 10,
-                 state.drafted, state.mine, roster_id=None)
+                 state.drafted, state.mine, my_slot=None)
     before = captured[0]["target"]
 
     for pid in ["1", "2", "3", "4"]:
         state.mark(pid)
     _render_tick([], None, players, settings, league, Tunables(), 10,
-                 state.drafted, state.mine, roster_id=None)
+                 state.drafted, state.mine, my_slot=None)
     after = captured[1]["target"]
 
     assert after < before
@@ -1066,7 +1143,7 @@ def test_render_tick_feed_only_pick_count_matches_feed_with_no_manual_marks(caps
     ]
 
     _render_tick(picks, time.time(), players, settings, league, Tunables(), 10,
-                 manual_gone=set(), manual_mine=set(), roster_id=None)
+                 manual_gone=set(), manual_mine=set(), my_slot=None)
     out = capsys.readouterr().out
 
     assert "pick 4   your next pick" in out    # len(picks) + 1, no manual marks in play
@@ -1110,7 +1187,7 @@ def test_current_pick_follows_the_feeds_highest_pick_no_not_the_row_count(capsys
         picks=[Pick(pick_no=1, sleeper_id="1"), Pick(pick_no=3, sleeper_id="2")],
         last_ok=time.time(), players=_two_robinsons(), settings=_loop_settings(),
         league=_loop_league(draft_slot=1), tunables=Tunables(), limit=5,
-        manual_gone=set(), manual_mine=set(), roster_id=None,
+        manual_gone=set(), manual_mine=set(), my_slot=None,
     )
     assert "pick 4 " in capsys.readouterr().out
 
