@@ -171,6 +171,7 @@ board:
 | `-nacua` | take that mark back — he returns to the board |
 | `2` | choose the 2nd option when a name is ambiguous |
 | `u` | undo the last change, whatever it was |
+| `nacua, me chase, gibbs` | several at once — one line instead of one round trip each |
 
 Partial names work, accents and suffixes are handled (`pineiro` finds Eddy
 Piñeiro, `harrison` finds Marvin Harrison Jr.). **Ambiguous names always prompt** —
@@ -321,11 +322,13 @@ be one.
 
 ## Scripts
 
-Three tools that answer questions the board cannot.
+Four tools that answer questions the board cannot.
 
 ```bash
 .venv/bin/python scripts/backtest.py [season ...]     # is source X actually better?
-.venv/bin/python scripts/calibrate.py <draft_id> <slot>
+.venv/bin/python scripts/calibrate.py <draft_id> <slot>       # Sleeper draft
+.venv/bin/python scripts/calibrate.py <log.jsonl> [more.jsonl ...]   # pooled
+.venv/bin/python scripts/transcribe.py <league> [slot] [results.txt]
 .venv/bin/python scripts/mutate.py
 ```
 
@@ -341,7 +344,32 @@ hurt — and a source that fails is named and skipped, never scored.
 "will this player last to my next pick?", then buckets the answers by what the
 model predicted. A well-calibrated model reads 10/30/50/70/90 down the actual
 column. Flat means it has no discriminating power. This is how `adp_source` gets
-settled by measurement.
+settled by measurement. Given `.draft/*.jsonl` journals instead of a Sleeper
+draft id it scores drafts entered by hand or transcribed, reconstructing pick
+order from the order marks were made. **Pass several and they are pooled into
+one table** — one draft is a hypothesis, not a finding. Your seat is read out of
+each journal and then proven against the snake; a log whose claimed picks don't
+land on a seat's snake positions is refused rather than scored, since a missing
+pick shifts every number after it.
+
+It also reports **room discipline** — the median rank, in ADP order, of the
+player each pick took. A room drafting straight down the list reads 1–2, which
+means the calibration below it is measuring that list against itself. Autodraft
+and CPU drafters do exactly this, so the number decides whether to believe the
+table.
+
+**`transcribe.py`** turns a finished draft's results page into a journal
+`calibrate.py` can score. Copy the results list, `pbpaste > .draft/results.txt`,
+and run it — the seat comes from the league's `draft_slot`. This is how a draft
+too fast to type into still yields a measurement.
+
+It reads rows like `(4) manager - Cook III, James (Buf - RB)`: surname-first
+names are put back in order (so suffix stripping lines them up with the pool),
+defenses join on their **team code** because "Los Angeles" names two of them,
+and rows are sorted by their reconstructed pick number rather than by where they
+appear — a snake's even rounds run right-to-left in the board view. It refuses
+to write if any row resolves to no player or two, or if the rows are not a
+complete `1..N` run, since a missing row shifts every pick after it.
 
 **`mutate.py`** breaks the engine on purpose, one line at a time, and checks the
 suite notices. It is the only mechanical check that a test does anything, and it
@@ -350,7 +378,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 199 tests, no network, runs in ~0.2s
+.venv/bin/pytest          # 232 tests, no network, runs in ~0.3s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

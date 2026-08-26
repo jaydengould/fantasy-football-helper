@@ -57,6 +57,79 @@ league_id = "1395959490938966016"
 draft_id = "1398139615038185472"
 draft_slot = 5
 
+# HUMAN MOCK (TODO.md §12/§16 rehearsal). Sleeper has no public mock lobby with
+# real people, so the human mock runs on Yahoo -- which also rehearses the Sept 1
+# interface, since Yahoo has no feed and every pick is hand-typed.
+#
+# THREE LINES TO SET FROM THE LOBBY BEFORE YOU START:
+#   num_teams   -- whatever the mock says (Yahoo lobbies are usually 12)
+#   draft_slot  -- the seat you drew; it is random and only known at draft time
+#   rec         -- 1.0 if the lobby says PPR, 0.5 half, 0.0 standard
+# Everything else is copied from yahoo-main. Scoring does not affect survival
+# calibration at all (that is pure ADP) and only mildly reorders the board, so
+# do not spend clock on it.
+#
+# Afterwards:  .venv/bin/python scripts/calibrate.py .draft/yahoo-mock-<date>.jsonl <slot>
+# Delete this block once the mock is done.
+[[league]]
+name = "yahoo-mock"
+platform = "yahoo"
+league_id = "mock"
+draft_slot = 2
+
+[league.settings]
+num_teams = 12
+bench = 5
+
+[league.settings.roster_slots]
+QB = 1
+RB = 2
+WR = 2
+TE = 1
+FLEX = 1
+K = 1
+DEF = 1
+
+[league.settings.scoring]
+pass_cmp = 0.0
+pass_yd = 0.04
+pass_td = 4
+pass_int = -2
+pass_2pt = 2
+rush_yd = 0.1
+rush_td = 6
+rush_2pt = 2
+rec = 0.5
+rec_yd = 0.1
+rec_td = 6
+rec_2pt = 2
+fum_lost = -2
+fum_rec_td = 6
+
+fgm_0_19 = 3
+fgm_20_29 = 3
+fgm_30_39 = 3
+fgm_40_49 = 4
+fgm_50_59 = 5
+fgm_60p = 5
+xpm = 1
+
+sack = 1
+int = 2
+fum_rec = 2
+def_td = 6
+def_st_td = 6
+st_td = 6
+safe = 2
+blk_kick = 2
+pts_allow_0 = 10
+pts_allow_1_6 = 7
+pts_allow_7_13 = 4
+pts_allow_14_20 = 1
+pts_allow_21_27 = 0
+pts_allow_28_34 = -1
+pts_allow_35p = -4
+
 [[league]]
 name = "yahoo-main"
 platform = "yahoo"
@@ -66,6 +139,32 @@ platform = "yahoo"
 # path for this platform, not a fallback. Picks are entered by hand.
 league_id = "723573"
 draft_slot = 2
+# Changed from "ffc" 2026-08-26 on a MEASUREMENT, replacing a mechanism-only
+# argument ("those drafters are not in the Sleeper app") that was never tested.
+#
+# Three 12-team half-PPR Yahoo mocks, 540 picks, three different seats, pooled
+# by scripts/calibrate.py. Both leagues resolve to the same ADP format
+# (half-ppr), so only team count differs between that test and this league.
+#
+#   model says   FFC   Sleeper   ideal
+#     0-20%      68%     46%      10%
+#    20-40%      82%     60%      30%
+#    40-60%      83%     72%      50%
+#    60-80%      87%     83%      70%
+#   80-100%      92%     93%      90%
+#
+# FFC spans 24 points across its whole range and is not monotonic -- close to no
+# discriminating power. Sleeper spans 47 and rises in every bucket. The rooms
+# were NOT list-followers (median ADP rank taken 7/9/10 vs a bot mock's 2), so
+# this is not circular.
+#
+# KNOWN AND UNFIXED: both sources are far too pessimistic in LEVEL -- the model
+# says 0-20% and roughly half survive. Read the SURV column as an ordering, not
+# as a probability. Not corrected in code: value.py is frozen before the drafts,
+# and a shift fitted to three mock rooms may not transfer to ten humans.
+#
+# ONE LINE TO REVERT to "ffc". See TODO.md section 12a.
+adp_source = "sleeper"
 
 [league.settings]
 num_teams = 10
