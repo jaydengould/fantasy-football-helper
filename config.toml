@@ -35,9 +35,12 @@ league_id = "1395959490938966016"
 # ONE LINE TO REVERT. Confirm with a human mock:
 #   .venv/bin/python scripts/calibrate.py <draft_id> 5
 adp_source = "sleeper"
-# draft_slot: Sleeper draft_order had 11 of 12 slots at design time.
-# Set this manually once the draft order is final. Never trust the API for it.
-# draft_slot = 3
+# Set by hand 2026-08-25 on the user's word, never read from the API -- the tool
+# deliberately does not guess this, because a wrong slot silently produces the
+# wrong next-pick number for every pick of the draft. Cross-checked against the
+# live draft_order, which independently maps this user to slot 5 and still has
+# slot 8 unassigned; if the order is reshuffled before Sept 6, re-check it.
+draft_slot = 5
 
 # Task 13 rehearsal. Borrows sleeper-main's synced scoring and roster and points
 # the pick feed at a Sleeper mock draft instead -- a mock has a draft_id but no
