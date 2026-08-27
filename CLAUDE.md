@@ -285,7 +285,7 @@ fresh opinion.
 | 0 | Yahoo OAuth handshake; confirm league access, size, settings | Aug 25 | **blocked — awaiting Yahoo approval** |
 | 1 | `data.py` + `value.py` + `cli.py`, Sleeper feed, multi-league config, **manual mark-drafted** | Aug 28 | in progress |
 | 2 | Yahoo feed adapter + SQLite draft log | Aug 29–30 | not started (Yahoo half gated on approval) |
-| 3 | Dash UI | Sept 5 | not started |
+| 3 | Dash UI | Sept 5 | Tasks 1-8 done; Task 9 rehearsal needs the user |
 | 3.5 | Opponent needs, bye clustering, notifications, manual overrides | Sept 5 | not started |
 | 4 | Season mode (`nflreadpy`) | after | not started |
 | 5 | Trade finder (own spec) | in-season | not started |
@@ -336,6 +336,87 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   a config override, never trusted from the API.
 
 ## Session log
+
+### 2026-08-27 — Phase 3 Tasks 7 and 8; the offline rehearsal is clean
+
+**State:** branch `phase-3-dash-ui` @ Task 8, **290 tests**, 96 mutations
+(1 survivor, the documented equivalent mutant). Frozen files untouched.
+
+Task 7 (tier bands, position filter, search) and Task 8 (roster panel) are done.
+**Task 9 steps 2-4 still need the user** — a live Sleeper mock, a live Yahoo mock,
+and a timed ctrl-C handover. Step 1 (offline replay) is done and is below.
+
+#### Two defects in the plan's own Task 7, both found by running it
+
+- **The tier band grouped across positions.** The plan keyed the band on `tier`
+  alone. `tier` is a PER-POSITION column, so on the real `sleeper-main` opening
+  board that put Gibbs, Bijan, Nacua and Chase in ONE band — two positions, VONA
+  50.1 down to 16.5. The band's whole message is "these are interchangeable",
+  which is what `TODO.md` §15 supports *within* a position and what the VONA
+  column contradicts *across* them. Now keyed on `(pos, tier)`.
+  **Its ceiling, marked in the source:** two alternating colours cannot encode
+  group identity on a board that interleaves positions — two non-adjacent runs of
+  the same `(pos, tier)` can land on the same colour by chance. It only has to
+  make each contiguous run read as one block.
+- **The plan's test fixture had no `pos` key at all** — `{"rank": 1, "tier": 1}`.
+  Same cause `CLAUDE.md` already names: a fixture built for arithmetic
+  convenience rather than resembling the data the code actually meets.
+
+#### The sealed-callback lesson from last session, applied rather than repeated
+
+`_refresh` was reachable by no test, so the plan asserted Task 7's load-bearing
+rule — **build 200 rows, filter, THEN trim to 40** — on a hand-composed list.
+That test passes against a build that trims first, which is the whole defect.
+`_register_callbacks` now returns `_refresh` alongside `_write`, and the seam
+test was verified red by actually making that swap. Two mutations cover it.
+
+#### Task 8: `FLEX_ELIGIBLE` is imported, the algorithm is copied, and the copy is guarded
+
+The plan restated `_FLEX_ELIGIBLE` in `app.py`. `value.FLEX_ELIGIBLE` already
+exists, and a second copy of that rule lets the panel start a quarterback at FLEX
+while MARG says otherwise — **two views disagreeing about one roster.** Imported.
+
+The greedy assignment itself still has to be copied: `lineup_value` returns a
+total and cannot say which player filled which slot, and `value.py` is frozen
+until Sept 6. Same shape as `board.py`, and handled the same way — an agreement
+test asserts the panel starts exactly the lineup `lineup_value` scores, which is
+also the proof that folding the two together after Sept 6 is a no-op.
+
+**That agreement test failed on first run at `2550.9 != 2550.8999999999996`** —
+the same players summed in a different order. Rounded, with the reason recorded
+beside it: a genuinely different lineup moves this by points, not by 4e-13.
+
+**FLEX is filled last but DISPLAYED where the config puts it** (before K/DEF).
+The plan appended it after DEF, which is not how either platform draws a roster,
+and the docstring claimed "roster order" while the code did something else.
+
+#### Task 9 step 1: 543 board states replayed, no defects
+
+All three transcribed mocks stepped pick-by-pick through the Dash callback.
+
+| | result |
+| --- | --- |
+| board states rendered | **543** (3 × 181), zero exceptions |
+| on-clock banner | **exactly 15 fires each, on exactly the seat's snake positions** — none spurious, none missed, all three seats |
+| redundant K/DEF topping the board | **0 of 45 turns** |
+| roster panel vs bench banner | agree at every state |
+
+**Three of my own harness bugs on the way, and the third is the one that matters.**
+(1) I grepped `banner_lines` for the on-clock text, which lives in `clock_line` —
+reported 0 fires. (2) I applied the inferred seat AFTER `_register_callbacks` had
+already closed over the league, so it silently did nothing. (3) **I took the seat
+from `config.toml` — one number — for three transcripts that are seats 8, 11 and
+2.** That is precisely the hole a previous session closed in `calibrate.py` by
+inferring the seat from the journal, and I reintroduced it in a fresh harness one
+day later. The fix was to call `calibrate.picks_from_journal` rather than write a
+second seat source.
+
+**And I nearly reported a defect that was not one.** With a full starting lineup
+the board's top row was a second kicker (marg 6.0) with no bench banner — Task 13
+defect #5 apparently back. It was an artifact of asking for a board at **pick 181
+of a 180-pick draft**, a state no draft reaches. Measured across every real turn
+instead: 0 of 45. `TODO.md` §2's rule — a constructed board state is not an
+observation — caught it, applied to my own claim this time.
 
 ### 2026-08-26 (second block) — Phase 3 built to the cut line: the board is a tool
 

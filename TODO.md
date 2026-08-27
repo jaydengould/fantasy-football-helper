@@ -36,17 +36,28 @@ work, in priority order:
 `adp_ppr` directly, which the half-PPR mocks did not. Join, do not type, paste
 the results page afterwards.
 
-**PHASE 3 IS BUILT TO ITS CUT LINE (2026-08-26).** Branch `phase-3-dash-ui`,
-276 tests. Tasks 1-6 of `docs/superpowers/plans/2026-08-26-phase-3-dash-ui.md` are
-done and reviewed; the Dash board renders, click-to-mark works, and the roster is
-derived from your draft seat. **Not done: Task 7 (tier bands, position filter,
-search), Task 8 (roster panel), Task 9 (rehearsal).** Task 7's partial work is in
-`git stash@{0}` on that branch.
+**PHASE 3 CODE IS COMPLETE (2026-08-27).** Branch `phase-3-dash-ui`, **290 tests,
+96 mutations.** Tasks 1-8 of `docs/superpowers/plans/2026-08-26-phase-3-dash-ui.md`
+are done: the Dash board renders, click-to-mark works, the roster is derived from
+your draft seat, and tier bands, position filter, name search and the
+starting-lineup panel are in. **The stash is gone — Task 7's partial work was
+popped and finished.**
 
-**Task 9 is the one with real risk left**, and it needs you: nothing has yet
-compared the rendered web board against the terminal's at the same pick. The app is
-verified only to start, serve HTTP 200, and pass unit tests. Before trusting it on
-Sept 1, replay a transcript through it and time one ctrl-C -> CLI handover.
+**Task 9 step 1 (offline replay) is DONE and clean:** all three transcribed mocks
+stepped pick-by-pick through the Dash callback, **543 board states, zero
+exceptions**, on-clock banner firing exactly 15 times on exactly the seat's snake
+positions in all three, and 0 of 45 turns topped by a redundant K/DEF.
+
+**Task 9 steps 2-4 still need you, and this is the remaining risk.** Nothing has
+compared the rendered board against the terminal's *live*, and the ctrl-C -> CLI
+handover has never been timed:
+
+1. One live Sleeper mock through `python -m ffhelper.app --league mock` — the feed
+   path, nothing typed. Cut wifi ~20s and confirm the STALE banner.
+2. One live Yahoo mock, every pick entered by clicking. The lobby clock is ~30s
+   against the real draft's 90s+, so falling behind here is not a failure.
+3. Mid-draft, ctrl-C the app, start `ffhelper.cli run` on the same league, and
+   record the elapsed time. The fallback has to be a rehearsed motion, not a plan.
 
 **Phases 4 and 5 can be built in parallel with all of the above**, under
 one rule: **`value.py` and `data.py` are frozen until both drafts are done.**
