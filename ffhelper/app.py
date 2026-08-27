@@ -145,6 +145,26 @@ def read_state(league, tunables, players, settings, feed, has_feed):
     return state, stale_seconds
 
 
+def apply_click(log_path, player_id: str) -> str:
+    """Mark one player drafted. Replay, apply, append -- never hold state.
+
+    Replaying before every write is what makes the CLI handover exact: the
+    journal on disk is the only thing either process trusts, so a mark typed
+    into the terminal a moment ago is already accounted for here.
+    """
+    state, _applied, _skipped = _restore_marks(log_path)
+    state.mark(player_id)
+    return f"marked {player_id}"
+
+
+def apply_undo(log_path) -> str:
+    state, _applied, _skipped = _restore_marks(log_path)
+    if not state._history:
+        return "nothing to undo"
+    state.undo()
+    return "undone"
+
+
 def build_app(league_names: list[str], default_league: str) -> dash.Dash:
     app = dash.Dash(__name__, use_pages=True, pages_folder="")
     dash.register_page("board", path="/", layout=_layout(league_names, default_league))
@@ -159,9 +179,11 @@ def _layout(league_names: list[str], default_league: str):
         html.Pre(id="banners"),
         html.Pre(id="clock"),
         dash_table.DataTable(
-            id="board", columns=COLUMNS, data=[],
+            id="board", columns=COLUMNS, data=[], cell_selectable=True,
             style_cell={"fontFamily": "monospace", "textAlign": "left"},
         ),
+        html.Button("undo", id="undo", n_clicks=0),
+        html.Pre(id="status"),
         dcc.Interval(id="tick", interval=5000),
     ])
 
@@ -182,6 +204,36 @@ def _register_callbacks(app, leagues, tunables, cache):
             "\n".join(banner_lines(state, stale, players)),
             clock_line(state, league, settings.num_teams),
         )
+
+    @app.callback(
+        Output("status", "children"), Output("tick", "n_intervals"),
+        Input("board", "active_cell"), Input("undo", "n_clicks"),
+        dash.State("board", "data"), dash.State("league", "value"),
+        dash.State("tick", "n_intervals"),
+        prevent_initial_call=True,
+    )
+    def _write(active_cell, _undo_clicks, rows, league_name, n):
+        league = get_league(leagues, league_name)
+        path = _draft_log_path(league)
+        trigger = dash.callback_context.triggered_id
+        try:
+            if trigger == "undo":
+                status = apply_undo(path)
+            elif active_cell and rows:
+                # Resolve the click through the row's id, never its name.
+                status = apply_click(path, rows[active_cell["row"]]["id"])
+            else:
+                status = ""
+        except Exception as exc:                      # noqa: BLE001 - never fatal
+            log.error("write failed: %s", exc, exc_info=True)
+            status = f"could not apply that -- {exc}"
+        # Bump the tick so the board redraws immediately rather than waiting for
+        # the poll interval. Entry latency must never be paced by the network:
+        # that coupling is what abandoned mock run 1 at 12 000 ms per keystroke.
+        return status, (n or 0) + 1
+
+    return _write  # exposed for direct testing -- dash strips the app.callback
+                   # wiring before returning, so this is the raw callable.
 
 
 def main(argv: list[str] | None = None) -> int:

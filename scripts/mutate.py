@@ -225,6 +225,16 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "replacement_pool=list(players.values()),",
          "replacement_pool=available,"),
     ],
+    "ffhelper/app.py": [
+        ("click resolves rows by position instead of id",
+         'status = apply_click(path, rows[active_cell["row"]]["id"])',
+         'status = apply_click(path, rows[active_cell["row"]]["player"])'),
+        ("undo not journalled",
+         "    state.undo()\n    return \"undone\"",
+         "    return \"undone\""),
+        ("write does not force a redraw",
+         "return status, (n or 0) + 1", "return status, n"),
+    ],
 }
 
 

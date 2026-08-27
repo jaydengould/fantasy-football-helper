@@ -177,3 +177,96 @@ def test_clock_line_says_yours_only_at_the_seats_snake_pick():
         assert state.current_pick == gone_count + 1
         line = clock_line(state, league, settings.num_teams)
         assert ("YOURS" in line) == expect_yours, (state.current_pick, line)
+
+
+# --- Task 4: click-to-mark and undo, journalled for CLI handover ---
+
+import json
+
+from ffhelper.app import apply_click, apply_undo
+from ffhelper.cli import _restore_marks
+
+
+def test_a_click_appends_one_mark_op_to_the_journal(tmp_path):
+    path = tmp_path / "log.jsonl"
+    apply_click(path, "42")
+    ops = [json.loads(line) for line in path.read_text().splitlines()]
+    assert ops == [{"op": "mark", "id": "42", "mine": False}]
+
+
+def test_clicking_the_same_player_twice_is_idempotent(tmp_path):
+    path = tmp_path / "log.jsonl"
+    apply_click(path, "42")
+    apply_click(path, "42")
+    state, _applied, _skipped = _restore_marks(path)
+    assert state.drafted == {"42"}
+
+
+def test_undo_takes_back_the_last_mark(tmp_path):
+    path = tmp_path / "log.jsonl"
+    apply_click(path, "42")
+    apply_click(path, "43")
+    apply_undo(path)
+    state, _applied, _skipped = _restore_marks(path)
+    assert state.drafted == {"42"}
+
+
+def test_undo_is_journalled_so_a_restart_does_not_resurrect_the_mark(tmp_path):
+    # An unlogged undo replays away: the restart brings back a pick the user
+    # had already taken back, and the pool goes quietly wrong.
+    path = tmp_path / "log.jsonl"
+    apply_click(path, "42")
+    apply_undo(path)
+    ops = [json.loads(line)["op"] for line in path.read_text().splitlines()]
+    assert ops == ["mark", "undo"]
+
+
+def test_a_click_survives_a_process_restart(tmp_path):
+    # The whole point of the journal-as-database model, and the CLI handover.
+    path = tmp_path / "log.jsonl"
+    apply_click(path, "42")
+    apply_click(path, "7")
+    state, applied, skipped = _restore_marks(path)
+    assert state.drafted == {"42", "7"}
+    assert (applied, skipped) == (2, 0)
+
+
+# --- the _write callback dispatch: resolve-by-id and the redraw bump ---
+
+import dash as _dash  # local alias -- test_app.py otherwise has no dash import
+
+
+def _make_write(monkeypatch, tmp_path, league_name="write-test"):
+    """Build a bare app, register callbacks, hand back the raw _write
+    callable plus the journal path it will write to."""
+    path = tmp_path / "log.jsonl"
+    monkeypatch.setattr(app, "_draft_log_path", lambda league: path)
+    league = League(name=league_name, platform="sleeper", league_id="1")
+    write = app._register_callbacks(
+        _dash.Dash(__name__, suppress_callback_exceptions=True),
+        [league], Tunables(), lambda lg: None,
+    )
+    return write, path
+
+
+def test_click_resolves_through_the_row_id_never_the_name(monkeypatch, tmp_path):
+    # id cannot be derived from the display name -- this is the Bijan/Brian
+    # Robinson trap: a click resolved by row position or by name would mark
+    # (or fail to mark) the wrong player.
+    write, path = _make_write(monkeypatch, tmp_path)
+    monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
+                         property(lambda self: "board"))
+    rows = [{"id": "4017", "player": "Bijan Robinson"}]
+    write({"row": 0, "column": 0}, 0, rows, "write-test", 0)
+    ops = [json.loads(line) for line in path.read_text().splitlines()]
+    assert ops == [{"op": "mark", "id": "4017", "mine": False}]
+
+
+def test_a_successful_write_bumps_the_tick_for_an_immediate_redraw(monkeypatch, tmp_path):
+    # Entry latency must never be paced by the poll interval -- see Session
+    # log 2026-08-26 (Run 1's 12 000ms-per-keystroke abandonment).
+    write, _path = _make_write(monkeypatch, tmp_path, league_name="write-test2")
+    monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
+                         property(lambda self: "undo"))
+    _status, n_after = write(None, 1, [], "write-test2", 3)
+    assert n_after == 4
