@@ -257,6 +257,18 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("search matches on prefix only, not substring",
          'out = [r for r in out if q in r["player"].lower()]',
          'out = [r for r in out if r["player"].lower().startswith(q)]'),
+        ("panel starts a QB at FLEX (disagrees with MARG)",
+         'match = next((p for p in remaining if p.position in FLEX_ELIGIBLE), None)',
+         'match = next((p for p in remaining), None)'),
+        ("panel fills slots worst-first",
+         "remaining = sorted(my_roster, key=lambda p: -p.proj_pts)",
+         "remaining = sorted(my_roster, key=lambda p: p.proj_pts)"),
+        ("panel hides empty slots instead of showing them",
+         '    return [(slot, filled) for slot, filled in view]',
+         '    return [(slot, filled) for slot, filled in view if filled is not None]'),
+        ("leftovers spill into fixed slots, not just FLEX",
+         '        if row[0] != "FLEX":\n            continue',
+         '        if row[0] != "FLEX" and row[1] is None:\n            continue'),
     ],
 }
 

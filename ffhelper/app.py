@@ -27,7 +27,7 @@ from ffhelper.cli import (
 )
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import Player
-from ffhelper.value import is_bench_only, next_pick_number
+from ffhelper.value import FLEX_ELIGIBLE, is_bench_only, next_pick_number
 
 log = logging.getLogger(__name__)
 CONFIG_PATH = ROOT / "config.toml"
@@ -121,6 +121,47 @@ def filter_rows(rows: list[dict], position: str, query: str) -> list[dict]:
     if q:
         out = [r for r in out if q in r["player"].lower()]
     return out
+
+
+def roster_slots_view(
+    my_roster: list[Player], roster_slots: dict[str, int],
+) -> list[tuple[str, str | None]]:
+    """Starting slots in roster order, each filled or explicitly empty.
+
+    Greedy by projected points within a position, FLEX last from whatever is
+    left. FLEX_ELIGIBLE is IMPORTED from value.py rather than restated here: a
+    second copy of that rule would let the panel start a quarterback at FLEX
+    while MARG says otherwise, and the two would disagree about one roster.
+
+    ponytail: the greedy assignment itself is a COPY of value.lineup_value,
+    which returns only a total and cannot be asked which player filled which
+    slot. value.py is frozen until Sept 6, so it cannot grow that return today.
+    test_the_panel_starts_exactly_the_lineup_lineup_value_scores guards the copy
+    and is the proof that folding the two together afterwards is a no-op.
+    """
+    remaining = sorted(my_roster, key=lambda p: -p.proj_pts)
+    # Lay the slots out in config order first, FLEX included, then fill. FLEX is
+    # filled in a second pass because it takes whatever the fixed slots leave --
+    # but it is DISPLAYED where the roster defines it, which is how both
+    # platforms draw it.
+    view: list[list] = [[slot, None]
+                        for slot, count in roster_slots.items()
+                        for _ in range(count)]
+    for row in view:
+        if row[0] == "FLEX":
+            continue
+        match = next((p for p in remaining if p.position == row[0]), None)
+        if match is not None:
+            remaining.remove(match)
+            row[1] = match.name
+    for row in view:
+        if row[0] != "FLEX":
+            continue
+        match = next((p for p in remaining if p.position in FLEX_ELIGIBLE), None)
+        if match is not None:
+            remaining.remove(match)
+            row[1] = match.name
+    return [(slot, filled) for slot, filled in view]
 
 
 def banner_lines(
@@ -258,6 +299,7 @@ def _layout(league_names: list[str], default_league: str):
         dcc.RadioItems(id="pos", value="ALL", inline=True,
                        options=["ALL", "QB", "RB", "WR", "TE", "K", "DEF"]),
         dcc.Input(id="search", type="text", placeholder="search name", debounce=False),
+        html.Pre(id="roster"),
         dash_table.DataTable(
             id="board", columns=COLUMNS, data=[], cell_selectable=True,
             style_cell={"fontFamily": "monospace", "textAlign": "left"},
@@ -273,6 +315,7 @@ def _register_callbacks(app, leagues, tunables, cache):
     @app.callback(
         Output("board", "data"), Output("board", "style_data_conditional"),
         Output("banners", "children"), Output("clock", "children"),
+        Output("roster", "children"),
         Input("tick", "n_intervals"), Input("league", "value"),
         Input("pos", "value"), Input("search", "value"),
     )
@@ -292,6 +335,9 @@ def _register_callbacks(app, leagues, tunables, cache):
             rows, tier_styles(rows),
             "\n".join(banner_lines(state, stale, players)),
             clock_line(state, league, settings.num_teams),
+            "\n".join(f"{label:<5} {filled or '(empty)'}"
+                      for label, filled in roster_slots_view(
+                          state.my_roster, settings.roster_slots)),
         )
 
     @app.callback(

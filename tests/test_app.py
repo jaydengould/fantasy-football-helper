@@ -485,10 +485,10 @@ def test_refresh_filters_the_wide_board_before_trimming_to_the_screen(monkeypatc
     players = _deep_pool()
     refresh = _make_refresh(monkeypatch, tmp_path, players)
 
-    unfiltered, _styles, _banners, _clock = refresh(0, "refresh-test", "ALL", "")
+    unfiltered, _styles, _banners, _clock, _roster = refresh(0, "refresh-test", "ALL", "")
     in_top_40 = sum(1 for r in unfiltered if r["pos"] == "K")
 
-    kickers, _styles, _banners, _clock = refresh(0, "refresh-test", "K", "")
+    kickers, _styles, _banners, _clock, _roster = refresh(0, "refresh-test", "K", "")
     assert all(r["pos"] == "K" for r in kickers)
     assert len(kickers) == 16
     assert len(kickers) > in_top_40      # fails if the trim ran before the filter
@@ -499,7 +499,7 @@ def test_refresh_bands_the_rows_it_actually_returns(monkeypatch, tmp_path):
     # list would paint the wrong rows once a filter is on.
     players = _deep_pool()
     refresh = _make_refresh(monkeypatch, tmp_path, players)
-    rows, styles, _banners, _clock = refresh(0, "refresh-test", "QB", "")
+    rows, styles, _banners, _clock, _roster = refresh(0, "refresh-test", "QB", "")
     assert len(styles) == len(rows)
     assert [s["if"]["row_index"] for s in styles] == list(range(len(rows)))
 
@@ -513,3 +513,71 @@ def test_tier_bands_never_group_across_positions():
     rows = [{"pos": "RB", "tier": 1}, {"pos": "WR", "tier": 1}]
     colours = [s["backgroundColor"] for s in tier_styles(rows)]
     assert colours[0] != colours[1]
+
+
+# --- Task 8: the roster panel ---
+
+from ffhelper.app import roster_slots_view
+
+
+def _p(name, pos, pts=100.0):
+    return Player(sleeper_id=name, name=name, position=pos, team="KC", proj_pts=pts)
+
+
+def test_empty_slots_are_shown_as_empty():
+    slots = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1}
+    view = roster_slots_view([_p("Allen", "QB")], slots)
+    assert ("QB", "Allen") in view
+    assert view.count(("RB", None)) == 2
+    assert sum(1 for _label, filled in view if filled is None) == 9
+
+
+def test_flex_takes_an_overflow_rb_but_never_a_quarterback():
+    # value.lineup_value would start a QB at FLEX if its guard were dropped --
+    # a real mutation-testing find. The picture must not disagree with MARG.
+    slots = {"QB": 1, "RB": 2, "FLEX": 1}
+    view = roster_slots_view(
+        [_p("Allen", "QB", 300.0), _p("Purdy", "QB", 290.0),
+         _p("Gibbs", "RB", 280.0), _p("Robinson", "RB", 270.0), _p("Hall", "RB", 260.0)],
+        slots,
+    )
+    assert ("FLEX", "Hall") in view
+    assert ("FLEX", "Purdy") not in view
+
+
+def test_slot_order_follows_the_configured_roster():
+    slots = {"QB": 1, "RB": 2, "WR": 2}
+    labels = [label for label, _filled in roster_slots_view([], slots)]
+    assert labels == ["QB", "RB", "RB", "WR", "WR"]
+
+
+def test_the_panel_starts_exactly_the_lineup_lineup_value_scores():
+    # roster_slots_view COPIES lineup_value's greedy assignment because value.py
+    # is frozen until Sept 6. This is the agreement test that makes the copy
+    # safe -- and the proof that folding the two together later is a no-op.
+    from ffhelper.value import lineup_value
+    slots = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1}
+    roster = [
+        _p("Allen", "QB", 380.1), _p("Purdy", "QB", 344.2),
+        _p("Gibbs", "RB", 291.7), _p("Bijan", "RB", 288.0), _p("Hall", "RB", 240.5),
+        _p("Chase", "WR", 310.4), _p("Nacua", "WR", 265.9), _p("JSN", "WR", 250.0),
+        _p("Bowers", "TE", 244.3), _p("McBride", "TE", 200.1),
+        _p("Aubrey", "K", 150.0), _p("Rams", "DEF", 130.0),
+    ]
+    view = roster_slots_view(roster, slots)
+    by_name = {p.name: p.proj_pts for p in roster}
+    panel_total = sum(by_name[n] for _label, n in view if n is not None)
+    # Rounded because the two sum the SAME players in a different order and
+    # float addition is not associative. A different lineup moves this by
+    # points, not by 4e-13.
+    assert round(panel_total, 6) == round(lineup_value(roster, slots), 6)
+
+
+def test_flex_sits_where_the_config_puts_it_not_at_the_end():
+    # FLEX is FILLED last (from whatever the fixed slots leave), but it must be
+    # DISPLAYED where the roster defines it. Both leagues configure
+    # ...TE, FLEX, FLEX, K, DEF, which is also how Sleeper and Yahoo draw it;
+    # a panel that trails FLEX after DEF reads as a different roster.
+    slots = {"QB": 1, "RB": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1}
+    labels = [label for label, _filled in roster_slots_view([], slots)]
+    assert labels == ["QB", "RB", "RB", "TE", "FLEX", "FLEX", "K", "DEF"]
