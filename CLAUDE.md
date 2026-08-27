@@ -337,6 +337,93 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
 
 ## Session log
 
+### 2026-08-27 (second block) — the live Sleeper mock, and the worst bug yet
+
+**State:** branch `phase-3-dash-ui` @ `540463b`, **297 tests**, 100 mutations
+(1 survivor, the documented equivalent mutant). Frozen files untouched.
+
+Task 9 **step 2 is DONE**: a full 180-pick all-autopick Sleeper mock
+(`1398747013708894208`, seat 5) run live against the Dash board. **Three defects,
+all past a 294-test green suite and all found by the user using the tool.**
+
+#### 1. A DEAD FEED ERASED THE DRAFT. This is the worst defect this project has had.
+
+`read_state` starts every call with `picks = []` and only fills it on a
+successful poll. So a failed poll rebuilt the board from **no picks at all**:
+back to **pick 1, the entire pool available, an empty roster** — a completely
+fictional draft, rendered as though healthy.
+
+**The CLI does not do this, and the reason is an accident of shape.** Its `picks`
+is a loop variable that keeps its last good value through the `except` branch.
+The Dash render is stateless and has no equivalent. Copying the derivation
+faithfully (`board.py`) did not copy this, because it is not in the derivation —
+**it is in the loop that surrounds it.** Worth generalising: an agreement test
+proves two paths compute the same thing from the same inputs, and says nothing
+about the inputs one of them silently fails to supply.
+
+Fixed with `_LAST_PICKS`, a per-league cache of the feed's last good answer,
+sitting beside the existing `_LAST_OK` and documented as poll bookkeeping rather
+than draft state: never a second source of truth, never read on a healthy poll,
+and a restart simply re-polls.
+
+#### 2. The stale banner had a 15-second silent window
+
+The banner fires above 15s, so **the first three failed polls said nothing** and
+the board looked healthy while falling three picks behind. Now a quiet line fires
+from the FIRST failure and escalates to the loud one at 15s.
+
+**The user reported "wifi off about 20 seconds, never got the stale banner." The
+server log says 55 seconds of continuous DNS failure.** The banner almost
+certainly did appear near the end and was missed, but that is not the defect —
+the defect is that nothing appeared for the first 15s of it. **Reading the log
+rather than trusting either account is what separated the two.**
+
+#### 3. You could not see your own bench
+
+The roster panel showed starting slots only — in a 15-round draft with 10
+starters that is a third of the team invisible, and the bench is *exactly* what
+you are choosing between once `STARTING LINEUP FULL` is up. **The plan's own
+interface line said "in roster order, then bench"; the implementation I took from
+its step 3 dropped it.** Bench overflow is listed rather than truncated, since
+being over the roster limit is a drift symptom.
+
+#### What was NOT a defect, measured rather than assumed
+
+- **"Very slow to update."** The board held its configured 5s cadence for **94 of
+  122 refreshes**. Server-side work is 183 ms (callback) and 173 ms (HTTP round
+  trip). 5s is right for a 120s-clock draft; an all-autopick mock lands a pick
+  roughly every second, which no poll interval is going to match. **Same lesson as
+  `TODO.md` §12a run 2: the mock is not the draft to optimise for.**
+- **Three long gaps — 14s, 34s, 49s — were CLIENT-side**, with no server request
+  in the window and no poll failure to explain them. Consistent with Safari
+  throttling `dcc.Interval` in a background tab. **One sample, so a hypothesis,
+  not a finding** — but the Sept 6 implication is mild either way: the tab is
+  foregrounded exactly when you are on the clock, and it catches up within 5s.
+- **TEs dominating the late board is `TODO.md` §14, now observed live** rather
+  than merely predicted. All four late recommendations were flagged `BENCH`, so
+  the tool was saying "trust yourself here" as designed. It recommended a third
+  and fourth TE because bench ordering is static VBD and TE has the shallowest
+  replacement. **Not fixable without inventing a number the projections do not
+  carry** (§15's warning). The new position filter is the honest mitigation.
+
+#### Our board vs the CPU autopicks: 2 of 15
+
+Agreement only on picks 5 and 20 (McCaffrey, Chase Brown). **This says nothing
+about who was right** — the autopicks walk down Sleeper ADP, the board ranks on
+Rotowire VBD+VONA, and a mock has no outcome data. It is the `DIV` column
+restated over a whole draft. Recorded as a shape, not a score.
+
+**The room was all-autopick, so nothing here may touch `adp_source` or
+calibration** — that is §12's circularity by the most direct route available.
+
+#### My own errors this block, both killed by measuring
+
+I hypothesised a **missing request timeout** causing a hang (there is one, 5s),
+then **cold-start cost inside the first callback** (0.17s). Both wrong, both
+disproved in under a minute. The actual cause of the long gaps was in the client,
+which no amount of reading server code would have found — the server log's
+*absence* of requests is what located it.
+
 ### 2026-08-27 — Phase 3 Tasks 7 and 8; the offline rehearsal is clean
 
 **State:** branch `phase-3-dash-ui` @ Task 8, **290 tests**, 96 mutations

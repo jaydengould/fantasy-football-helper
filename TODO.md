@@ -48,16 +48,25 @@ stepped pick-by-pick through the Dash callback, **543 board states, zero
 exceptions**, on-clock banner firing exactly 15 times on exactly the seat's snake
 positions in all three, and 0 of 45 turns topped by a redundant K/DEF.
 
-**Task 9 steps 2-4 still need you, and this is the remaining risk.** Nothing has
-compared the rendered board against the terminal's *live*, and the ctrl-C -> CLI
-handover has never been timed:
+**Task 9 step 2 is DONE (2026-08-27)** — a full 180-pick all-autopick Sleeper mock
+(`1398747013708894208`, seat 5) run live against the Dash board. **Three defects,
+all past a green suite, all found by using the tool.** Full write-up in
+`CLAUDE.md`; the headline is that **a failed poll rebuilt the board from no picks
+at all** — pick 1, whole pool back, empty roster — because `read_state` is
+stateless where the CLI's loop keeps a `picks` variable. Fixed, plus the stale
+banner's 15-second silent window and the invisible bench.
 
-1. One live Sleeper mock through `python -m ffhelper.app --league mock` — the feed
-   path, nothing typed. Cut wifi ~20s and confirm the STALE banner.
-2. One live Yahoo mock, every pick entered by clicking. The lobby clock is ~30s
-   against the real draft's 90s+, so falling behind here is not a failure.
-3. Mid-draft, ctrl-C the app, start `ffhelper.cli run` on the same league, and
+**Steps 3 and 4 still need you, and they are the remaining risk:**
+
+1. One live Yahoo mock, every pick entered by **clicking**. The lobby clock is
+   ~30s against the real draft's 90s+, so falling behind here is not a failure.
+   This is the only untested path that Sept 1 depends on completely.
+2. Mid-draft, ctrl-C the app, start `ffhelper.cli run` on the same league, and
    record the elapsed time. The fallback has to be a rehearsed motion, not a plan.
+
+**Carry into step 3:** the Sleeper mock exercised the FEED path. Yahoo has no
+feed, so it exercises the JOURNAL path instead — click-to-mark, the override, and
+undo. None of those has been driven by a human under a clock.
 
 **Phases 4 and 5 can be built in parallel with all of the above**, under
 one rule: **`value.py` and `data.py` are frozen until both drafts are done.**
@@ -1043,13 +1052,24 @@ publishing, and re-check if anything in §3 or §9 lands afterwards.
 
 ---
 
-## 14. Bench-mode ordering is honest but still weak
+## 14. Bench-mode ordering is honest but still weak — OBSERVED LIVE 2026-08-27
 
 Once every starting slot is full, `is_bench_only` fires and the board says so
 rather than presenting the residual order as advice. The K/DEF demotion stops it
 recommending a second kicker. But the ordering underneath is still just static
 VBD, which by the late rounds favours whatever is least far below replacement —
 now TEs instead of kickers.
+
+**Seen in a real draft now, not just predicted.** In the live Sleeper mock the
+last four recommendations at seat 5's turns were all tight ends (Brenton Strange
+twice, Hockenson, Schultz) with a TE already started and a second on the bench.
+All four carried the `BENCH` flag, so the tool was saying "trust yourself here"
+exactly as designed — but a third and fourth TE is what static VBD produces when
+TE has the shallowest replacement of any position.
+
+**The position filter added in Phase 3 Task 7 is the honest mitigation**: in bench
+mode, filter to RB or WR and pick your own upside. That is a human making the call
+the data cannot, which is what the banner already asks for.
 
 The tool has no model of bench value: upside, handcuffs, injury insurance. The
 banner tells the user to trust themselves. Fixing it properly needs either a
