@@ -655,7 +655,7 @@ def board_rows(state: BoardState, limit: int, divergence_flag_slots: int) -> lis
     a hand-rolled table later without touching this function. DataTable's
     ceiling is that a row cannot contain arbitrary markup -- no sparklines, no
     per-row buttons, no true tier separator rows -- so tier grouping is done
-    with background colour (see TIER_STYLES) rather than header rows.
+    with background colour (Task 7) rather than header rows.
     """
     rows = []
     for i, r in enumerate(state.board[:limit], 1):
