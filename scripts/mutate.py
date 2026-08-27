@@ -211,6 +211,20 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("ffc bye is taken regardless of adp_source",
          "if row.get(\"bye\"):", "if set_adp and row.get(\"bye\"):"),
     ],
+    "ffhelper/board.py": [
+        ("pick count ignores manual marks",
+         "current_pick = max(len(drafted), highest) + 1",
+         "current_pick = max(len(picks), highest) + 1"),
+        ("pick count off by one",
+         "current_pick = max(len(drafted), highest) + 1",
+         "current_pick = max(len(drafted), highest)"),
+        ("overruled claims left in my_roster",
+         "_combine_my_roster(feed_roster, manual_mine - overruled, players)",
+         "_combine_my_roster(feed_roster, manual_mine, players)"),
+        ("replacement drawn from the draining pool",
+         "replacement_pool=list(players.values()),",
+         "replacement_pool=available,"),
+    ],
 }
 
 
