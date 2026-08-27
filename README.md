@@ -176,8 +176,10 @@ known state behind a `FEED STALE` banner rather than dying.
 The same engine, in a browser at `http://127.0.0.1:8050`. Click a row to mark that
 player drafted; your own roster is derived from your `draft_slot` and the pick
 number rather than typed, with a per-row override for when entry has drifted.
-Filter by position, search by name, and read the tier bands — same-position rows
-sharing a band are close to interchangeable.
+Filter by position (or `FLEX` for everything RB/WR/TE-eligible), search by name,
+and read the tier bands — same-position rows sharing a band are close to
+interchangeable. A panel shows your starting lineup slot by slot, empty slots
+included, then your bench.
 
 **Run one board at a time.** Both read the same `.draft/<league>-<date>.jsonl`
 journal, but the terminal replays it only at startup, so a terminal board left

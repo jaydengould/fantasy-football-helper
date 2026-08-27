@@ -13,13 +13,18 @@ work, in priority order:
    overdue, do not re-raise before then.** Section 16. User's call, 2026-08-26,
    and the reasoning is sound: it is ~30 minutes, and writing it *immediately
    before* the draft is what guarantees it matches the notation actually shipping.
-   Phase 3 may still change the terminal path (it is the fallback), so an earlier
-   sheet risks being wrong exactly where a wrong sheet is worst — at the table,
-   where it gets trusted over the screen.
+   **That caution was justified: Phase 3 DID change the terminal path** — the
+   handover fix (§ below) altered how `my_roster` is derived with no feed, so a
+   sheet written before 2026-08-27 would already be wrong. **The notation has now
+   stopped moving.** Write it from `_handle_command`'s docstring and `render()`'s
+   help line, and cover the WEB board too: clicking, the override button, undo,
+   the position filter, and ctrl-C to the terminal.
 2. **Treat the top of each position as a tier, not a ranking.** Section 15.
    Across 2021–2025 no position ranks its own top 12 better than ~+0.35
-   Spearman. The tier column already carries this; the board under-uses it.
-   Awareness is probably the whole fix before Sept 1.
+   Spearman. **Section 15's option 2 SHIPPED in Phase 3**: the web board bands
+   rows by tier, keyed on `(position, tier)` so it never claims two positions are
+   interchangeable. The terminal still only prints the column, so on that board
+   awareness is still the whole fix.
 3. **SURV is now conditional and roughly twice as accurate** (section 2, shipped
    2026-08-26). It still reads low — says 0–20%, 30% survive — so treat it as a
    strong ordering rather than a literal probability, but it is no longer
@@ -40,113 +45,17 @@ work, in priority order:
 the results page afterwards.
 
 **PHASE 3 IS COMPLETE (2026-08-27), Tasks 1-9.** Branch `phase-3-dash-ui`,
-**309 tests, 110 mutations.** All three rehearsal steps are done and every defect
-they found is fixed.
+**309 tests, 110 mutations.** The Dash board renders the same engine the terminal
+renders, entered by clicking; tier bands, position filter (incl. FLEX), name
+search and the starting-lineup panel are in; and the ctrl-C handover to the
+terminal is rehearsed at **0.48s with the roster intact**.
 
-**PHASE 3 CODE IS COMPLETE (2026-08-27).** Branch `phase-3-dash-ui`, **290 tests,
-96 mutations.** Tasks 1-8 of `docs/superpowers/plans/2026-08-26-phase-3-dash-ui.md`
-are done: the Dash board renders, click-to-mark works, the roster is derived from
-your draft seat, and tier bands, position filter, name search and the
-starting-lineup panel are in. **The stash is gone — Task 7's partial work was
-popped and finished.**
-
-**Task 9 step 1 (offline replay) is DONE and clean:** all three transcribed mocks
-stepped pick-by-pick through the Dash callback, **543 board states, zero
-exceptions**, on-clock banner firing exactly 15 times on exactly the seat's snake
-positions in all three, and 0 of 45 turns topped by a redundant K/DEF.
-
-**Task 9 step 2 is DONE (2026-08-27)** — a full 180-pick all-autopick Sleeper mock
-(`1398747013708894208`, seat 5) run live against the Dash board. **Three defects,
-all past a green suite, all found by using the tool.** Full write-up in
-`CLAUDE.md`; the headline is that **a failed poll rebuilt the board from no picks
-at all** — pick 1, whole pool back, empty roster — because `read_state` is
-stateless where the CLI's loop keeps a `picks` variable. Fixed, plus the stale
-banner's 15-second silent window and the invisible bench.
-
-### Step 3 DONE 2026-08-27 — the first click-entered draft
-
-A 10-team Yahoo mock, seat 1, entered **entirely by clicking**, abandoned around
-pick 96. **"Much better than having to type out names. Much more responsive too
-with new polling, almost instant."** Undo was used in anger — a pick missed six
-back — and recovered to current. That is the Sept 1 interface working.
-
-**One defect, and it probably ended the run.** Clicking the cell already
-highlighted from the previous selection did nothing: Dash fires a callback only
-when a prop CHANGES, so a repeat click on the same cell is a silent no-op and the
-mark is dropped. Diagnosed by the user from the symptom ("you can't click the spot
-that is already highlighted"). Fixed — `active_cell` is cleared after every write,
-and the override now reads the last-marked id from a Store rather than the
-selection, which the clearing would otherwise have made permanently inert.
-
-Also added: **FLEX/WRT in the position filter** (requested live) — the one slot
-whose candidates span positions, so comparing them means seeing them in one list.
-
-**Step 4 (ctrl-C handover) is BLOCKED on a decision — see below.**
-
-**What is left:**
-
-1. One live Yahoo mock, every pick entered by **clicking**. The lobby clock is
-   ~30s against the real draft's 90s+, so falling behind here is not a failure.
-   This is the only untested path that Sept 1 depends on completely.
-2. Mid-draft, ctrl-C the app, start `ffhelper.cli run` on the same league, and
-   record the elapsed time. The fallback has to be a rehearsed motion, not a plan.
-
-### Step 4 DONE 2026-08-27 — handover measured at 0.48s, roster intact
-
-`ffhelper.cli run` reaches a full board **0.48s** after launch (imports 0.26s,
-warm pool load 0.14s, 121-op replay <1ms, first board 0.02s). Cold `.cache/`
-adds one fetch. Ctrl-C out of the web board and the terminal is up before you
-have finished typing the next command.
-
-**Independently validated, which is the part that matters.** Replaying the live
-mock's own journal, the CLI derives `Gibbs, Collins, Allen, Loveland, Wilson,
-Moore, Stevenson, Warren, Thomas` — exactly the first nine of the "yours" list
-`transcribe.py` read off **Yahoo's own results page**, a separate source that
-never touched the journal.
-
-### THE HANDOVER WAS BROKEN — FIXED 2026-08-27 (attribution, not replay)
-
-Found 2026-08-27 by testing the handover offline before rehearsing it live.
-
-**Mechanically the handover is fine**: the CLI replays a Dash-written journal
-cleanly, including the `unmark` + `mark(mine=false)` override sequence nothing
-else produces. Verified end to end — 9 ops restored, exit 0, board rendered.
-
-**But your roster does not survive it.** The two boards derive `my_roster`
-differently, and for a feed-less league they disagree completely:
-
-| | derives your roster from |
-| --- | --- |
-| Dash board | your SEAT + journal pick order (`board.auto_mine`) |
-| CLI, no feed | explicit `me` marks only |
-
-Clicking never writes `mine`. Measured on a constructed 26-click journal: Dash
-3 players, CLI **0**. Confirmed on the real thing — the live mock's journal is
-**108 marks, 0 claimed mine**.
-
-**Consequence is Task 13 defect #1 arriving silently at the worst moment**: an
-empty `my_roster` makes MARG meaningless and disables the sort's roster-need
-gate, which is what once produced three quarterbacks on one roster. On Sept 1
-the terminal IS the fallback, so this fires exactly when something has already
-gone wrong.
-
-**FIXED, on the user's decision**, in `cli.py`'s feed-less path only — a league
-WITH a feed is untouched, so the Sept 6 Sleeper path does not change. `_manual_mine`
-composes attribution exactly as `app.read_state` does, reusing `board.auto_mine`.
-
-Two things worth keeping:
-
-- **The import is function-level**, because `board.py` imports `cli.py` and a
-  top-level import would be a cycle. Marked `ponytail:`; the plan already
-  schedules the real fix for after Sept 6, when `cli.py` adopts `board.py`.
-- **The restore banner counted typed marks too**, so it printed "0 yours" above a
-  board listing nine players — during a handover that reads as "the roster is
-  gone", i.e. it reported the very failure the fix removes. Now counts the
-  derived roster.
-
-**Carry into step 3:** the Sleeper mock exercised the FEED path. Yahoo has no
-feed, so it exercises the JOURNAL path instead — click-to-mark, the override, and
-undo. None of those has been driven by a human under a clock.
+All three rehearsal steps are done — offline replay of three transcripts, a live
+Sleeper mock, and a live Yahoo mock entered entirely by clicking. **They found
+six defects a green suite had passed over**, every one now fixed. The narrative,
+the measurements and what each defect taught are in `CLAUDE.md`'s session log for
+2026-08-27; they are history, not outstanding work, and are deliberately not
+repeated here.
 
 **Phases 4 and 5 can be built in parallel with all of the above**, under
 one rule: **`value.py` and `data.py` are frozen until both drafts are done.**
@@ -1289,8 +1198,11 @@ Options, cheapest first:
 1. **Awareness only.** At the top of the board, treat same-tier players as
    interchangeable and break ties on your own read. Zero cost, and given the
    Sept 1 deadline this is almost certainly the right call for this year.
-2. **Make the tier visually dominant** in the Phase 3 Dash UI rather than a
-   column — group rows by tier instead of listing them. Real, but Phase 3.
+2. ~~**Make the tier visually dominant** in the Phase 3 Dash UI rather than a
+   column.~~ **DONE 2026-08-27.** The web board bands rows by tier. Keyed on
+   `(position, tier)`, not tier alone: `tier` is a per-position column, and
+   banding on it alone put Gibbs, Bijan, Nacua and Chase in one block on the real
+   opening board — two positions, VONA 50.1 down to 16.5.
 3. **Give the board an interval instead of a point estimate.** The honest fix:
    `backtest.py` can now produce the historical projection-vs-outcome error
    distribution per position, which is exactly the input a confidence band needs.

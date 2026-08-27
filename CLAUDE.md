@@ -283,7 +283,7 @@ fresh opinion.
 | Phase | What | Target | Status |
 | --- | --- | --- | --- |
 | 0 | Yahoo OAuth handshake; confirm league access, size, settings | Aug 25 | **blocked — awaiting Yahoo approval** |
-| 1 | `data.py` + `value.py` + `cli.py`, Sleeper feed, multi-league config, **manual mark-drafted** | Aug 28 | in progress |
+| 1 | `data.py` + `value.py` + `cli.py`, Sleeper feed, multi-league config, **manual mark-drafted** | Aug 28 | **COMPLETE** — incl. Task 13 |
 | 2 | Yahoo feed adapter + SQLite draft log | Aug 29–30 | not started (Yahoo half gated on approval) |
 | 3 | Dash UI | Sept 5 | **COMPLETE** — Tasks 1-9, rehearsed live |
 | 3.5 | Opponent needs, bye clustering, notifications, manual overrides | Sept 5 | not started |
