@@ -164,10 +164,22 @@ says so; do not agonise over which name inside it.
 - Non-trivial logic leaves one runnable check behind. One `test_value.py` plus
   `preflight`. No mocking the network — the pure core doesn't need it.
 - **A new test must be shown to fail before the fix**, by
-  `git stash push -- ffhelper && pytest -k <name>`. A test written after a fix
-  and never seen red is not evidence.
+  `git stash push -u -- ffhelper && pytest -k <name>`. A test written after a fix
+  and never seen red is not evidence. **The `-u` is not optional when the test
+  covers a NEW file**: plain `git stash push` leaves untracked files on disk, so
+  the module stays present, the tests pass, and the run looks like evidence while
+  proving nothing.
 - **Add a mutation to `scripts/mutate.py` alongside non-trivial logic.** It is
   one line and it is the only mechanical check that a test does anything.
+  **A surviving mutation is evidence about the TEST: fix the test, never weaken
+  the mutation.** And if a mutation survives because no test can REACH the code
+  — a callback sealed inside a registration function, a branch with no seam —
+  that is the finding: untestable code is untested code, and the fix is to give
+  it a seam, not to skip the mutation.
+- **`scripts/mutate.py` rewrites source files in place. Run it in the
+  FOREGROUND**, never backgrounded and polled: anything else touching the tree
+  at the same time collides, and a frozen file can show as modified until it
+  restores.
 
 ## Non-negotiables
 
@@ -324,6 +336,108 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   a config override, never trusted from the API.
 
 ## Session log
+
+### 2026-08-26 (second block) — Phase 3 built to the cut line: the board is a tool
+
+**State:** branch `phase-3-dash-ui` @ `1525cbd`, **276 tests**, 87 mutations
+(1 survivor, the documented equivalent mutant). Frozen files untouched throughout.
+New: `ffhelper/board.py`, `ffhelper/app.py`, `tests/test_board.py`,
+`tests/test_board_agreement.py`, `tests/test_app.py`, `tests/test_dash_isolation.py`.
+
+Spec: `docs/superpowers/specs/2026-08-26-phase-3-dash-ui-design.md`
+Plan: `docs/superpowers/plans/2026-08-26-phase-3-dash-ui.md`
+
+**Stopped deliberately at the plan's cut line.** Tasks 1-6 are done and reviewed;
+7 (tier bands, filter, search), 8 (roster panel) and 9 (rehearsal) are not. Task 7
+was interrupted mid-edit and its partial work is in `git stash@{0}`. The board is
+a working draft tool as it stands.
+
+#### What exists
+
+`python -m ffhelper.app --league <name>` serves a Dash board that renders the same
+engine the terminal renders. Click a row to mark a player drafted. Your roster is
+DERIVED from your draft seat and pick number — the `me ` prefix does not exist on
+the web board — with a per-row override when entry has drifted.
+
+**The journal is the database.** Every render replays `.draft/<league>-<date>.jsonl`,
+polls the feed, and rebuilds the board, so the process holds no draft state. That is
+what makes the CLI handover exact: ctrl-C one, start the other, lose nothing.
+**One process at a time** — the CLI replays only at startup, so it cannot see writes
+made by a running web app.
+
+#### Seat-based attribution is validated against real data
+
+`auto_mine` reproduced **exactly** the roster all three transcribed Yahoo mocks
+recorded independently — seats 8/11/2, 180 picks each, 15 own picks each, zero
+differences. That is the check that permitted Task 6 to be built at all.
+
+**Its accepted cost, unchanged:** attribution is derived from POSITION, so a missed
+entry shifts every later pick and silently hands you the wrong roster. Mitigations
+are the on-clock banner (visible drift detector) and the override.
+
+#### A design bug of mine, caught by review, worth remembering
+
+`read_state` composed `manual_mine = mark_state.mine | derived`. **A union can only
+add.** So a "not mine" override was silently re-added by `derived` on the next
+5-second tick: `auto_mine` recomputes from pick position alone, and "first mark wins"
+keeps the player in his snake slot. `mine=True` overrides were durable; `mine=False`
+overrides reverted — exactly backwards, since drift correction is the only reason the
+override exists. The spec sold it as the mitigation making auto-attribution safe;
+as written that was fiction.
+
+Fixed by reading a record already in the journal rather than adding one:
+`apply_override(mine=False)` writes `unmark` then `mark(mine=false)`, a sequence
+nothing else produces. `board.explicit_not_mine` reads it, and the composition is now
+`(derived - explicit_not_mine) | mark_state.mine` — explicit statements win in BOTH
+directions. **A new journal op was rejected**: `cli._restore_marks` raises on unknown
+ops, so a Dash-written journal would stop replaying cleanly in the terminal, breaking
+the fallback the whole design rests on.
+
+**It got through because every test called `apply_override` and `auto_mine` in
+isolation. The composition seam had no test.** Same shape as Task 3's `read_state`
+gap. The recurring lesson is narrower than "test more": *I test the pieces and not
+the join.*
+
+#### Mutation testing caught three vacuous tests, all specified by the plan
+
+Not the implementations — the plan's own test code, which read as thorough:
+1. Four `board_state` tests never exercised `replacement_pool`, so the mutation
+   swapping the full pool for the draining one SURVIVED.
+2. `test_board_rows_carry_the_player_id...` built names as `f"Player {i}"` and ids as
+   `str(i)`, so swapping `sleeper_id` for `name` passed every assertion — a test
+   asserting non-negotiable #1 while incapable of detecting its violation.
+3. Two Task 4 mutations survived because the write callback was sealed inside
+   `_register_callbacks` with nothing returned: **no test could reach it.**
+
+(3) is why the conventions above now say untestable code is untested code.
+
+#### Two defects in the plan document itself, found before dispatch
+
+- **`git stash push -- ffhelper` does not stash untracked files.** Probed it directly.
+  For a task that CREATES a module, the red-check would have run with the module still
+  on disk, passed, and been reported as evidence. Now `-u`, and the convention above
+  is corrected.
+- **A module-level `server = None` populated inside `main()`** was sold as a free
+  gunicorn hook. Gunicorn imports the module and never calls `main()`, so it is None
+  exactly when a host reads it. Removed; the spec's "Hosting, later" now says the real
+  retrofit needs league selection to leave `argv`.
+
+#### `my_turns` is the first recursive caller of `next_pick_number`
+
+Every other call site asks once per tick. Feeding its output back in makes a broken
+"strictly after" contract a HANG rather than a fast failure — it crashed `mutate.py`
+outright. Bounded loop + `RuntimeError` in `board.py`; `value.py` untouched. A hang is
+the worst draft-day failure mode there is.
+
+#### Deferred, deliberately
+
+- **`board.py` is a COPY of `cli._render_tick`'s derivation, not an extraction.**
+  Divergence requires an edit, nothing schedules one, and `cli.py` is the live draft
+  path. `tests/test_board_agreement.py` guards it and is also the proof that the
+  post-Sept-6 extraction is a no-op.
+- Tasks 7-9. **Task 9 (rehearsal) is the one that matters** — nothing has yet
+  confirmed the rendered board against the terminal's. The app has been verified only
+  to start, serve HTTP 200, and pass its unit tests.
 
 ### 2026-08-26 — the human mock moves to Yahoo; calibration learns to read a journal
 

@@ -36,7 +36,19 @@ work, in priority order:
 `adp_ppr` directly, which the half-PPR mocks did not. Join, do not type, paste
 the results page afterwards.
 
-**Phases 3, 4 and 5 can now be built in parallel with all of the above**, under
+**PHASE 3 IS BUILT TO ITS CUT LINE (2026-08-26).** Branch `phase-3-dash-ui`,
+276 tests. Tasks 1-6 of `docs/superpowers/plans/2026-08-26-phase-3-dash-ui.md` are
+done and reviewed; the Dash board renders, click-to-mark works, and the roster is
+derived from your draft seat. **Not done: Task 7 (tier bands, position filter,
+search), Task 8 (roster panel), Task 9 (rehearsal).** Task 7's partial work is in
+`git stash@{0}` on that branch.
+
+**Task 9 is the one with real risk left**, and it needs you: nothing has yet
+compared the rendered web board against the terminal's at the same pick. The app is
+verified only to start, serve HTTP 200, and pass unit tests. Before trusting it on
+Sept 1, replay a transcript through it and time one ctrl-C -> CLI handover.
+
+**Phases 4 and 5 can be built in parallel with all of the above**, under
 one rule: **`value.py` and `data.py` are frozen until both drafts are done.**
 Phase 3 lives behind its own entry point and never imports into the terminal
 path. Phase 3.5 is the exception to watch — opponent-needs and bye-clustering
