@@ -29,7 +29,10 @@ work, in priority order:
    download. Run the ECR-vs-ADP correlation first; it decides the rest.
 6. **Deferred minors.** Section 9 — two left, both trivial, neither load-bearing.
 7. **Delete the `yahoo-mock` block** from `config.toml` once no more mocks are
-   planned. It is scratch, and its `draft_slot` has been edited three times.
+   planned. It is scratch, and its `draft_slot` has been edited four times.
+   **Note the coupling:** `calibrate.py` reads `num_teams` from that block, so it
+   is now 10 and the three 12-team transcripts from 2026-08-26 will be REFUSED
+   until it is set back. That refusal is the guard working, not a bug.
 8. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
 
 **Optional, now cheap:** full-PPR 12-team mocks would test `sleeper-main`'s
@@ -56,13 +59,65 @@ at all** — pick 1, whole pool back, empty roster — because `read_state` is
 stateless where the CLI's loop keeps a `picks` variable. Fixed, plus the stale
 banner's 15-second silent window and the invisible bench.
 
-**Steps 3 and 4 still need you, and they are the remaining risk:**
+### Step 3 DONE 2026-08-27 — the first click-entered draft
+
+A 10-team Yahoo mock, seat 1, entered **entirely by clicking**, abandoned around
+pick 96. **"Much better than having to type out names. Much more responsive too
+with new polling, almost instant."** Undo was used in anger — a pick missed six
+back — and recovered to current. That is the Sept 1 interface working.
+
+**One defect, and it probably ended the run.** Clicking the cell already
+highlighted from the previous selection did nothing: Dash fires a callback only
+when a prop CHANGES, so a repeat click on the same cell is a silent no-op and the
+mark is dropped. Diagnosed by the user from the symptom ("you can't click the spot
+that is already highlighted"). Fixed — `active_cell` is cleared after every write,
+and the override now reads the last-marked id from a Store rather than the
+selection, which the clearing would otherwise have made permanently inert.
+
+Also added: **FLEX/WRT in the position filter** (requested live) — the one slot
+whose candidates span positions, so comparing them means seeing them in one list.
+
+**Step 4 (ctrl-C handover) is BLOCKED on a decision — see below.**
+
+**What is left:**
 
 1. One live Yahoo mock, every pick entered by **clicking**. The lobby clock is
    ~30s against the real draft's 90s+, so falling behind here is not a failure.
    This is the only untested path that Sept 1 depends on completely.
 2. Mid-draft, ctrl-C the app, start `ffhelper.cli run` on the same league, and
    record the elapsed time. The fallback has to be a rehearsed motion, not a plan.
+
+### THE HANDOVER IS BROKEN, and it is an attribution bug, not a replay bug
+
+Found 2026-08-27 by testing the handover offline before rehearsing it live.
+
+**Mechanically the handover is fine**: the CLI replays a Dash-written journal
+cleanly, including the `unmark` + `mark(mine=false)` override sequence nothing
+else produces. Verified end to end — 9 ops restored, exit 0, board rendered.
+
+**But your roster does not survive it.** The two boards derive `my_roster`
+differently, and for a feed-less league they disagree completely:
+
+| | derives your roster from |
+| --- | --- |
+| Dash board | your SEAT + journal pick order (`board.auto_mine`) |
+| CLI, no feed | explicit `me` marks only |
+
+Clicking never writes `mine`. Measured on a constructed 26-click journal: Dash
+3 players, CLI **0**. Confirmed on the real thing — the live mock's journal is
+**108 marks, 0 claimed mine**.
+
+**Consequence is Task 13 defect #1 arriving silently at the worst moment**: an
+empty `my_roster` makes MARG meaningless and disables the sort's roster-need
+gate, which is what once produced three quarterbacks on one roster. On Sept 1
+the terminal IS the fallback, so this fires exactly when something has already
+gone wrong.
+
+**The fix is small and the code already exists** — `board.auto_mine` reproduced
+all three transcribed mocks' rosters exactly, and is tested and mutation-covered.
+It is ~3 lines in `cli.py`'s feed-less path. **But the Phase 3 plan says
+`cli.py` is not edited, and it is the live draft path five days out.** That
+trade is the user's call, not the agent's.
 
 **Carry into step 3:** the Sleeper mock exercised the FEED path. Yahoo has no
 feed, so it exercises the JOURNAL path instead — click-to-mark, the override, and
@@ -705,6 +760,38 @@ completion bonus — a different room shape as well as a different sample.
 longer has to be typed into: join, let it run, copy the results page, transcribe.
 Three more mocks is an evening's work with no clock pressure at all. **Do that
 before changing `adp_source` for either league.**
+
+### A FOURTH DRAFT, 2026-08-27 — 10-TEAM, and it changes nothing
+
+150 picks, seat 1, the first **10-team** room measured (both previous sets were
+12-team, so this is the first matching `yahoo-main`'s actual team count).
+
+| model says | FFC | Sleeper | ideal |
+| --- | --- | --- | --- |
+| 0-20% | 49% | **23%** | 10% |
+| 20-40% | 58% | 58% | 30% |
+| 40-60% | 70% | **52%** | 50% |
+| 60-80% | 87% | **72%** | 70% |
+| 80-100% | 92% | 91% | 90% |
+
+Weighted calibration error **0.051 (sleeper) vs 0.116 (ffc)** — same direction as
+the n=3 result that moved `yahoo-main`, so it corroborates and nothing changes.
+
+**DO NOT read the 0.051 as the model improving.** It is better than the pooled
+12-team figure of 0.081, but this room was measurably more list-following
+(median ADP rank taken 5, 15% at top, against the human mocks' 7/9/10 and
+11-13%), and **a room that follows the list makes ADP look better calibrated by
+construction.** Circularity flatters this number. It sits between the human mocks
+and the Task 13 all-bot mock (median 2, 36%), so treat it as partially circular.
+
+**The user asked whether rounds 4+ were autopicks. The metric cannot answer it.**
+Split at the pick where they stopped entering: picks 1-96 read median 5 / 16.7%
+at top, picks 97-150 read median 16 / 3.7%. That looks like the late rounds were
+*less* list-following, which is almost certainly an artifact rather than a fact —
+late in a draft most remaining players have no ADP at all, and autodraft fills
+roster requirements (K, DEF, positional minimums) instead of walking the list.
+**Room discipline is not a trustworthy measure after the ADP pool thins out.**
+Recorded so the number is not quoted later as evidence of a human room.
 
 ### SETTLED 2026-08-26 at n=3 — `yahoo-main` moved to `adp_source = "sleeper"`
 
