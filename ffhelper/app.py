@@ -18,7 +18,7 @@ import time
 import dash
 from dash import Input, Output, dash_table, dcc, html
 
-from ffhelper.board import BoardState, board_state
+from ffhelper.board import BoardState, auto_mine, board_state, marks_in_entry_order
 from ffhelper.cli import (
     DRAFT_LOG_DIR, ROOT, _draft_log_path, _restore_marks, _select_feed,
     load_board_inputs,
@@ -128,7 +128,15 @@ def read_state(league, tunables, players, settings, feed, has_feed):
     different statement from "the feed has not answered recently" and must read
     differently on screen.
     """
-    mark_state, _applied, _skipped = _restore_marks(_draft_log_path(league))
+    log_path = _draft_log_path(league)
+    mark_state, _applied, _skipped = _restore_marks(log_path)
+    # Seat-based attribution replaces the terminal's typed "me " prefix. An
+    # explicit override (mark_state.mine) always wins over the derived set --
+    # it exists precisely for the case where entry has drifted.
+    derived = auto_mine(marks_in_entry_order(log_path), league.draft_slot,
+                        settings.num_teams)
+    manual_mine = mark_state.mine | derived
+
     picks, stale_seconds = [], None
     try:
         picks = feed.get_picks()
@@ -140,7 +148,7 @@ def read_state(league, tunables, players, settings, feed, has_feed):
         if has_feed:
             _LAST_OK[league.name] = time.time()
             stale_seconds = 0.0
-    state = board_state(players, picks, mark_state.drafted, mark_state.mine,
+    state = board_state(players, picks, mark_state.drafted, manual_mine,
                         settings, league, tunables)
     return state, stale_seconds
 
@@ -155,6 +163,24 @@ def apply_click(log_path, player_id: str) -> str:
     state, _applied, _skipped = _restore_marks(log_path)
     state.mark(player_id)
     return f"marked {player_id}"
+
+
+def apply_override(log_path, player_id: str, mine: bool) -> str:
+    """Correct attribution for one player, without changing whether he is drafted.
+
+    The only reason to need this is that entry has drifted -- a missed or
+    doubled pick shifts every pick number after it -- so it is also the cue to
+    re-check the pick count against the platform's own board.
+    """
+    state, _applied, _skipped = _restore_marks(log_path)
+    if mine:
+        state.mark(player_id, mine=True)
+        return f"{player_id} is yours"
+    # unmark then re-mark: he is still drafted, just not by you. Removing him
+    # from `drafted` would put a genuinely gone player back on the board.
+    state.unmark(player_id)
+    state.mark(player_id, mine=False)
+    return f"{player_id} is not yours"
 
 
 def apply_undo(log_path) -> str:
@@ -183,6 +209,7 @@ def _layout(league_names: list[str], default_league: str):
             style_cell={"fontFamily": "monospace", "textAlign": "left"},
         ),
         html.Button("undo", id="undo", n_clicks=0),
+        html.Button("toggle 'mine' on selected", id="override", n_clicks=0),
         html.Pre(id="status"),
         dcc.Interval(id="tick", interval=5000),
     ])
@@ -208,17 +235,22 @@ def _register_callbacks(app, leagues, tunables, cache):
     @app.callback(
         Output("status", "children"), Output("tick", "n_intervals"),
         Input("board", "active_cell"), Input("undo", "n_clicks"),
+        Input("override", "n_clicks"),
         dash.State("board", "data"), dash.State("league", "value"),
         dash.State("tick", "n_intervals"),
         prevent_initial_call=True,
     )
-    def _write(active_cell, _undo_clicks, rows, league_name, n):
+    def _write(active_cell, _undo_clicks, _override_clicks, rows, league_name, n):
         league = get_league(leagues, league_name)
         path = _draft_log_path(league)
         trigger = dash.callback_context.triggered_id
         try:
             if trigger == "undo":
                 status = apply_undo(path)
+            elif trigger == "override" and active_cell and rows:
+                pid = rows[active_cell["row"]]["id"]
+                state, _a, _s = _restore_marks(path)
+                status = apply_override(path, pid, mine=pid not in state.mine)
             elif active_cell and rows:
                 # Resolve the click through the row's id, never its name.
                 status = apply_click(path, rows[active_cell["row"]]["id"])

@@ -257,7 +257,7 @@ def test_click_resolves_through_the_row_id_never_the_name(monkeypatch, tmp_path)
     monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
                          property(lambda self: "board"))
     rows = [{"id": "4017", "player": "Bijan Robinson"}]
-    write({"row": 0, "column": 0}, 0, rows, "write-test", 0)
+    write({"row": 0, "column": 0}, 0, 0, rows, "write-test", 0)
     ops = [json.loads(line) for line in path.read_text().splitlines()]
     assert ops == [{"op": "mark", "id": "4017", "mine": False}]
 
@@ -268,5 +268,40 @@ def test_a_successful_write_bumps_the_tick_for_an_immediate_redraw(monkeypatch, 
     write, _path = _make_write(monkeypatch, tmp_path, league_name="write-test2")
     monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
                          property(lambda self: "undo"))
-    _status, n_after = write(None, 1, [], "write-test2", 3)
+    _status, n_after = write(None, 1, 0, [], "write-test2", 3)
     assert n_after == 4
+
+
+# --- Task 6: seat-based attribution and the explicit override ---
+
+from ffhelper.app import apply_override
+from ffhelper.board import auto_mine, marks_in_entry_order
+
+
+def test_the_seats_own_picks_land_in_my_roster_without_being_typed(tmp_path):
+    path = tmp_path / "log.jsonl"
+    for i in range(1, 25):                            # picks 1..24, seat 5 owns 5 and 20
+        apply_click(path, str(i))
+    order = marks_in_entry_order(path)
+    assert auto_mine(order, seat=5, num_teams=12) == {"5", "20"}
+
+
+def test_an_override_marks_a_player_as_yours_explicitly(tmp_path):
+    path = tmp_path / "log.jsonl"
+    apply_click(path, "42")
+    apply_override(path, "42", mine=True)
+    state, _applied, _skipped = _restore_marks(path)
+    assert state.mine == {"42"}
+    assert state.drafted == {"42"}
+
+
+def test_an_override_can_take_a_claim_back_without_undrafting_the_player(tmp_path):
+    # He really is gone -- just not to you. Removing him from `drafted` would
+    # put a drafted player back on the board.
+    path = tmp_path / "log.jsonl"
+    apply_click(path, "42")
+    apply_override(path, "42", mine=True)
+    apply_override(path, "42", mine=False)
+    state, _applied, _skipped = _restore_marks(path)
+    assert state.mine == set()
+    assert state.drafted == {"42"}
