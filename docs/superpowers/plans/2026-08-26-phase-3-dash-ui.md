@@ -440,12 +440,14 @@ def test_a_player_reported_by_both_feed_and_mark_is_counted_once():
 - [ ] **Step 6: Verify the new tests fail against pre-fix source**
 
 ```bash
-git stash push -- ffhelper
+git stash push -u -- ffhelper
 .venv/bin/python -m pytest tests/test_board.py tests/test_board_agreement.py -q
 git stash pop
 ```
 
 Expected while stashed: collection errors (`No module named 'ffhelper.board'`) for all six tests. A test never seen red is not evidence.
+
+**`-u` is required and is not optional here.** `ffhelper/board.py` is a NEW file, and plain `git stash push -- ffhelper` does not stash untracked files — the module would stay on disk, the tests would pass, and the run would look like evidence while proving nothing. If for any reason the stash cannot be made to remove the file, cite Step 2's output as the red evidence instead (it ran before the module existed) and say so explicitly. Never report a green stash run as red evidence.
 
 - [ ] **Step 7: Add mutations**
 
@@ -499,7 +501,6 @@ End of 3a. Deliverable: a board you can open in a browser during a draft.
   - `board_rows(state: BoardState, limit: int, divergence_flag_slots: int) -> list[dict]` — one dict per row, keys `rank`, `id`, `player`, `pos`, `vona`, `vbd`, `marg`, `tier`, `surv`, `div`, `flags`.
   - `banner_lines(state: BoardState, stale_seconds: float | None, players: dict[str, Player]) -> list[str]`.
   - `read_state(league, tunables, players, settings, feed) -> tuple[BoardState, float | None]`.
-  - `server` — the Flask instance, at module level, for a future host.
   - `main(argv: list[str] | None = None) -> int`.
 
 - [ ] **Step 1: Write the failing test**
@@ -823,15 +824,18 @@ def main(argv: list[str] | None = None) -> int:
 
     app = build_app(names, args.league)
     _register_callbacks(app, leagues, tunables, cache)
-    globals()["server"] = app.server
     app.run(port=args.port)
     return 0
 
 
-# Exposed for a future host (`gunicorn ffhelper.app:server`). Populated by main();
-# None until then. Costs nothing now and is the one thing that would otherwise
-# have to be retrofitted -- see the spec's "Hosting, later".
-server = None
+# NO module-level `server` for gunicorn. It was in the design as a "free line
+# that keeps hosting open", and it is not free: gunicorn imports this module and
+# never calls main(), so a `server` populated inside main() is always None -- a
+# decorative hook that fails the moment it is used. The real retrofit is to build
+# the app at import time, which means league selection has to move out of argv
+# and into config or the environment. That is a genuine change, and pretending
+# otherwise with a dead global is worse than admitting it. See the spec's
+# "Hosting, later".
 
 
 if __name__ == "__main__":
@@ -846,12 +850,14 @@ Expected: 6 passed.
 - [ ] **Step 5: Verify the new tests fail against pre-fix source**
 
 ```bash
-git stash push -- ffhelper
+git stash push -u -- ffhelper
 .venv/bin/python -m pytest tests/test_app.py -q
 git stash pop
 ```
 
 Expected while stashed: collection error, `No module named 'ffhelper.app'`.
+
+**`-u` is required**: `ffhelper/app.py` is a new file and plain stash leaves untracked files in place, which would produce a green run that looks like evidence. If the stash cannot remove it, cite Step 2 as the red evidence and say so.
 
 - [ ] **Step 6: Run it against real data — this is the step that finds the defects**
 

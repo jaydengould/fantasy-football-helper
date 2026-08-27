@@ -315,9 +315,16 @@ Flask app and needs a live Python process. Any host that runs one works
 **Nothing in this design blocks that**, largely because the project's existing
 rules already point that way — no module-level league state, paths anchored to
 `ROOT` rather than cwd, and decision A's "no server-side mutable state" is
-precisely what a multi-process host requires. One free line now keeps the door
-open: expose `server = app.server` at module level rather than only calling
-`app.run()` under `__main__`.
+precisely what a multi-process host requires.
+
+**Corrected 2026-08-26, during plan pre-flight.** An earlier draft of this
+section claimed a module-level `server = app.server` was a free line that kept
+the door open. It is not free and it does not work: gunicorn imports the module
+and never calls `main()`, so a `server` populated inside `main()` is `None` at
+exactly the moment a host would read it. A decorative hook that fails on first
+use is worse than none. The real retrofit is to build the app at import time,
+which requires league selection to move out of `argv` into config or the
+environment — a genuine change, correctly deferred rather than faked.
 
 **What hosting would newly require, none of it built here:**
 
