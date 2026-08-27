@@ -124,9 +124,9 @@ def filter_rows(rows: list[dict], position: str, query: str) -> list[dict]:
 
 
 def roster_slots_view(
-    my_roster: list[Player], roster_slots: dict[str, int],
+    my_roster: list[Player], roster_slots: dict[str, int], bench_slots: int = 0,
 ) -> list[tuple[str, str | None]]:
-    """Starting slots in roster order, each filled or explicitly empty.
+    """Starting slots in roster order, then the bench. Each filled or empty.
 
     Greedy by projected points within a position, FLEX last from whatever is
     left. FLEX_ELIGIBLE is IMPORTED from value.py rather than restated here: a
@@ -161,7 +161,15 @@ def roster_slots_view(
         if match is not None:
             remaining.remove(match)
             row[1] = match.name
-    return [(slot, filled) for slot, filled in view]
+    # The bench is not decoration: once STARTING LINEUP FULL is up, every
+    # remaining pick goes here, and a panel that hides it shows a third of your
+    # team. Overflow past `bench_slots` is still listed -- never silently
+    # dropped -- because being over the roster limit is a drift symptom you need
+    # to see, not one to hide.
+    out = [(slot, filled) for slot, filled in view]
+    out += [("BN", p.name) for p in remaining]
+    out += [("BN", None)] * max(0, bench_slots - len(remaining))
+    return out
 
 
 def banner_lines(
@@ -173,6 +181,13 @@ def banner_lines(
         lines.append("MANUAL MODE: no pick feed -- picks are entered by hand only")
     elif stale_seconds > 15:
         lines.append(f"!! FEED STALE {stale_seconds:.0f}s -- board may be out of date")
+    elif stale_seconds > 0:
+        # There must be NO silent window. A 55s outage in the live Sleeper mock
+        # read as a healthy board for its first 15 seconds, because only the
+        # loud banner above existed -- and 15s is three picks. This line is
+        # quiet by design (the board is barely stale and probably recovering)
+        # but it is never absent while a poll is failing.
+        lines.append(f"feed not answering -- last good poll {stale_seconds:.0f}s ago")
     if is_bench_only(state.board):
         lines.append("STARTING LINEUP FULL: no player improves your starters. "
                      "These are BENCH picks, ordered by value over league replacement. "
@@ -205,6 +220,16 @@ def clock_line(state: BoardState, league: League, num_teams: int) -> str:
 # journal every tick and nothing about who was drafted lives in this process.
 _LAST_OK: dict[str, float] = {}
 
+# The last picks the feed successfully returned, per league. This is a CACHE of
+# the feed's answer, not a second source of truth: it is never written to, never
+# read on a healthy poll, and a restart simply re-polls. It exists because a
+# stateless render has no equivalent of the CLI loop's `picks` variable, which
+# survives the except branch and is the only reason the terminal degrades
+# correctly. Without it a failed poll rebuilt the board from NO picks -- pick 1,
+# the whole pool back on the board, an empty roster -- which is a fabricated
+# draft, not a degraded one. Found by cutting wifi during the live Sleeper mock.
+_LAST_PICKS: dict[str, list] = {}
+
 
 def read_state(league, tunables, players, settings, feed, has_feed):
     """Replay the journal, poll the feed, derive the board. -> (state, stale_seconds)
@@ -234,11 +259,15 @@ def read_state(league, tunables, players, settings, feed, has_feed):
         picks = feed.get_picks()
     except Exception as exc:                          # noqa: BLE001 - never fatal
         log.warning("poll failed: %s", exc)
+        # Show the last board we know to be true, behind the staleness banner.
+        # An empty list here would be a claim that nobody has been drafted.
+        picks = _LAST_PICKS.get(league.name, [])
         if has_feed:
             stale_seconds = time.time() - _LAST_OK.get(league.name, time.time())
     else:
         if has_feed:
             _LAST_OK[league.name] = time.time()
+            _LAST_PICKS[league.name] = picks
             stale_seconds = 0.0
     state = board_state(players, picks, mark_state.drafted, manual_mine,
                         settings, league, tunables)
@@ -337,7 +366,9 @@ def _register_callbacks(app, leagues, tunables, cache):
             clock_line(state, league, settings.num_teams),
             "\n".join(f"{label:<5} {filled or '(empty)'}"
                       for label, filled in roster_slots_view(
-                          state.my_roster, settings.roster_slots)),
+                          state.my_roster, settings.roster_slots,
+                          bench_slots=max(0, settings.rounds
+                                          - sum(settings.roster_slots.values())))),
         )
 
     @app.callback(

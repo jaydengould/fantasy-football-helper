@@ -566,7 +566,10 @@ def test_the_panel_starts_exactly_the_lineup_lineup_value_scores():
     ]
     view = roster_slots_view(roster, slots)
     by_name = {p.name: p.proj_pts for p in roster}
-    panel_total = sum(by_name[n] for _label, n in view if n is not None)
+    # Starters only: lineup_value scores the starting lineup, and BN rows are
+    # explicitly the players it does NOT count.
+    panel_total = sum(by_name[n] for label, n in view
+                      if n is not None and label != "BN")
     # Rounded because the two sum the SAME players in a different order and
     # float addition is not associative. A different lineup moves this by
     # points, not by 4e-13.
@@ -581,3 +584,82 @@ def test_flex_sits_where_the_config_puts_it_not_at_the_end():
     slots = {"QB": 1, "RB": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1}
     labels = [label for label, _filled in roster_slots_view([], slots)]
     assert labels == ["QB", "RB", "RB", "TE", "FLEX", "FLEX", "K", "DEF"]
+
+
+# --- a dead feed must not erase the draft ---
+
+def test_a_failed_poll_keeps_the_last_good_picks(monkeypatch, tmp_path):
+    # Found by cutting wifi during the live Sleeper mock, 2026-08-27. read_state
+    # re-initialises `picks` to [] on every call, so a failed poll rebuilt the
+    # board from NO picks: back to pick 1, the whole pool available, an empty
+    # roster. The CLI does not do this only because `picks` is a loop variable
+    # that survives the except branch -- the stateless render has no such luck.
+    # Fabricating an entire draft state is the worst possible degradation.
+    monkeypatch.setattr(app, "_draft_log_path", lambda league: tmp_path / "log.jsonl")
+    league = League(name="deadfeed", platform="sleeper", league_id="1", draft_slot=5)
+    players, settings = _pool(), _settings()
+    picks = [FakePick(sleeper_id="3", pick_no=1, draft_slot=1),
+             FakePick(sleeper_id="9", pick_no=2, draft_slot=2)]
+
+    healthy, _stale = app.read_state(league, Tunables(), players, settings,
+                                     FakeFeed(picks), True)
+    assert healthy.current_pick == 3
+
+    dead, stale = app.read_state(league, Tunables(), players, settings,
+                                 FakeFeed(raise_error=True), True)
+    assert dead.current_pick == 3, "a dead feed reset the board to pick 1"
+    on_board = {r.player.sleeper_id for r in dead.board}
+    assert on_board.isdisjoint({"3", "9"}), "drafted players came back onto the board"
+    assert stale is not None and stale >= 0
+
+
+def test_bench_players_are_visible_not_just_starters():
+    # From the live Sleeper mock, 2026-08-27: "you can't see your own bench
+    # picks". In a 15-round draft with 10 starting slots that is a third of your
+    # team invisible -- and the bench is exactly what you are choosing between
+    # once the STARTING LINEUP FULL banner is up.
+    slots = {"QB": 1, "RB": 2}
+    roster = [_p("Allen", "QB", 380.0), _p("Gibbs", "RB", 291.0),
+              _p("Bijan", "RB", 288.0), _p("Hall", "RB", 240.0),
+              _p("Purdy", "QB", 220.0)]
+    view = roster_slots_view(roster, slots, bench_slots=3)
+    assert view[:3] == [("QB", "Allen"), ("RB", "Gibbs"), ("RB", "Bijan")]
+    # Leftovers appear as bench, best first, and the unused bench slot is shown
+    # so you can count the picks you still have.
+    assert view[3:] == [("BN", "Hall"), ("BN", "Purdy"), ("BN", None)]
+
+
+def test_bench_defaults_to_none_so_existing_callers_are_unchanged():
+    assert roster_slots_view([_p("Allen", "QB")], {"QB": 1}) == [("QB", "Allen")]
+
+
+def test_a_bench_overflow_is_still_shown_never_dropped():
+    # Non-negotiable #3 applied to the roster: if entry drifts and you end up
+    # attributed more players than the roster has room for, they must be on
+    # screen, not silently swallowed.
+    roster = [_p("Allen", "QB", 380.0), _p("Purdy", "QB", 300.0),
+              _p("Mayfield", "QB", 250.0)]
+    view = roster_slots_view(roster, {"QB": 1}, bench_slots=1)
+    assert view == [("QB", "Allen"), ("BN", "Purdy"), ("BN", "Mayfield")]
+
+
+def test_a_single_failed_poll_is_visible_immediately_not_after_15s():
+    # Live Sleeper mock, 2026-08-27: 55s of continuous DNS failure and the user
+    # reported never seeing the banner. The loud `!!` line only fires above 15s,
+    # so the first three failed polls say NOTHING -- the board looks healthy
+    # while being three picks behind. A quiet line from the first failure closes
+    # that window; the loud one still escalates.
+    state, players = _state()
+    assert "feed" in " ".join(banner_lines(state, 4.0, players)).lower()
+
+
+def test_a_healthy_feed_stays_quiet():
+    # The counterpart: a working feed must not add a line of noise to a board
+    # that is read under a pick clock.
+    state, players = _state()
+    assert not [l for l in banner_lines(state, 0.0, players) if "feed" in l.lower()]
+
+
+def test_a_long_outage_still_escalates_to_the_loud_banner():
+    state, players = _state()
+    assert any(l.startswith("!!") for l in banner_lines(state, 40.0, players))
