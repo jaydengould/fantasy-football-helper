@@ -10,6 +10,10 @@ dependencies = ["requests>=2.32", "yfpy>=17.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Phase 3 only. NOT a base dependency: `python -m ffhelper.cli run` must work on
+# a machine with no dash installed, because the terminal board is the fallback
+# when the web board misbehaves. tests/test_dash_isolation.py enforces this.
+web = ["dash>=2.17"]
 
 [tool.setuptools]
 packages = ["ffhelper"]

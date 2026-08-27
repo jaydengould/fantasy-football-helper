@@ -9,15 +9,22 @@ Ordered by deadline.
 settled at n=3** (section 12a) — `yahoo-main` moved to `"sleeper"`. Remaining
 work, in priority order:
 
-1. **Draft-day command cheat sheet. NOW THE TOP ITEM, and it is due.** Section
-   16. Its trigger was "after the human mock, no later than Aug 30" — the mocks
-   are done and the notation changed once more this session (comma batching), so
-   the reason for holding it back is gone. Six days to the Yahoo draft, which is
-   the one where every pick is hand-typed.
+1. **Draft-day command cheat sheet — SCHEDULED for Aug 30–31. Not open, not
+   overdue, do not re-raise before then.** Section 16. User's call, 2026-08-26,
+   and the reasoning is sound: it is ~30 minutes, and writing it *immediately
+   before* the draft is what guarantees it matches the notation actually shipping.
+   **That caution was justified: Phase 3 DID change the terminal path** — the
+   handover fix (§ below) altered how `my_roster` is derived with no feed, so a
+   sheet written before 2026-08-27 would already be wrong. **The notation has now
+   stopped moving.** Write it from `_handle_command`'s docstring and `render()`'s
+   help line, and cover the WEB board too: clicking, the override button, undo,
+   the position filter, and ctrl-C to the terminal.
 2. **Treat the top of each position as a tier, not a ranking.** Section 15.
    Across 2021–2025 no position ranks its own top 12 better than ~+0.35
-   Spearman. The tier column already carries this; the board under-uses it.
-   Awareness is probably the whole fix before Sept 1.
+   Spearman. **Section 15's option 2 SHIPPED in Phase 3**: the web board bands
+   rows by tier, keyed on `(position, tier)` so it never claims two positions are
+   interchangeable. The terminal still only prints the column, so on that board
+   awareness is still the whole fix.
 3. **SURV is now conditional and roughly twice as accurate** (section 2, shipped
    2026-08-26). It still reads low — says 0–20%, 30% survive — so treat it as a
    strong ordering rather than a literal probability, but it is no longer
@@ -27,14 +34,30 @@ work, in priority order:
    download. Run the ECR-vs-ADP correlation first; it decides the rest.
 6. **Deferred minors.** Section 9 — two left, both trivial, neither load-bearing.
 7. **Delete the `yahoo-mock` block** from `config.toml` once no more mocks are
-   planned. It is scratch, and its `draft_slot` has been edited three times.
+   planned. It is scratch, and its `draft_slot` has been edited four times.
+   **Note the coupling:** `calibrate.py` reads `num_teams` from that block, so it
+   is now 10 and the three 12-team transcripts from 2026-08-26 will be REFUSED
+   until it is set back. That refusal is the guard working, not a bug.
 8. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
 
 **Optional, now cheap:** full-PPR 12-team mocks would test `sleeper-main`'s
 `adp_ppr` directly, which the half-PPR mocks did not. Join, do not type, paste
 the results page afterwards.
 
-**Phases 3, 4 and 5 can now be built in parallel with all of the above**, under
+**PHASE 3 IS COMPLETE (2026-08-27), Tasks 1-9.** Branch `phase-3-dash-ui`,
+**309 tests, 110 mutations.** The Dash board renders the same engine the terminal
+renders, entered by clicking; tier bands, position filter (incl. FLEX), name
+search and the starting-lineup panel are in; and the ctrl-C handover to the
+terminal is rehearsed at **0.48s with the roster intact**.
+
+All three rehearsal steps are done — offline replay of three transcripts, a live
+Sleeper mock, and a live Yahoo mock entered entirely by clicking. **They found
+six defects a green suite had passed over**, every one now fixed. The narrative,
+the measurements and what each defect taught are in `CLAUDE.md`'s session log for
+2026-08-27; they are history, not outstanding work, and are deliberately not
+repeated here.
+
+**Phases 4 and 5 can be built in parallel with all of the above**, under
 one rule: **`value.py` and `data.py` are frozen until both drafts are done.**
 Phase 3 lives behind its own entry point and never imports into the terminal
 path. Phase 3.5 is the exception to watch — opponent-needs and bye-clustering
@@ -672,6 +695,38 @@ longer has to be typed into: join, let it run, copy the results page, transcribe
 Three more mocks is an evening's work with no clock pressure at all. **Do that
 before changing `adp_source` for either league.**
 
+### A FOURTH DRAFT, 2026-08-27 — 10-TEAM, and it changes nothing
+
+150 picks, seat 1, the first **10-team** room measured (both previous sets were
+12-team, so this is the first matching `yahoo-main`'s actual team count).
+
+| model says | FFC | Sleeper | ideal |
+| --- | --- | --- | --- |
+| 0-20% | 49% | **23%** | 10% |
+| 20-40% | 58% | 58% | 30% |
+| 40-60% | 70% | **52%** | 50% |
+| 60-80% | 87% | **72%** | 70% |
+| 80-100% | 92% | 91% | 90% |
+
+Weighted calibration error **0.051 (sleeper) vs 0.116 (ffc)** — same direction as
+the n=3 result that moved `yahoo-main`, so it corroborates and nothing changes.
+
+**DO NOT read the 0.051 as the model improving.** It is better than the pooled
+12-team figure of 0.081, but this room was measurably more list-following
+(median ADP rank taken 5, 15% at top, against the human mocks' 7/9/10 and
+11-13%), and **a room that follows the list makes ADP look better calibrated by
+construction.** Circularity flatters this number. It sits between the human mocks
+and the Task 13 all-bot mock (median 2, 36%), so treat it as partially circular.
+
+**The user asked whether rounds 4+ were autopicks. The metric cannot answer it.**
+Split at the pick where they stopped entering: picks 1-96 read median 5 / 16.7%
+at top, picks 97-150 read median 16 / 3.7%. That looks like the late rounds were
+*less* list-following, which is almost certainly an artifact rather than a fact —
+late in a draft most remaining players have no ADP at all, and autodraft fills
+roster requirements (K, DEF, positional minimums) instead of walking the list.
+**Room discipline is not a trustworthy measure after the ADP pool thins out.**
+Recorded so the number is not quoted later as evidence of a human room.
+
 ### SETTLED 2026-08-26 at n=3 — `yahoo-main` moved to `adp_source = "sleeper"`
 
 Three 12-team half-PPR Yahoo mocks, **540 picks, seats 8 / 11 / 2**, pooled.
@@ -1003,9 +1058,14 @@ back at pick 47.
 disagrees with the tool is worse than none — at the table it would be trusted
 over the screen. Build it once the notation has stopped moving.
 
-**Trigger: after the human mock (section 12) and any changes it prompts, and no
-later than Aug 30** — before the Sept 1 Yahoo draft, which is the one with no
-feed and therefore all ~150 picks hand-typed.
+**SCHEDULED: Aug 30–31.** Fixed by the user 2026-08-26, deliberately late and for
+the reason this section already gives — the sheet must match the notation that
+ships, and Phase 3 is being built between now and then. The terminal path is
+Phase 3's fallback, so it may still move. Write the sheet last, from the source
+of truth below, not from memory of this file.
+
+Do not re-raise it before Aug 30. It is ~30 minutes and it is scheduled, not
+outstanding.
 
 Source of truth when writing it: `_handle_command`'s docstring in `ffhelper/cli.py`
 and the on-screen help line in `render()`. Check both still match the table before
@@ -1013,13 +1073,59 @@ publishing, and re-check if anything in §3 or §9 lands afterwards.
 
 ---
 
-## 14. Bench-mode ordering is honest but still weak
+## 19. The web board's APPEARANCE — not in any phase, raised 2026-08-27
+
+The board is functionally rehearsed and visually untouched: **two style
+declarations in the whole app** (`width: 20rem` on the league dropdown, monospace
+cells) and **no `assets/` directory**. Everything else is default Dash chrome.
+
+**It needs no new dependency, which is the point.** Dash auto-serves any file in
+`ffhelper/assets/`, so a plain `.css` file there is applied with no config, no
+build step and no package. "Make it look good" is normally where a React/Tailwind
+toolchain arrives; here it does not have to.
+
+Fully controllable now: fonts, colour, dark mode, spacing, page chrome. The
+banners, clock and roster panel are `html.Pre` and style trivially. `DataTable`
+exposes `style_cell`, `style_header`, `style_data_conditional` (already carrying
+the tier bands), `style_table`, and a `css` escape hatch.
+
+**The one real ceiling is `DataTable`'s fixed internal DOM.** Custom row markup —
+a true `-- TIER 2 --` separator row, two-line rows, inline badges, sparklines —
+cannot be done inside it. Replacing it with a hand-rolled `html.Table` is the
+upgrade path, and it is already cheap **by design**: `board_rows()` returns plain
+dicts precisely so that swap touches no tested logic (see the `ponytail:` comment
+on `tier_styles`).
+
+**Do it AFTER Sept 6, or keep it purely additive before.** Appearance work cannot
+break the engine — it never touches `value.py` or `data.py` — but the board has
+just been rehearsed under a clock, and changing where things sit un-rehearses the
+muscle memory that rehearsal bought. Colours, fonts and dark mode are safe any
+time; moving or restructuring controls is not.
+
+**Where it belongs:** its own small phase, not 3.5. Phase 3.5 (opponent needs,
+bye clustering) reaches into the board's LOGIC and is the risky one; this is
+presentation only and shares none of that risk.
+
+---
+
+## 14. Bench-mode ordering is honest but still weak — OBSERVED LIVE 2026-08-27
 
 Once every starting slot is full, `is_bench_only` fires and the board says so
 rather than presenting the residual order as advice. The K/DEF demotion stops it
 recommending a second kicker. But the ordering underneath is still just static
 VBD, which by the late rounds favours whatever is least far below replacement —
 now TEs instead of kickers.
+
+**Seen in a real draft now, not just predicted.** In the live Sleeper mock the
+last four recommendations at seat 5's turns were all tight ends (Brenton Strange
+twice, Hockenson, Schultz) with a TE already started and a second on the bench.
+All four carried the `BENCH` flag, so the tool was saying "trust yourself here"
+exactly as designed — but a third and fourth TE is what static VBD produces when
+TE has the shallowest replacement of any position.
+
+**The position filter added in Phase 3 Task 7 is the honest mitigation**: in bench
+mode, filter to RB or WR and pick your own upside. That is a human making the call
+the data cannot, which is what the banner already asks for.
 
 The tool has no model of bench value: upside, handcuffs, injury insurance. The
 banner tells the user to trust themselves. Fixing it properly needs either a
@@ -1092,8 +1198,11 @@ Options, cheapest first:
 1. **Awareness only.** At the top of the board, treat same-tier players as
    interchangeable and break ties on your own read. Zero cost, and given the
    Sept 1 deadline this is almost certainly the right call for this year.
-2. **Make the tier visually dominant** in the Phase 3 Dash UI rather than a
-   column — group rows by tier instead of listing them. Real, but Phase 3.
+2. ~~**Make the tier visually dominant** in the Phase 3 Dash UI rather than a
+   column.~~ **DONE 2026-08-27.** The web board bands rows by tier. Keyed on
+   `(position, tier)`, not tier alone: `tier` is a per-position column, and
+   banding on it alone put Gibbs, Bijan, Nacua and Chase in one block on the real
+   opening board — two positions, VONA 50.1 down to 16.5.
 3. **Give the board an interval instead of a point estimate.** The honest fix:
    `backtest.py` can now produce the historical projection-vs-outcome error
    distribution per position, which is exactly the input a confidence band needs.

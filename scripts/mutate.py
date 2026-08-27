@@ -24,6 +24,7 @@ KNOWN EQUIVALENT MUTANT (expected to survive, do not chase):
   "tier threshold strictness" -- `>` vs `>=` on float gaps. Two gaps are never
   exactly equal on real data, so no test can distinguish the two forms.
 """
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -100,6 +101,17 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "return False"),
     ],
     "cli.py": [
+        ("restore banner reports typed marks, not the roster you will see",
+         "    mine = _manual_mine(log_path, mark_state.mine, draft_slot, num_teams, has_feed)",
+         "    mine = mark_state.mine"),
+        ("handover loses your roster (feed-less CLI ignores the seat)",
+         "    if has_feed:\n        return typed_mine",
+         "    return typed_mine"),
+        ("derivation applied to a league WITH a feed, contradicting it",
+         "    if has_feed:\n        return typed_mine", "    if False:\n        return typed_mine"),
+        ("a not-mine override is re-derived on the next render",
+         "    return (derived - explicit_not_mine(log_path)) | typed_mine",
+         "    return derived | typed_mine"),
         ("commas split one line into commands", 'line.split(",")', "[line]"),
         ("every command in a batch is reported",
          'status = "  |  ".join(statuses)', 'status = statuses[-1] if statuses else ""'),
@@ -211,7 +223,103 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("ffc bye is taken regardless of adp_source",
          "if row.get(\"bye\"):", "if set_adp and row.get(\"bye\"):"),
     ],
+    "ffhelper/board.py": [
+        ("pick count ignores manual marks",
+         "current_pick = max(len(drafted), highest) + 1",
+         "current_pick = max(len(picks), highest) + 1"),
+        ("pick count off by one",
+         "current_pick = max(len(drafted), highest) + 1",
+         "current_pick = max(len(drafted), highest)"),
+        ("overruled claims left in my_roster",
+         "_combine_my_roster(feed_roster, manual_mine - overruled, players)",
+         "_combine_my_roster(feed_roster, manual_mine, players)"),
+        ("replacement drawn from the draining pool",
+         "replacement_pool=list(players.values()),",
+         "replacement_pool=available,"),
+        ("attribution claims every pick",
+         "return {pid for i, pid in enumerate(order, 1) if i in turns}",
+         "return set(order)"),
+        ("attribution off by one",
+         "return {pid for i, pid in enumerate(order, 1) if i in turns}",
+         "return {pid for i, pid in enumerate(order, 0) if i in turns}"),
+        ("attribution guesses with no seat",
+         "    if seat is None:\n        return set()",
+         "    if seat is None:\n        seat = 1"),
+    ],
+    "ffhelper/app.py": [
+        ("click resolves rows by name instead of id (non-negotiable #1)",
+         '                last_marked = rows[active_cell["row"]]["id"]',
+         '                last_marked = rows[active_cell["row"]]["player"]'),
+        ("undo not journalled",
+         "    state.undo()\n    return \"undone\"",
+         "    return \"undone\""),
+        ("write does not force a redraw",
+         "return status, (n or 0) + 1", "return status, n"),
+        ("not-mine override forgotten on the next tick (plain union)",
+         "manual_mine = (derived - explicit_not_mine(log_path)) | mark_state.mine",
+         "manual_mine = derived | mark_state.mine"),
+        ("board trimmed to the screen BEFORE filtering (K shows three rows)",
+         "board_rows(state, limit=200,", "board_rows(state, limit=40,"),
+        ("tier bands never alternate",
+         "band = _BAND_B if band == _BAND_A else _BAND_A", "band = band"),
+        ("tier bands group across positions (tier is per-position)",
+         'key = (r["pos"], r["tier"])', 'key = r["tier"]'),
+        ("re-clicking the highlighted cell is silently dropped",
+         "return status, (n or 0) + 1, None, last_marked",
+         "return status, (n or 0) + 1, active_cell, last_marked"),
+        ("override reads the cleared selection, so it never fires",
+         'elif trigger == "override" and last_marked:',
+         'elif trigger == "override" and active_cell and rows:'),
+        ("FLEX filter falls through to an exact position match",
+         '        out = [r for r in out if r["pos"] in FLEX_ELIGIBLE]',
+         '        out = [r for r in out if r["pos"] == position]'),
+        ("position filter is a no-op",
+         'out = [r for r in out if r["pos"] == position]', "out = out"),
+        ("search matches on prefix only, not substring",
+         'out = [r for r in out if q in r["player"].lower()]',
+         'out = [r for r in out if r["player"].lower().startswith(q)]'),
+        ("panel starts a QB at FLEX (disagrees with MARG)",
+         'match = next((p for p in remaining if p.position in FLEX_ELIGIBLE), None)',
+         'match = next((p for p in remaining), None)'),
+        ("panel fills slots worst-first",
+         "remaining = sorted(my_roster, key=lambda p: -p.proj_pts)",
+         "remaining = sorted(my_roster, key=lambda p: p.proj_pts)"),
+        ("panel hides empty slots instead of showing them",
+         "    return out", "    return [r for r in out if r[1] is not None]"),
+        ("build_app drops the configured interval on the floor",
+         "        layout=_layout(league_names, default_league, poll_ms))",
+         "        layout=_layout(league_names, default_league))"),
+        ("refresh interval ignores config (back to a hardcoded 5s)",
+         'return max(tunables.poll_seconds.get(platform, 5), 1) * 1000',
+         "return 5000"),
+        ("interval floor removed -- a 0 in config busy-loops the feed",
+         "max(tunables.poll_seconds.get(platform, 5), 1)",
+         "tunables.poll_seconds.get(platform, 5)"),
+        ("a failed poll erases the draft (back to pick 1, full pool)",
+         "picks = _LAST_PICKS.get(league.name, [])", "picks = []"),
+        ("last-good picks never recorded, so the cache is always empty",
+         "_LAST_PICKS[league.name] = picks", "pass"),
+        ("silent window: a failing feed says nothing for its first 15s",
+         '        lines.append(f"feed not answering -- last good poll {stale_seconds:.0f}s ago")',
+         "        pass"),
+        ("bench picks hidden -- you cannot see your own bench",
+         '    out += [("BN", p.name) for p in remaining]', "    pass"),
+        ("leftovers spill into fixed slots, not just FLEX",
+         '        if row[0] != "FLEX":\n            continue',
+         '        if row[0] != "FLEX" and row[1] is None:\n            continue'),
+    ],
 }
+
+
+# A duplicate key in the dict literal above keeps only the LAST block, silently.
+# That happened on 2026-08-27 and cost 26 cli.py mutations with no warning at
+# all -- the run simply reported a smaller total. Checked against the source
+# text because by the time the dict exists the evidence is already gone.
+_KEYS = re.findall(r'^    "([^"]+)": \[', Path(__file__).read_text(), re.M)
+if len(_KEYS) != len(set(_KEYS)):
+    _dupes = sorted({k for k in _KEYS if _KEYS.count(k) > 1})
+    raise SystemExit(f"duplicate key(s) in MUTATIONS: {_dupes} -- earlier blocks "
+                     "would be silently dropped. Merge them.")
 
 
 def main() -> int:

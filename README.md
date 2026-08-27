@@ -24,7 +24,8 @@ are planned but not built.
 | Terminal board with auto-refresh | working |
 | Hand-typed picks survive a crash or restart | working |
 | Yahoo API feed | blocked on Yahoo developer approval |
-| Web dashboard, season mode, trade finder | planned |
+| Web board (`python -m ffhelper.app`) | working |
+| Season mode, trade finder | planned |
 
 ## Requirements
 
@@ -36,8 +37,12 @@ Adding a dependency needs a reason a few lines of stdlib cannot cover.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e ".[dev]"          # terminal board
+.venv/bin/pip install -e ".[web,dev]"      # ...and the web board
 ```
+
+`dash` is deliberately optional. The terminal board is the fallback when the web
+board misbehaves, so it must start on a machine where `dash` is absent or broken.
 
 ## Configuration
 
@@ -161,6 +166,26 @@ your draft**, not five minutes before.
 
 The board refreshes automatically. If the feed drops, it keeps rendering the last
 known state behind a `FEED STALE` banner rather than dying.
+
+### The web board
+
+```bash
+.venv/bin/python -m ffhelper.app --league my-sleeper-league
+```
+
+The same engine, in a browser at `http://127.0.0.1:8050`. Click a row to mark that
+player drafted; your own roster is derived from your `draft_slot` and the pick
+number rather than typed, with a per-row override for when entry has drifted.
+Filter by position (or `FLEX` for everything RB/WR/TE-eligible), search by name,
+and read the tier bands — same-position rows sharing a band are close to
+interchangeable. A panel shows your starting lineup slot by slot, empty slots
+included, then your bench.
+
+**Run one board at a time.** Both read the same `.draft/<league>-<date>.jsonl`
+journal, but the terminal replays it only at startup, so a terminal board left
+running beside the web board will quietly show a stale pool. Stopping one and
+starting the other loses nothing, including your roster — measured at 0.48s from
+ctrl-C to a full terminal board. That is the fallback path, and it is rehearsed.
 
 ### Manual entry
 
@@ -381,7 +406,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 236 tests, no network, runs in ~0.3s
+.venv/bin/pytest          # 309 tests, no network, runs in ~0.3s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire
@@ -389,9 +414,11 @@ ranking engine tests without a network.
 
 Two conventions worth knowing before contributing:
 
-- **A new test must be shown to fail before the fix.** `git stash push -- ffhelper
+- **A new test must be shown to fail before the fix.** `git stash push -u -- ffhelper
   && pytest -k <name>`. A test written after a fix and never seen red is not
-  evidence that it works.
+  evidence that it works. The `-u` is not optional when the test covers a NEW
+  file: plain `git stash push` leaves untracked files on disk, so the module
+  stays present and the run proves nothing.
 - **Add a mutation to `scripts/mutate.py` alongside non-trivial logic.** It is one
   line, and it is the only thing that distinguishes a test from a decoration.
 

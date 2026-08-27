@@ -8,8 +8,14 @@ RB = 0.5
 WR = 0.5
 TE = 0.0
 
+# How often each board asks the platform for new picks. This is the ONLY knob
+# controlling how far behind the draft you are, and both the terminal and the web
+# board read it. Floored at 1s in code: a 0 busy-loops, and Sleeper IP-blocks
+# above ~1000 req/min. Measured 2026-08-27: 1s is 60 req/min, 0 failures over 30
+# consecutive polls, median latency 158 ms. Raise it if a draft ever gets rate
+# limited -- one line.
 [tunables.poll_seconds]
-sleeper = 5
+sleeper = 1
 yahoo = 12
 
 [[league]]
@@ -50,12 +56,16 @@ draft_slot = 5
 # Confirmed a `league_mock` of league 1395959490938966016: same 12 teams, PPR,
 # 15 rounds, same roster slots -- so sleeper-main's synced scoring is correct
 # for it. draft_order confirms seat 5. Delete this block after Task 13.
+# adp_source MUST match sleeper-main, or the rehearsal is not a rehearsal: it is
+# the one setting that changes every SURV number on screen, and the point of the
+# mock is to see the board you will see on Sept 6.
 [[league]]
 name = "mock"
 platform = "sleeper"
 league_id = "1395959490938966016"
-draft_id = "1398139615038185472"
+draft_id = "1398747013708894208"
 draft_slot = 5
+adp_source = "sleeper"
 
 # HUMAN MOCK (TODO.md §12/§16 rehearsal). Sleeper has no public mock lobby with
 # real people, so the human mock runs on Yahoo -- which also rehearses the Sept 1
@@ -75,10 +85,10 @@ draft_slot = 5
 name = "yahoo-mock"
 platform = "yahoo"
 league_id = "mock"
-draft_slot = 2
+draft_slot = 1
 
 [league.settings]
-num_teams = 12
+num_teams = 10
 bench = 5
 
 [league.settings.roster_slots]

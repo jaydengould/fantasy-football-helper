@@ -1,4 +1,5 @@
 import itertools
+import json
 import logging
 import queue
 import time
@@ -1848,3 +1849,78 @@ def test_every_command_in_a_batch_reports_its_own_outcome(monkeypatch):
     out = "\n".join(printed)
     assert "marked Aaron Alpha" in out              # the hit is still reported
     assert "no match for 'nobody at all'" in out    # and so is the miss
+
+
+# --- the Dash -> CLI handover must carry your roster, not just your marks ---
+
+def test_a_feedless_cli_derives_my_roster_from_the_seat(tmp_path):
+    # Found 2026-08-27 testing the ctrl-C handover offline. The Dash board
+    # derives my_roster from your SEAT; the feed-less CLI read only explicit
+    # `me` marks, and clicking never writes those. The live mock's journal was
+    # 108 marks, 0 mine -- so falling back to the terminal handed you an EMPTY
+    # roster, which makes MARG meaningless and disables the sort's roster-need
+    # gate. That is Task 13 defect #1 arriving at the worst possible moment.
+    from ffhelper.cli import _manual_mine
+    log = tmp_path / "log.jsonl"
+    # 26 plain clicks, seat 2 of 12: the seat owns picks 2, 23, 26.
+    log.write_text("".join(
+        json.dumps({"op": "mark", "id": str(i), "mine": False}) + "\n"
+        for i in range(1, 27)))
+    got = _manual_mine(log, set(), draft_slot=2, num_teams=12, has_feed=False)
+    assert got == {"2", "23", "26"}
+
+
+def test_a_league_with_a_feed_is_left_alone(tmp_path):
+    # Sleeper attributes picks by draft_slot from the FEED, which is
+    # authoritative. Deriving from journal order there would double-count and
+    # could contradict the feed. The Sept 6 path must not change at all.
+    from ffhelper.cli import _manual_mine
+    log = tmp_path / "log.jsonl"
+    # Long enough that derivation WOULD add players (seat 2 owns 2, 23, 26), or
+    # applying it here would be undetectable and this test would prove nothing.
+    log.write_text("".join(
+        json.dumps({"op": "mark", "id": str(i), "mine": False}) + "\n"
+        for i in range(1, 27)))
+    assert _manual_mine(log, {"7"}, draft_slot=2, num_teams=12, has_feed=True) == {"7"}
+
+
+def test_an_unset_seat_derives_nothing(tmp_path):
+    # Degrade, never fabricate: with no draft_slot the tool cannot know which
+    # picks are yours, and guessing would silently build the wrong roster.
+    from ffhelper.cli import _manual_mine
+    log = tmp_path / "log.jsonl"
+    log.write_text(json.dumps({"op": "mark", "id": "9", "mine": False}) + "\n")
+    assert _manual_mine(log, set(), draft_slot=None, num_teams=12, has_feed=False) == set()
+
+
+def test_a_typed_me_still_wins_and_a_not_mine_override_still_sticks(tmp_path):
+    # Both explicit statements must beat the derived guess, in BOTH directions --
+    # the same composition app.read_state uses, and the reason it is a shared
+    # rule rather than two.
+    from ffhelper.cli import _manual_mine
+    log = tmp_path / "log.jsonl"
+    ops = [{"op": "mark", "id": str(i), "mine": False} for i in range(1, 27)]
+    ops += [{"op": "unmark", "id": "23"}, {"op": "mark", "id": "23", "mine": False}]
+    log.write_text("".join(json.dumps(o) + "\n" for o in ops))
+    got = _manual_mine(log, {"99"}, draft_slot=2, num_teams=12, has_feed=False)
+    assert "23" not in got, "an explicit not-mine override was re-derived"
+    assert "99" in got, "a typed `me` claim was dropped"
+
+
+def test_the_restore_banner_counts_the_roster_you_will_actually_see(tmp_path, capsys, monkeypatch):
+    # After the handover fix the banner said "0 yours" while the board below it
+    # listed 9 players, because the banner counted TYPED `me` marks and the
+    # board derives from the seat. Read during a real ctrl-C handover, "0 yours"
+    # is exactly the wrong thing to tell someone -- it reports the failure the
+    # fix removed.
+    import ffhelper.cli as cli
+    log = tmp_path / "log.jsonl"
+    log.write_text("".join(
+        json.dumps({"op": "mark", "id": str(i), "mine": False}) + "\n"
+        for i in range(1, 27)))
+    monkeypatch.setattr(cli, "_draft_log_path", lambda league: log)
+    mark_state, applied, skipped = cli._restore_marks(log)
+    cli._print_restore_banner(log, mark_state, applied, skipped,
+                              draft_slot=2, num_teams=12, has_feed=False)
+    out = capsys.readouterr().out
+    assert "26 drafted, 3 yours" in out, out

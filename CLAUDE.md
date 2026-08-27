@@ -164,10 +164,22 @@ says so; do not agonise over which name inside it.
 - Non-trivial logic leaves one runnable check behind. One `test_value.py` plus
   `preflight`. No mocking the network — the pure core doesn't need it.
 - **A new test must be shown to fail before the fix**, by
-  `git stash push -- ffhelper && pytest -k <name>`. A test written after a fix
-  and never seen red is not evidence.
+  `git stash push -u -- ffhelper && pytest -k <name>`. A test written after a fix
+  and never seen red is not evidence. **The `-u` is not optional when the test
+  covers a NEW file**: plain `git stash push` leaves untracked files on disk, so
+  the module stays present, the tests pass, and the run looks like evidence while
+  proving nothing.
 - **Add a mutation to `scripts/mutate.py` alongside non-trivial logic.** It is
   one line and it is the only mechanical check that a test does anything.
+  **A surviving mutation is evidence about the TEST: fix the test, never weaken
+  the mutation.** And if a mutation survives because no test can REACH the code
+  — a callback sealed inside a registration function, a branch with no seam —
+  that is the finding: untestable code is untested code, and the fix is to give
+  it a seam, not to skip the mutation.
+- **`scripts/mutate.py` rewrites source files in place. Run it in the
+  FOREGROUND**, never backgrounded and polled: anything else touching the tree
+  at the same time collides, and a frozen file can show as modified until it
+  restores.
 
 ## Non-negotiables
 
@@ -271,10 +283,11 @@ fresh opinion.
 | Phase | What | Target | Status |
 | --- | --- | --- | --- |
 | 0 | Yahoo OAuth handshake; confirm league access, size, settings | Aug 25 | **blocked — awaiting Yahoo approval** |
-| 1 | `data.py` + `value.py` + `cli.py`, Sleeper feed, multi-league config, **manual mark-drafted** | Aug 28 | in progress |
+| 1 | `data.py` + `value.py` + `cli.py`, Sleeper feed, multi-league config, **manual mark-drafted** | Aug 28 | **COMPLETE** — incl. Task 13 |
 | 2 | Yahoo feed adapter + SQLite draft log | Aug 29–30 | not started (Yahoo half gated on approval) |
-| 3 | Dash UI | Sept 5 | not started |
+| 3 | Dash UI | Sept 5 | **COMPLETE** — Tasks 1-9, rehearsed live |
 | 3.5 | Opponent needs, bye clustering, notifications, manual overrides | Sept 5 | not started |
+| 3.6 | Web board appearance (`assets/*.css`, no new dependency) | after Sept 6 | not started — `TODO.md` §19 |
 | 4 | Season mode (`nflreadpy`) | after | not started |
 | 5 | Trade finder (own spec) | in-season | not started |
 
@@ -324,6 +337,349 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   a config override, never trusted from the API.
 
 ## Session log
+
+### 2026-08-27 (third block) — PHASE 3 COMPLETE. Click entry rehearsed; the handover fixed.
+
+**State:** branch `phase-3-dash-ui` @ `15c17c8`, **309 tests**, 110 mutations
+(1 survivor, the documented equivalent mutant). `value.py` and `data.py` untouched.
+
+Task 9 steps 3 and 4 done, so **all nine tasks are complete**.
+
+#### Step 3: the first click-entered draft. It works.
+
+A 10-team Yahoo mock, seat 1, entered entirely by clicking, abandoned ~pick 96.
+**"Much better than having to type out names. Much more responsive too with new
+polling, almost instant."** Undo was used in anger — a pick missed six back — and
+recovered to current.
+
+**One defect, and it probably ended the run.** Clicking the cell already
+highlighted did nothing: Dash fires a callback only when a prop CHANGES, so a
+repeat click on the same cell is a silent no-op and the mark is dropped.
+**The user diagnosed it from the symptom** ("you can't click the spot that is
+already highlighted"), which was exactly right. `active_cell` is now cleared
+after every write — which would have made the override permanently inert, so the
+last-marked id moved into a Store. Also added FLEX/WRT to the filter, requested
+live.
+
+#### Step 4: the handover replayed perfectly and lost the roster anyway
+
+Found by testing it offline BEFORE rehearsing it, which is the only reason it did
+not burn the live run. The journal replay is exact — including the
+`unmark` + `mark(mine=false)` override sequence nothing else produces. **But the
+two boards derive `my_roster` differently**: Dash from your seat, the feed-less
+CLI from typed `me` marks only. Clicking never writes those. The live journal is
+**108 marks, 0 mine** — so the fallback handed you an empty roster, which makes
+MARG meaningless and disables the sort's roster-need gate. Task 13 defect #1,
+arriving silently at the moment you reach for the fallback.
+
+**Fixed on the user's explicit decision**, in `cli.py`'s feed-less path only.
+Verified against an INDEPENDENT source: the CLI now derives the same nine players
+`transcribe.py` read off Yahoo's own results page. Handover measured at **0.48s**.
+
+**Why an agreement test did not catch this.** `test_board_agreement` proves both
+paths compute the same board from the same inputs. Attribution is an INPUT, and
+the two paths built it differently — so the test was never wrong, it was aimed
+one layer too low. Same shape as the dead-feed bug earlier today, where the
+missing piece lived in the loop around the derivation rather than in it.
+**Two defects in one day from the same blind spot: I test the join, and not what
+is handed to the join.**
+
+#### mutate.py silently lost 26 mutations, and reported success
+
+I added a second `"cli.py"` key to the `MUTATIONS` dict. Python keeps the last
+one, so an entire block vanished — and the run simply printed a smaller total
+(106 → 80) with no warning. Caught only because I happened to compare the number
+against the previous run. A guard now refuses to run on a duplicate key, checked
+against the source text because by the time the dict exists the evidence is gone.
+
+**This is the tooling equivalent of the project's own recurring lesson**: the
+check reported "all killed" while checking 26 fewer things.
+
+#### The fourth calibration draft, deliberately not acted on
+
+150 picks, 10-team — the first room matching `yahoo-main`'s team count. Sleeper
+0.051 weighted error against FFC's 0.116, same direction as the n=3 result, so it
+corroborates and nothing changes. **The 0.051 must NOT be read as the model
+improving**: this room was measurably more list-following (median ADP rank taken
+5, 15% at top, against the human mocks' 7/9/10) and a room that follows the list
+flatters ADP by construction.
+
+**The user asked whether rounds 4+ were autopicks; the metric cannot answer it.**
+Split at pick 96: early reads median 5 / 16.7%, late reads median 16 / 3.7%. That
+looks like the late rounds were LESS list-following, which is an artifact — late
+in a draft most remaining players have no ADP at all, and autodraft fills roster
+requirements rather than walking a list. **Room discipline is untrustworthy once
+the ADP pool thins.** Recorded so the number is never quoted as evidence.
+
+### 2026-08-27 (second block) — the live Sleeper mock, and the worst bug yet
+
+**State:** branch `phase-3-dash-ui` @ `540463b`, **297 tests**, 100 mutations
+(1 survivor, the documented equivalent mutant). Frozen files untouched.
+
+Task 9 **step 2 is DONE**: a full 180-pick all-autopick Sleeper mock
+(`1398747013708894208`, seat 5) run live against the Dash board. **Three defects,
+all past a 294-test green suite and all found by the user using the tool.**
+
+#### 1. A DEAD FEED ERASED THE DRAFT. This is the worst defect this project has had.
+
+`read_state` starts every call with `picks = []` and only fills it on a
+successful poll. So a failed poll rebuilt the board from **no picks at all**:
+back to **pick 1, the entire pool available, an empty roster** — a completely
+fictional draft, rendered as though healthy.
+
+**The CLI does not do this, and the reason is an accident of shape.** Its `picks`
+is a loop variable that keeps its last good value through the `except` branch.
+The Dash render is stateless and has no equivalent. Copying the derivation
+faithfully (`board.py`) did not copy this, because it is not in the derivation —
+**it is in the loop that surrounds it.** Worth generalising: an agreement test
+proves two paths compute the same thing from the same inputs, and says nothing
+about the inputs one of them silently fails to supply.
+
+Fixed with `_LAST_PICKS`, a per-league cache of the feed's last good answer,
+sitting beside the existing `_LAST_OK` and documented as poll bookkeeping rather
+than draft state: never a second source of truth, never read on a healthy poll,
+and a restart simply re-polls.
+
+#### 2. The stale banner had a 15-second silent window
+
+The banner fires above 15s, so **the first three failed polls said nothing** and
+the board looked healthy while falling three picks behind. Now a quiet line fires
+from the FIRST failure and escalates to the loud one at 15s.
+
+**The user reported "wifi off about 20 seconds, never got the stale banner." The
+server log says 55 seconds of continuous DNS failure.** The banner almost
+certainly did appear near the end and was missed, but that is not the defect —
+the defect is that nothing appeared for the first 15s of it. **Reading the log
+rather than trusting either account is what separated the two.**
+
+#### 3. You could not see your own bench
+
+The roster panel showed starting slots only — in a 15-round draft with 10
+starters that is a third of the team invisible, and the bench is *exactly* what
+you are choosing between once `STARTING LINEUP FULL` is up. **The plan's own
+interface line said "in roster order, then bench"; the implementation I took from
+its step 3 dropped it.** Bench overflow is listed rather than truncated, since
+being over the roster limit is a drift symptom.
+
+#### What was NOT a defect, measured rather than assumed
+
+- **"Very slow to update."** The board held its configured 5s cadence for **94 of
+  122 refreshes**. Server-side work is 183 ms (callback) and 173 ms (HTTP round
+  trip). 5s is right for a 120s-clock draft; an all-autopick mock lands a pick
+  roughly every second, which no poll interval is going to match. **Same lesson as
+  `TODO.md` §12a run 2: the mock is not the draft to optimise for.**
+- **Three long gaps — 14s, 34s, 49s — were CLIENT-side**, with no server request
+  in the window and no poll failure to explain them. Consistent with Safari
+  throttling `dcc.Interval` in a background tab. **One sample, so a hypothesis,
+  not a finding** — but the Sept 6 implication is mild either way: the tab is
+  foregrounded exactly when you are on the clock, and it catches up within 5s.
+- **TEs dominating the late board is `TODO.md` §14, now observed live** rather
+  than merely predicted. All four late recommendations were flagged `BENCH`, so
+  the tool was saying "trust yourself here" as designed. It recommended a third
+  and fourth TE because bench ordering is static VBD and TE has the shallowest
+  replacement. **Not fixable without inventing a number the projections do not
+  carry** (§15's warning). The new position filter is the honest mitigation.
+
+#### Our board vs the CPU autopicks: 2 of 15
+
+Agreement only on picks 5 and 20 (McCaffrey, Chase Brown). **This says nothing
+about who was right** — the autopicks walk down Sleeper ADP, the board ranks on
+Rotowire VBD+VONA, and a mock has no outcome data. It is the `DIV` column
+restated over a whole draft. Recorded as a shape, not a score.
+
+**The room was all-autopick, so nothing here may touch `adp_source` or
+calibration** — that is §12's circularity by the most direct route available.
+
+#### My own errors this block, both killed by measuring
+
+I hypothesised a **missing request timeout** causing a hang (there is one, 5s),
+then **cold-start cost inside the first callback** (0.17s). Both wrong, both
+disproved in under a minute. The actual cause of the long gaps was in the client,
+which no amount of reading server code would have found — the server log's
+*absence* of requests is what located it.
+
+### 2026-08-27 — Phase 3 Tasks 7 and 8; the offline rehearsal is clean
+
+**State:** branch `phase-3-dash-ui` @ Task 8, **290 tests**, 96 mutations
+(1 survivor, the documented equivalent mutant). Frozen files untouched.
+
+Task 7 (tier bands, position filter, search) and Task 8 (roster panel) are done.
+**Task 9 steps 2-4 still need the user** — a live Sleeper mock, a live Yahoo mock,
+and a timed ctrl-C handover. Step 1 (offline replay) is done and is below.
+
+#### Two defects in the plan's own Task 7, both found by running it
+
+- **The tier band grouped across positions.** The plan keyed the band on `tier`
+  alone. `tier` is a PER-POSITION column, so on the real `sleeper-main` opening
+  board that put Gibbs, Bijan, Nacua and Chase in ONE band — two positions, VONA
+  50.1 down to 16.5. The band's whole message is "these are interchangeable",
+  which is what `TODO.md` §15 supports *within* a position and what the VONA
+  column contradicts *across* them. Now keyed on `(pos, tier)`.
+  **Its ceiling, marked in the source:** two alternating colours cannot encode
+  group identity on a board that interleaves positions — two non-adjacent runs of
+  the same `(pos, tier)` can land on the same colour by chance. It only has to
+  make each contiguous run read as one block.
+- **The plan's test fixture had no `pos` key at all** — `{"rank": 1, "tier": 1}`.
+  Same cause `CLAUDE.md` already names: a fixture built for arithmetic
+  convenience rather than resembling the data the code actually meets.
+
+#### The sealed-callback lesson from last session, applied rather than repeated
+
+`_refresh` was reachable by no test, so the plan asserted Task 7's load-bearing
+rule — **build 200 rows, filter, THEN trim to 40** — on a hand-composed list.
+That test passes against a build that trims first, which is the whole defect.
+`_register_callbacks` now returns `_refresh` alongside `_write`, and the seam
+test was verified red by actually making that swap. Two mutations cover it.
+
+#### Task 8: `FLEX_ELIGIBLE` is imported, the algorithm is copied, and the copy is guarded
+
+The plan restated `_FLEX_ELIGIBLE` in `app.py`. `value.FLEX_ELIGIBLE` already
+exists, and a second copy of that rule lets the panel start a quarterback at FLEX
+while MARG says otherwise — **two views disagreeing about one roster.** Imported.
+
+The greedy assignment itself still has to be copied: `lineup_value` returns a
+total and cannot say which player filled which slot, and `value.py` is frozen
+until Sept 6. Same shape as `board.py`, and handled the same way — an agreement
+test asserts the panel starts exactly the lineup `lineup_value` scores, which is
+also the proof that folding the two together after Sept 6 is a no-op.
+
+**That agreement test failed on first run at `2550.9 != 2550.8999999999996`** —
+the same players summed in a different order. Rounded, with the reason recorded
+beside it: a genuinely different lineup moves this by points, not by 4e-13.
+
+**FLEX is filled last but DISPLAYED where the config puts it** (before K/DEF).
+The plan appended it after DEF, which is not how either platform draws a roster,
+and the docstring claimed "roster order" while the code did something else.
+
+#### Task 9 step 1: 543 board states replayed, no defects
+
+All three transcribed mocks stepped pick-by-pick through the Dash callback.
+
+| | result |
+| --- | --- |
+| board states rendered | **543** (3 × 181), zero exceptions |
+| on-clock banner | **exactly 15 fires each, on exactly the seat's snake positions** — none spurious, none missed, all three seats |
+| redundant K/DEF topping the board | **0 of 45 turns** |
+| roster panel vs bench banner | agree at every state |
+
+**Three of my own harness bugs on the way, and the third is the one that matters.**
+(1) I grepped `banner_lines` for the on-clock text, which lives in `clock_line` —
+reported 0 fires. (2) I applied the inferred seat AFTER `_register_callbacks` had
+already closed over the league, so it silently did nothing. (3) **I took the seat
+from `config.toml` — one number — for three transcripts that are seats 8, 11 and
+2.** That is precisely the hole a previous session closed in `calibrate.py` by
+inferring the seat from the journal, and I reintroduced it in a fresh harness one
+day later. The fix was to call `calibrate.picks_from_journal` rather than write a
+second seat source.
+
+**And I nearly reported a defect that was not one.** With a full starting lineup
+the board's top row was a second kicker (marg 6.0) with no bench banner — Task 13
+defect #5 apparently back. It was an artifact of asking for a board at **pick 181
+of a 180-pick draft**, a state no draft reaches. Measured across every real turn
+instead: 0 of 45. `TODO.md` §2's rule — a constructed board state is not an
+observation — caught it, applied to my own claim this time.
+
+### 2026-08-26 (second block) — Phase 3 built to the cut line: the board is a tool
+
+**State:** branch `phase-3-dash-ui` @ `1525cbd`, **276 tests**, 87 mutations
+(1 survivor, the documented equivalent mutant). Frozen files untouched throughout.
+New: `ffhelper/board.py`, `ffhelper/app.py`, `tests/test_board.py`,
+`tests/test_board_agreement.py`, `tests/test_app.py`, `tests/test_dash_isolation.py`.
+
+Spec: `docs/superpowers/specs/2026-08-26-phase-3-dash-ui-design.md`
+Plan: `docs/superpowers/plans/2026-08-26-phase-3-dash-ui.md`
+
+**Stopped deliberately at the plan's cut line.** Tasks 1-6 are done and reviewed;
+7 (tier bands, filter, search), 8 (roster panel) and 9 (rehearsal) are not. Task 7
+was interrupted mid-edit and its partial work is in `git stash@{0}`. The board is
+a working draft tool as it stands.
+
+#### What exists
+
+`python -m ffhelper.app --league <name>` serves a Dash board that renders the same
+engine the terminal renders. Click a row to mark a player drafted. Your roster is
+DERIVED from your draft seat and pick number — the `me ` prefix does not exist on
+the web board — with a per-row override when entry has drifted.
+
+**The journal is the database.** Every render replays `.draft/<league>-<date>.jsonl`,
+polls the feed, and rebuilds the board, so the process holds no draft state. That is
+what makes the CLI handover exact: ctrl-C one, start the other, lose nothing.
+**One process at a time** — the CLI replays only at startup, so it cannot see writes
+made by a running web app.
+
+#### Seat-based attribution is validated against real data
+
+`auto_mine` reproduced **exactly** the roster all three transcribed Yahoo mocks
+recorded independently — seats 8/11/2, 180 picks each, 15 own picks each, zero
+differences. That is the check that permitted Task 6 to be built at all.
+
+**Its accepted cost, unchanged:** attribution is derived from POSITION, so a missed
+entry shifts every later pick and silently hands you the wrong roster. Mitigations
+are the on-clock banner (visible drift detector) and the override.
+
+#### A design bug of mine, caught by review, worth remembering
+
+`read_state` composed `manual_mine = mark_state.mine | derived`. **A union can only
+add.** So a "not mine" override was silently re-added by `derived` on the next
+5-second tick: `auto_mine` recomputes from pick position alone, and "first mark wins"
+keeps the player in his snake slot. `mine=True` overrides were durable; `mine=False`
+overrides reverted — exactly backwards, since drift correction is the only reason the
+override exists. The spec sold it as the mitigation making auto-attribution safe;
+as written that was fiction.
+
+Fixed by reading a record already in the journal rather than adding one:
+`apply_override(mine=False)` writes `unmark` then `mark(mine=false)`, a sequence
+nothing else produces. `board.explicit_not_mine` reads it, and the composition is now
+`(derived - explicit_not_mine) | mark_state.mine` — explicit statements win in BOTH
+directions. **A new journal op was rejected**: `cli._restore_marks` raises on unknown
+ops, so a Dash-written journal would stop replaying cleanly in the terminal, breaking
+the fallback the whole design rests on.
+
+**It got through because every test called `apply_override` and `auto_mine` in
+isolation. The composition seam had no test.** Same shape as Task 3's `read_state`
+gap. The recurring lesson is narrower than "test more": *I test the pieces and not
+the join.*
+
+#### Mutation testing caught three vacuous tests, all specified by the plan
+
+Not the implementations — the plan's own test code, which read as thorough:
+1. Four `board_state` tests never exercised `replacement_pool`, so the mutation
+   swapping the full pool for the draining one SURVIVED.
+2. `test_board_rows_carry_the_player_id...` built names as `f"Player {i}"` and ids as
+   `str(i)`, so swapping `sleeper_id` for `name` passed every assertion — a test
+   asserting non-negotiable #1 while incapable of detecting its violation.
+3. Two Task 4 mutations survived because the write callback was sealed inside
+   `_register_callbacks` with nothing returned: **no test could reach it.**
+
+(3) is why the conventions above now say untestable code is untested code.
+
+#### Two defects in the plan document itself, found before dispatch
+
+- **`git stash push -- ffhelper` does not stash untracked files.** Probed it directly.
+  For a task that CREATES a module, the red-check would have run with the module still
+  on disk, passed, and been reported as evidence. Now `-u`, and the convention above
+  is corrected.
+- **A module-level `server = None` populated inside `main()`** was sold as a free
+  gunicorn hook. Gunicorn imports the module and never calls `main()`, so it is None
+  exactly when a host reads it. Removed; the spec's "Hosting, later" now says the real
+  retrofit needs league selection to leave `argv`.
+
+#### `my_turns` is the first recursive caller of `next_pick_number`
+
+Every other call site asks once per tick. Feeding its output back in makes a broken
+"strictly after" contract a HANG rather than a fast failure — it crashed `mutate.py`
+outright. Bounded loop + `RuntimeError` in `board.py`; `value.py` untouched. A hang is
+the worst draft-day failure mode there is.
+
+#### Deferred, deliberately
+
+- **`board.py` is a COPY of `cli._render_tick`'s derivation, not an extraction.**
+  Divergence requires an edit, nothing schedules one, and `cli.py` is the live draft
+  path. `tests/test_board_agreement.py` guards it and is also the proof that the
+  post-Sept-6 extraction is a no-op.
+- Tasks 7-9. **Task 9 (rehearsal) is the one that matters** — nothing has yet
+  confirmed the rendered board against the terminal's. The app has been verified only
+  to start, serve HTTP 200, and pass its unit tests.
 
 ### 2026-08-26 — the human mock moves to Yahoo; calibration learns to read a journal
 
