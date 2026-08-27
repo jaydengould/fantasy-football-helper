@@ -9,14 +9,16 @@ happens. UPGRADE PATH, after 2026-09-06: delete that block from `_render_tick`,
 call `board_state` there, and move the three `_`-prefixed helpers imported
 below into this module.
 """
+import json
 from dataclasses import dataclass
 
 from ffhelper.cli import (
     _claims_overruled_by_feed, _combine_my_roster, _my_roster_from_picks,
+    _restore_marks,
 )
 from ffhelper.config import League, Tunables
 from ffhelper.data import LeagueSettings, Player
-from ffhelper.value import Row, build_board, detect_run
+from ffhelper.value import Row, build_board, detect_run, next_pick_number
 
 
 @dataclass(frozen=True)
@@ -67,3 +69,76 @@ def board_state(
         my_roster=my_roster, overruled=overruled, runs=detect_run(recent),
         drafted=drafted,
     )
+
+
+def my_turns(seat: int, num_teams: int, through_pick: int) -> list[int]:
+    """The pick numbers `seat` owns in a snake draft, up to `through_pick`.
+
+    ponytail: bounded at `through_pick + 1` iterations rather than `while True`.
+    This is the first caller that feeds `next_pick_number`'s own return value
+    back in as its next `current_pick` -- every other call site (cli.py,
+    app.py, calibrate.py) asks once per tick. That makes this loop the one
+    place a broken "strictly after" contract in the frozen `value.py` turns
+    into a hang instead of a fast test failure: found by mutate.py's existing
+    "snake next-pick boundary" mutation, which crashed the whole script with
+    an uncaught subprocess timeout before it ever reached this file's own
+    mutations.
+    """
+    turns, pick = [], 0
+    for _ in range(through_pick + 1):
+        pick = next_pick_number(pick, seat, num_teams)
+        if pick > through_pick:
+            return turns
+        turns.append(pick)
+    raise RuntimeError("next_pick_number did not advance strictly")
+
+
+def marks_in_entry_order(log_path) -> list[str]:
+    """Surviving marks in the order they were entered; index+1 is the pick number.
+
+    The order marks were entered is the order players came off the board -- true
+    only if every pick was entered, and entered in order. That assumption is what
+    seat-based attribution rests on, and it is why the on-clock banner is the
+    drift detector: if a pick is missed, the board claims your turn at the wrong
+    moment, visibly.
+
+    ponytail: duplicated from `scripts/calibrate.py:picks_from_journal`, which
+    cannot be imported (it is a script, not a package module). Upgrade path,
+    after 2026-09-06: point calibrate.py at this function.
+
+    ponytail: first mark wins -- a player marked, taken back and re-marked keeps
+    his original slot. The common correction (unmark the wrong name, mark the
+    right one) touches two different players and is unaffected.
+    """
+    state, _applied, _skipped = _restore_marks(log_path)
+    seq: list[str] = []
+    seen: set[str] = set()
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    for line in lines:
+        try:
+            op = json.loads(line)
+        except Exception:                             # noqa: BLE001 - torn final line
+            continue
+        pid = op.get("id")
+        if op.get("op") == "mark" and pid in state.drafted and pid not in seen:
+            seen.add(pid)
+            seq.append(pid)
+    return seq
+
+
+def auto_mine(order: list[str], seat: int | None, num_teams: int) -> set[str]:
+    """Which entered marks belong to `seat`, from pick number alone.
+
+    Replaces the terminal's typed "me " prefix in the web UI. This is what
+    Sleeper already does through `draft_slot`; it makes feed-less mode match
+    rather than be the exception.
+
+    Degrade, never fabricate: with no configured seat, nothing is claimed.
+    """
+    if seat is None:
+        return set()
+    turns = set(my_turns(seat, num_teams, len(order)))
+    return {pid for i, pid in enumerate(order, 1) if i in turns}

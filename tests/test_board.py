@@ -1,8 +1,9 @@
+import json
 from dataclasses import dataclass
 
 import pytest
 
-from ffhelper.board import board_state
+from ffhelper.board import auto_mine, board_state, marks_in_entry_order, my_turns
 from ffhelper.config import League, Tunables
 from ffhelper.data import LeagueSettings, Player
 
@@ -80,3 +81,47 @@ def test_replacement_level_uses_the_full_pool_not_the_draining_one():
     row6 = next(r for r in state.board if r.player.sleeper_id == "6")
     expected_repl = pool["36"].proj_pts        # still the baseline, though drafted
     assert row6.vbd == pytest.approx(pool["6"].proj_pts - expected_repl)
+
+
+def test_my_turns_are_the_seats_snake_positions():
+    assert my_turns(seat=5, num_teams=12, through_pick=30) == [5, 20, 29]
+
+
+def test_my_turns_at_the_turn_are_back_to_back():
+    # Seat 12 in a 12-team snake picks 12 and 13 with nobody in between. The
+    # board's whole thesis -- cost of waiting -- collapses if this is wrong.
+    assert my_turns(seat=12, num_teams=12, through_pick=26) == [12, 13]
+
+
+def test_auto_mine_claims_only_the_seats_own_picks():
+    order = [str(i) for i in range(1, 25)]           # picks 1..24, entered in order
+    assert auto_mine(order, seat=5, num_teams=12) == {"5", "20"}
+
+
+def test_auto_mine_with_no_seat_claims_nothing():
+    # Degrade, never fabricate: an unset draft_slot must not guess a roster.
+    order = [str(i) for i in range(1, 25)]
+    assert auto_mine(order, seat=None, num_teams=12) == set()
+
+
+def test_marks_in_entry_order_excludes_undone_and_taken_back_marks(tmp_path):
+    path = tmp_path / "log.jsonl"
+    ops = [
+        {"op": "mark", "id": "a", "mine": False},
+        {"op": "mark", "id": "b", "mine": False},
+        {"op": "undo"},                               # takes back b
+        {"op": "mark", "id": "c", "mine": False},
+        {"op": "mark", "id": "d", "mine": False},
+        {"op": "unmark", "id": "d"},
+    ]
+    path.write_text("".join(json.dumps(o) + "\n" for o in ops))
+    assert marks_in_entry_order(path) == ["a", "c"]
+
+
+def test_a_missed_pick_shifts_attribution_by_one(tmp_path):
+    # Recorded deliberately: this is the COST of auto-attribution, and the
+    # reason the on-clock banner doubles as a drift detector. If this test ever
+    # starts failing, attribution has silently changed behaviour.
+    order = [str(i) for i in range(1, 25)]
+    assert auto_mine(order, seat=5, num_teams=12) == {"5", "20"}
+    assert auto_mine(order[1:], seat=5, num_teams=12) == {"6", "21"}
