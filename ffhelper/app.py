@@ -45,8 +45,9 @@ def board_rows(state: BoardState, limit: int, divergence_flag_slots: int) -> lis
     ponytail: rows are plain dicts precisely so the DataTable can be swapped for
     a hand-rolled table later without touching this function. DataTable's
     ceiling is that a row cannot contain arbitrary markup -- no sparklines, no
-    per-row buttons, no true tier separator rows -- so tier grouping is done
-    with background colour (see TIER_STYLES) rather than header rows.
+    per-row buttons, no true tier separator rows -- so tier grouping, if it is
+    ever added, would use per-row background colour rather than header rows.
+    Not implemented yet: no such styling exists in this module today.
     """
     rows = []
     for i, r in enumerate(state.board[:limit], 1):
