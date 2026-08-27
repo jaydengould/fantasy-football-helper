@@ -663,3 +663,41 @@ def test_a_healthy_feed_stays_quiet():
 def test_a_long_outage_still_escalates_to_the_loud_banner():
     state, players = _state()
     assert any(l.startswith("!!") for l in banner_lines(state, 40.0, players))
+
+
+# --- the refresh interval is a config value, not a hardcoded 5s ---
+
+def test_the_interval_comes_from_poll_seconds_not_a_hardcoded_5s():
+    # "Is there no way to have our board update almost simultaneously with the
+    # actual draft?" -- 2026-08-27, after the live Sleeper mock. cli.py already
+    # reads this tunable and floors it at 1s; app.py hardcoded 5000ms, so the
+    # one knob that controls lag did nothing for the web board.
+    tun = Tunables(poll_seconds={"sleeper": 1, "yahoo": 12})
+    assert app.poll_interval_ms(tun, "sleeper") == 1000
+    assert app.poll_interval_ms(tun, "yahoo") == 12000
+
+
+def test_the_interval_is_floored_at_one_second():
+    # Same floor as cli.py, for the same two reasons: a 0 busy-loops, and
+    # Sleeper IP-blocks above ~1000 req/min. 1s measured at 60 req/min.
+    assert app.poll_interval_ms(Tunables(poll_seconds={"sleeper": 0}), "sleeper") == 1000
+    assert app.poll_interval_ms(Tunables(poll_seconds={}), "unknown") == 5000
+
+
+def test_build_app_actually_constructs_and_carries_the_interval():
+    # This test exists because 299 tests and the full mutation suite passed over
+    # a build_app that raised NameError on import of its own arguments -- the
+    # app could not start at all. Nothing in the suite had ever CALLED it. The
+    # cheapest guard against "the server does not boot" is to boot the layout.
+    built = app.build_app(["a", "b"], "a", poll_ms=1000)
+    found = []
+
+    def walk(node):
+        for child in getattr(getattr(node, "children", None), "__iter__", lambda: [])():
+            walk(child)
+        if type(node).__name__ == "Interval":
+            found.append(node.interval)
+
+    import dash
+    walk(dash.page_registry["board"]["layout"])
+    assert found == [1000], f"expected one 1s Interval, got {found}"

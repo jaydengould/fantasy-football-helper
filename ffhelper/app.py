@@ -312,14 +312,29 @@ def apply_undo(log_path) -> str:
     return "undone"
 
 
-def build_app(league_names: list[str], default_league: str) -> dash.Dash:
+def build_app(league_names: list[str], default_league: str,
+              poll_ms: int = 5000) -> dash.Dash:
     app = dash.Dash(__name__, use_pages=True, pages_folder="")
-    dash.register_page("board", path="/", layout=_layout(league_names, default_league))
+    dash.register_page(
+        "board", path="/",
+        layout=_layout(league_names, default_league, poll_ms))
     app.layout = html.Div([dash.page_container])
     return app
 
 
-def _layout(league_names: list[str], default_league: str):
+def poll_interval_ms(tunables: Tunables, platform: str) -> int:
+    """How often the browser asks for a fresh board, in ms.
+
+    Same rule and same floor as cli.py's poll loop, deliberately: the two boards
+    read one tunable so they cannot drift apart on the only knob that controls
+    how far behind the draft you are. Floored at 1s because a 0 busy-loops and
+    Sleeper IP-blocks above ~1000 req/min -- 1s measured at 60 req/min, 0
+    failures over 30 consecutive polls.
+    """
+    return max(tunables.poll_seconds.get(platform, 5), 1) * 1000
+
+
+def _layout(league_names: list[str], default_league: str, poll_ms: int = 5000):
     return html.Div([
         dcc.Dropdown(id="league", options=league_names, value=default_league,
                      clearable=False, style={"width": "20rem"}),
@@ -336,7 +351,7 @@ def _layout(league_names: list[str], default_league: str):
         html.Button("undo", id="undo", n_clicks=0),
         html.Button("toggle 'mine' on selected", id="override", n_clicks=0),
         html.Pre(id="status"),
-        dcc.Interval(id="tick", interval=5000),
+        dcc.Interval(id="tick", interval=poll_ms),
     ])
 
 
@@ -438,7 +453,8 @@ def main(argv: list[str] | None = None) -> int:
             loaded[league.name] = (players, settings, feed, has_feed)
         return loaded[league.name]
 
-    app = build_app(names, args.league)
+    app = build_app(names, args.league,
+                    poll_interval_ms(tunables, get_league(leagues, args.league).platform))
     _register_callbacks(app, leagues, tunables, cache)
     app.run(port=args.port)
     return 0
