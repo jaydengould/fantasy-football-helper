@@ -9,11 +9,13 @@ Ordered by deadline.
 settled at n=3** (section 12a) — `yahoo-main` moved to `"sleeper"`. Remaining
 work, in priority order:
 
-1. **Draft-day command cheat sheet. NOW THE TOP ITEM, and it is due.** Section
-   16. Its trigger was "after the human mock, no later than Aug 30" — the mocks
-   are done and the notation changed once more this session (comma batching), so
-   the reason for holding it back is gone. Six days to the Yahoo draft, which is
-   the one where every pick is hand-typed.
+1. **Draft-day command cheat sheet — SCHEDULED for Aug 30–31. Not open, not
+   overdue, do not re-raise before then.** Section 16. User's call, 2026-08-26,
+   and the reasoning is sound: it is ~30 minutes, and writing it *immediately
+   before* the draft is what guarantees it matches the notation actually shipping.
+   Phase 3 may still change the terminal path (it is the fallback), so an earlier
+   sheet risks being wrong exactly where a wrong sheet is worst — at the table,
+   where it gets trusted over the screen.
 2. **Treat the top of each position as a tier, not a ranking.** Section 15.
    Across 2021–2025 no position ranks its own top 12 better than ~+0.35
    Spearman. The tier column already carries this; the board under-uses it.
@@ -1003,9 +1005,14 @@ back at pick 47.
 disagrees with the tool is worse than none — at the table it would be trusted
 over the screen. Build it once the notation has stopped moving.
 
-**Trigger: after the human mock (section 12) and any changes it prompts, and no
-later than Aug 30** — before the Sept 1 Yahoo draft, which is the one with no
-feed and therefore all ~150 picks hand-typed.
+**SCHEDULED: Aug 30–31.** Fixed by the user 2026-08-26, deliberately late and for
+the reason this section already gives — the sheet must match the notation that
+ships, and Phase 3 is being built between now and then. The terminal path is
+Phase 3's fallback, so it may still move. Write the sheet last, from the source
+of truth below, not from memory of this file.
+
+Do not re-raise it before Aug 30. It is ~30 minutes and it is scheduled, not
+outstanding.
 
 Source of truth when writing it: `_handle_command`'s docstring in `ffhelper/cli.py`
 and the on-screen help line in `render()`. Check both still match the table before
