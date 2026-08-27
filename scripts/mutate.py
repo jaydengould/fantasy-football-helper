@@ -246,6 +246,17 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("not-mine override forgotten on the next tick (plain union)",
          "manual_mine = (derived - explicit_not_mine(log_path)) | mark_state.mine",
          "manual_mine = derived | mark_state.mine"),
+        ("board trimmed to the screen BEFORE filtering (K shows three rows)",
+         "board_rows(state, limit=200,", "board_rows(state, limit=40,"),
+        ("tier bands never alternate",
+         "band = _BAND_B if band == _BAND_A else _BAND_A", "band = band"),
+        ("tier bands group across positions (tier is per-position)",
+         'key = (r["pos"], r["tier"])', 'key = r["tier"]'),
+        ("position filter is a no-op",
+         'out = [r for r in out if r["pos"] == position]', "out = out"),
+        ("search matches on prefix only, not substring",
+         'out = [r for r in out if q in r["player"].lower()]',
+         'out = [r for r in out if r["player"].lower().startswith(q)]'),
     ],
 }
 

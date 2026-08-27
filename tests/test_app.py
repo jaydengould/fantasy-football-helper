@@ -242,7 +242,7 @@ def _make_write(monkeypatch, tmp_path, league_name="write-test"):
     path = tmp_path / "log.jsonl"
     monkeypatch.setattr(app, "_draft_log_path", lambda league: path)
     league = League(name=league_name, platform="sleeper", league_id="1")
-    write = app._register_callbacks(
+    _refresh, write = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         [league], Tunables(), lambda lg: None,
     )
@@ -390,3 +390,126 @@ def test_override_button_flips_mine_through_the_row_id(monkeypatch, tmp_path):
     assert status == "4017 is yours"
     ops = [json.loads(line) for line in path.read_text().splitlines()]
     assert ops[-1] == {"op": "mark", "id": "4017", "mine": True}
+
+
+# --- Task 7: tier bands, position filter, search ---
+
+from ffhelper.app import filter_rows, tier_styles
+
+
+def test_tier_styles_band_adjacent_tiers_differently():
+    # TODO.md section 15: no position ranks its own top 12 better than ~+0.35
+    # Spearman. The gap between tiers is real; the order inside one is close to
+    # noise. The band is what makes same-tier players read as interchangeable.
+    rows = [
+        {"rank": 1, "pos": "RB", "tier": 1}, {"rank": 2, "pos": "RB", "tier": 1},
+        {"rank": 3, "pos": "RB", "tier": 2}, {"rank": 4, "pos": "RB", "tier": 2},
+    ]
+    styles = tier_styles(rows)
+    colours = [s["backgroundColor"] for s in styles]
+    assert len(styles) == 4
+    assert colours[0] == colours[1]
+    assert colours[2] == colours[3]
+    assert colours[0] != colours[2]
+
+
+def test_filter_rows_by_position():
+    rows = [{"player": "A", "pos": "QB"}, {"player": "B", "pos": "RB"}]
+    assert filter_rows(rows, "RB", "") == [{"player": "B", "pos": "RB"}]
+
+
+def test_filter_rows_all_is_a_passthrough():
+    rows = [{"player": "A", "pos": "QB"}, {"player": "B", "pos": "RB"}]
+    assert filter_rows(rows, "ALL", "") == rows
+
+
+def test_search_is_case_insensitive_and_partial():
+    rows = [{"player": "Ja'Marr Chase", "pos": "WR"}, {"player": "Bijan Robinson", "pos": "RB"}]
+    assert filter_rows(rows, "ALL", "robin") == [rows[1]]
+    assert filter_rows(rows, "ALL", "CHASE") == [rows[0]]
+
+
+def test_search_and_position_filter_compose():
+    rows = [{"player": "Bijan Robinson", "pos": "RB"},
+            {"player": "Brian Robinson", "pos": "RB"},
+            {"player": "Demario Douglas", "pos": "WR"}]
+    assert filter_rows(rows, "WR", "robin") == []
+
+
+def test_filter_then_trim_shows_a_full_screen_of_the_filtered_position():
+    # The brief's core hazard: filtering a 40-row SLICE of the board would show
+    # at most a handful of kickers, because the top 40 rows are almost all
+    # skill players. The 200-row list must be built and filtered BEFORE the
+    # 40-row display trim, not the other way around.
+    wide = ([{"player": f"Skill {i}", "pos": "WR"} for i in range(190)]
+            + [{"player": f"Kicker {i}", "pos": "K"} for i in range(10)])
+    filtered = filter_rows(wide, "K", "")[:40]
+    assert len(filtered) == 10
+    assert all(r["pos"] == "K" for r in filtered)
+
+
+def _make_refresh(monkeypatch, tmp_path, players):
+    """Register callbacks against a fixed pool and hand back the raw _refresh."""
+    monkeypatch.setattr(app, "_draft_log_path", lambda league: tmp_path / "log.jsonl")
+    league = League(name="refresh-test", platform="sleeper", league_id="1", draft_slot=5)
+    refresh, _write = app._register_callbacks(
+        _dash.Dash(__name__, suppress_callback_exceptions=True),
+        [league], Tunables(),
+        lambda lg: (players, _settings(), FakeFeed(), True),
+    )
+    return refresh
+
+
+def _deep_pool() -> dict[str, Player]:
+    """Skill players above every kicker, which is what a real board looks like."""
+    out = {}
+    for i in range(1, 121):
+        out[str(i)] = Player(
+            sleeper_id=str(i), name=f"Skill {i}",
+            position=["QB", "RB", "WR", "TE"][i % 4], team="KC",
+            proj_pts=340.0 - i * 1.5, adp=float(i) + 1.0, adp_stdev=6.0,
+        )
+    for i in range(200, 216):
+        out[str(i)] = Player(
+            sleeper_id=str(i), name=f"Kicker {i}", position="K", team="KC",
+            proj_pts=140.0 - (i - 200) * 0.9, adp=float(i), adp_stdev=6.0,
+        )
+    return out
+
+
+def test_refresh_filters_the_wide_board_before_trimming_to_the_screen(monkeypatch, tmp_path):
+    # The hazard the 200/40 split exists for: filtering a 40-row SLICE would
+    # show only the kickers that already cracked the top 40, which is almost
+    # none. Reaching the callback is the point -- asserting it on a hand-built
+    # list would pass against a build that filters after trimming.
+    players = _deep_pool()
+    refresh = _make_refresh(monkeypatch, tmp_path, players)
+
+    unfiltered, _styles, _banners, _clock = refresh(0, "refresh-test", "ALL", "")
+    in_top_40 = sum(1 for r in unfiltered if r["pos"] == "K")
+
+    kickers, _styles, _banners, _clock = refresh(0, "refresh-test", "K", "")
+    assert all(r["pos"] == "K" for r in kickers)
+    assert len(kickers) == 16
+    assert len(kickers) > in_top_40      # fails if the trim ran before the filter
+
+
+def test_refresh_bands_the_rows_it_actually_returns(monkeypatch, tmp_path):
+    # style_data_conditional indexes rows by position, so styling the unfiltered
+    # list would paint the wrong rows once a filter is on.
+    players = _deep_pool()
+    refresh = _make_refresh(monkeypatch, tmp_path, players)
+    rows, styles, _banners, _clock = refresh(0, "refresh-test", "QB", "")
+    assert len(styles) == len(rows)
+    assert [s["if"]["row_index"] for s in styles] == list(range(len(rows)))
+
+
+def test_tier_bands_never_group_across_positions():
+    # `tier` is a PER-POSITION column, so tier 1 at RB and tier 1 at WR are not
+    # the same claim. Banding them together tells the user Gibbs and Chase are
+    # interchangeable, which is exactly the reading TODO.md section 15 supports
+    # WITHIN a position and the VONA column contradicts across them: on the real
+    # sleeper-main opening board those two sat in one band at vona 50.1 vs 16.5.
+    rows = [{"pos": "RB", "tier": 1}, {"pos": "WR", "tier": 1}]
+    colours = [s["backgroundColor"] for s in tier_styles(rows)]
+    assert colours[0] != colours[1]

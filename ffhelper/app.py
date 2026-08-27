@@ -78,6 +78,51 @@ def board_rows(state: BoardState, limit: int, divergence_flag_slots: int) -> lis
     return rows
 
 
+# ponytail: bands are alternating background colours, not "-- TIER 2 --" header
+# rows: a DataTable row cannot contain arbitrary markup. Upgrade path is to
+# replace the DataTable with a hand-rolled html.Table -- board_rows() returns
+# plain dicts specifically so that swap does not touch tested logic.
+_BAND_A = "rgba(255,255,255,0)"
+_BAND_B = "rgba(127,127,127,0.14)"
+
+
+def tier_styles(rows: list[dict]) -> list[dict]:
+    """One style_data_conditional entry per row, alternating on tier change.
+
+    Keyed on (position, tier), never tier alone: `tier` is a PER-POSITION
+    column, so RB tier 1 and WR tier 1 are different claims and banding them
+    together would say two players are interchangeable when VONA says they are
+    30 points apart.
+
+    ponytail: two alternating colours cannot encode group identity on a board
+    that interleaves positions -- two non-adjacent runs of the same (pos, tier)
+    may land on the same colour by chance. It only has to make each contiguous
+    run read as one block. Upgrade path is a per-tier colour scale.
+    """
+    styles, band, prev = [], _BAND_A, None
+    for r in rows:
+        key = (r["pos"], r["tier"])
+        if prev is not None and key != prev:
+            band = _BAND_B if band == _BAND_A else _BAND_A
+        prev = key
+        styles.append({
+            "if": {"row_index": len(styles)},
+            "backgroundColor": band,
+        })
+    return styles
+
+
+def filter_rows(rows: list[dict], position: str, query: str) -> list[dict]:
+    """Narrow the displayed rows. Presentation only -- never changes the board."""
+    out = rows
+    if position and position != "ALL":
+        out = [r for r in out if r["pos"] == position]
+    q = (query or "").strip().lower()
+    if q:
+        out = [r for r in out if q in r["player"].lower()]
+    return out
+
+
 def banner_lines(
     state: BoardState, stale_seconds: float | None, players: dict[str, Player],
 ) -> list[str]:
@@ -210,6 +255,9 @@ def _layout(league_names: list[str], default_league: str):
                      clearable=False, style={"width": "20rem"}),
         html.Pre(id="banners"),
         html.Pre(id="clock"),
+        dcc.RadioItems(id="pos", value="ALL", inline=True,
+                       options=["ALL", "QB", "RB", "WR", "TE", "K", "DEF"]),
+        dcc.Input(id="search", type="text", placeholder="search name", debounce=False),
         dash_table.DataTable(
             id="board", columns=COLUMNS, data=[], cell_selectable=True,
             style_cell={"fontFamily": "monospace", "textAlign": "left"},
@@ -223,17 +271,25 @@ def _layout(league_names: list[str], default_league: str):
 
 def _register_callbacks(app, leagues, tunables, cache):
     @app.callback(
-        Output("board", "data"), Output("banners", "children"),
-        Output("clock", "children"),
+        Output("board", "data"), Output("board", "style_data_conditional"),
+        Output("banners", "children"), Output("clock", "children"),
         Input("tick", "n_intervals"), Input("league", "value"),
+        Input("pos", "value"), Input("search", "value"),
     )
-    def _refresh(_n, league_name):
+    def _refresh(_n, league_name, position, query):
         league = get_league(leagues, league_name)
         players, settings, feed, has_feed = cache(league)
         state, stale = read_state(league, tunables, players, settings, feed, has_feed)
-        return (
-            board_rows(state, limit=40,
+        # Build wide, filter, THEN trim. Filtering a 40-row slice would show
+        # three kickers when K is selected, because the top 40 rows are almost
+        # all skill players.
+        rows = filter_rows(
+            board_rows(state, limit=200,
                        divergence_flag_slots=tunables.divergence_flag_slots),
+            position, query,
+        )[:40]
+        return (
+            rows, tier_styles(rows),
             "\n".join(banner_lines(state, stale, players)),
             clock_line(state, league, settings.num_teams),
         )
@@ -270,8 +326,9 @@ def _register_callbacks(app, leagues, tunables, cache):
         # that coupling is what abandoned mock run 1 at 12 000 ms per keystroke.
         return status, (n or 0) + 1
 
-    return _write  # exposed for direct testing -- dash strips the app.callback
-                   # wiring before returning, so this is the raw callable.
+    # Both exposed for direct testing: a callback sealed inside this function is
+    # code no test can reach, and untestable code is untested code.
+    return _refresh, _write
 
 
 def main(argv: list[str] | None = None) -> int:
