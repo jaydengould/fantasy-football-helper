@@ -115,7 +115,12 @@ def tier_styles(rows: list[dict]) -> list[dict]:
 def filter_rows(rows: list[dict], position: str, query: str) -> list[dict]:
     """Narrow the displayed rows. Presentation only -- never changes the board."""
     out = rows
-    if position and position != "ALL":
+    if position == "FLEX":
+        # The one slot whose candidates span positions, so comparing them means
+        # seeing them in one list. FLEX_ELIGIBLE is value.py's rule, imported
+        # rather than restated -- the same reason the roster panel imports it.
+        out = [r for r in out if r["pos"] in FLEX_ELIGIBLE]
+    elif position and position != "ALL":
         out = [r for r in out if r["pos"] == position]
     q = (query or "").strip().lower()
     if q:
@@ -341,13 +346,14 @@ def _layout(league_names: list[str], default_league: str, poll_ms: int = 5000):
         html.Pre(id="banners"),
         html.Pre(id="clock"),
         dcc.RadioItems(id="pos", value="ALL", inline=True,
-                       options=["ALL", "QB", "RB", "WR", "TE", "K", "DEF"]),
+                       options=["ALL", "FLEX", "QB", "RB", "WR", "TE", "K", "DEF"]),
         dcc.Input(id="search", type="text", placeholder="search name", debounce=False),
         html.Pre(id="roster"),
         dash_table.DataTable(
             id="board", columns=COLUMNS, data=[], cell_selectable=True,
             style_cell={"fontFamily": "monospace", "textAlign": "left"},
         ),
+        dcc.Store(id="last_marked"),
         html.Button("undo", id="undo", n_clicks=0),
         html.Button("toggle 'mine' on selected", id="override", n_clicks=0),
         html.Pre(id="status"),
@@ -388,26 +394,32 @@ def _register_callbacks(app, leagues, tunables, cache):
 
     @app.callback(
         Output("status", "children"), Output("tick", "n_intervals"),
+        Output("board", "active_cell"), Output("last_marked", "data"),
         Input("board", "active_cell"), Input("undo", "n_clicks"),
         Input("override", "n_clicks"),
         dash.State("board", "data"), dash.State("league", "value"),
-        dash.State("tick", "n_intervals"),
+        dash.State("tick", "n_intervals"), dash.State("last_marked", "data"),
         prevent_initial_call=True,
     )
-    def _write(active_cell, _undo_clicks, _override_clicks, rows, league_name, n):
+    def _write(active_cell, _undo_clicks, _override_clicks, rows, league_name,
+               n, last_marked):
         league = get_league(leagues, league_name)
         path = _draft_log_path(league)
         trigger = dash.callback_context.triggered_id
         try:
             if trigger == "undo":
                 status = apply_undo(path)
-            elif trigger == "override" and active_cell and rows:
-                pid = rows[active_cell["row"]]["id"]
+            elif trigger == "override" and last_marked:
+                # The player just entered, NOT the live selection: the selection
+                # is cleared after every click (see below), so reading it here
+                # would leave the override permanently inert.
                 state, _a, _s = _restore_marks(path)
-                status = apply_override(path, pid, mine=pid not in state.mine)
-            elif active_cell and rows:
+                status = apply_override(path, last_marked,
+                                        mine=last_marked not in state.mine)
+            elif trigger == "board" and active_cell and rows:
                 # Resolve the click through the row's id, never its name.
-                status = apply_click(path, rows[active_cell["row"]]["id"])
+                last_marked = rows[active_cell["row"]]["id"]
+                status = apply_click(path, last_marked)
             else:
                 status = ""
         except Exception as exc:                      # noqa: BLE001 - never fatal
@@ -416,7 +428,11 @@ def _register_callbacks(app, leagues, tunables, cache):
         # Bump the tick so the board redraws immediately rather than waiting for
         # the poll interval. Entry latency must never be paced by the network:
         # that coupling is what abandoned mock run 1 at 12 000 ms per keystroke.
-        return status, (n or 0) + 1
+        # active_cell is returned as None so the NEXT click on the same cell is
+        # still a change and still fires. Dash only calls a callback when a prop
+        # changes, so without this, re-clicking the highlighted cell silently
+        # does nothing -- reported live as "sometimes clicks don't register".
+        return status, (n or 0) + 1, None, last_marked
 
     # Both exposed for direct testing: a callback sealed inside this function is
     # code no test can reach, and untestable code is untested code.

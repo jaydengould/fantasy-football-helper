@@ -85,10 +85,10 @@ adp_source = "sleeper"
 name = "yahoo-mock"
 platform = "yahoo"
 league_id = "mock"
-draft_slot = 2
+draft_slot = 1
 
 [league.settings]
-num_teams = 12
+num_teams = 10
 bench = 5
 
 [league.settings.roster_slots]

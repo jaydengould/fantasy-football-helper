@@ -257,7 +257,7 @@ def test_click_resolves_through_the_row_id_never_the_name(monkeypatch, tmp_path)
     monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
                          property(lambda self: "board"))
     rows = [{"id": "4017", "player": "Bijan Robinson"}]
-    write({"row": 0, "column": 0}, 0, 0, rows, "write-test", 0)
+    write({"row": 0, "column": 0}, 0, 0, rows, "write-test", 0, None)
     ops = [json.loads(line) for line in path.read_text().splitlines()]
     assert ops == [{"op": "mark", "id": "4017", "mine": False}]
 
@@ -268,7 +268,7 @@ def test_a_successful_write_bumps_the_tick_for_an_immediate_redraw(monkeypatch, 
     write, _path = _make_write(monkeypatch, tmp_path, league_name="write-test2")
     monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
                          property(lambda self: "undo"))
-    _status, n_after = write(None, 1, 0, [], "write-test2", 3)
+    _status, n_after, _a, _l = write(None, 1, 0, [], "write-test2", 3, None)
     assert n_after == 4
 
 
@@ -386,7 +386,9 @@ def test_override_button_flips_mine_through_the_row_id(monkeypatch, tmp_path):
     monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
                          property(lambda self: "override"))
     rows = [{"id": "4017", "player": "Bijan Robinson"}]
-    status, _n = write({"row": 0, "column": 0}, 0, 1, rows, "write-override", 0)
+    # The override acts on the last-marked id carried in the Store, since the
+    # cell selection is cleared after every click.
+    status, _n, _a, _l = write(None, 0, 1, rows, "write-override", 0, "4017")
     assert status == "4017 is yours"
     ops = [json.loads(line) for line in path.read_text().splitlines()]
     assert ops[-1] == {"op": "mark", "id": "4017", "mine": True}
@@ -701,3 +703,60 @@ def test_build_app_actually_constructs_and_carries_the_interval():
     import dash
     walk(dash.page_registry["board"]["layout"])
     assert found == [1000], f"expected one 1s Interval, got {found}"
+
+
+# --- clicking the same cell twice must register twice ---
+
+def test_a_click_clears_the_selection_so_the_same_cell_works_twice(monkeypatch, tmp_path):
+    # From the live Yahoo mock, 2026-08-27: "sometimes clicks don't register and
+    # you have to click another part of the row" / "you can't click the spot
+    # already highlighted from your prior selection". Dash fires a callback only
+    # when a prop CHANGES, so clicking the cell that is already `active_cell` is
+    # a no-op -- the mark is silently dropped. Under a pick clock that is how
+    # you fall behind, and it is the likeliest cause of the pick-96 mess.
+    write, path = _make_write(monkeypatch, tmp_path)
+    monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
+                        property(lambda self: "board"))
+    rows = [{"id": "4017", "player": "Bijan Robinson"}]
+    _status, _n, active, _last = write({"row": 0, "column": 0}, 0, 0, rows,
+                                       "write-test", 0, None)
+    assert active is None, "selection must be cleared or the next identical click is lost"
+
+
+def test_the_override_uses_the_last_marked_player_not_the_live_selection(monkeypatch, tmp_path):
+    # Clearing active_cell would break the override if it still read from it,
+    # so the id of the player just marked is carried explicitly. That is also
+    # the better semantic: the override means "that pick I just entered was (or
+    # was not) mine".
+    write, path = _make_write(monkeypatch, tmp_path)
+    monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
+                        property(lambda self: "board"))
+    rows = [{"id": "4017", "player": "Bijan Robinson"}]
+    _s, _n, _a, last = write({"row": 0, "column": 0}, 0, 0, rows, "write-test", 0, None)
+    assert last == "4017"
+
+    monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
+                        property(lambda self: "override"))
+    status, _n, _a, _l = write(None, 0, 1, rows, "write-test", 1, last)
+    assert status == "4017 is yours"
+    ops = [json.loads(line) for line in path.read_text().splitlines()]
+    assert ops[-1] == {"op": "mark", "id": "4017", "mine": True}
+
+
+def test_flex_filter_shows_every_flex_eligible_position():
+    # Requested during the live Yahoo mock: a FLEX/WRT option. It is the one
+    # slot whose candidates span positions, so comparing them means seeing them
+    # in one list. FLEX_ELIGIBLE is imported from value.py, not restated, for
+    # the same reason the roster panel imports it: one rule, one place.
+    rows = [{"player": "Gibbs", "pos": "RB"}, {"player": "Chase", "pos": "WR"},
+            {"player": "Bowers", "pos": "TE"}, {"player": "Allen", "pos": "QB"},
+            {"player": "Aubrey", "pos": "K"}]
+    got = [r["player"] for r in filter_rows(rows, "FLEX", "")]
+    assert got == ["Gibbs", "Chase", "Bowers"]
+
+
+def test_flex_filter_composes_with_search():
+    rows = [{"player": "Bijan Robinson", "pos": "RB"},
+            {"player": "Wan'Dale Robinson", "pos": "WR"},
+            {"player": "Jordan Love", "pos": "QB"}]
+    assert len(filter_rows(rows, "FLEX", "robin")) == 2
