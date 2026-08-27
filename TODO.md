@@ -39,6 +39,10 @@ work, in priority order:
 `adp_ppr` directly, which the half-PPR mocks did not. Join, do not type, paste
 the results page afterwards.
 
+**PHASE 3 IS COMPLETE (2026-08-27), Tasks 1-9.** Branch `phase-3-dash-ui`,
+**309 tests, 110 mutations.** All three rehearsal steps are done and every defect
+they found is fixed.
+
 **PHASE 3 CODE IS COMPLETE (2026-08-27).** Branch `phase-3-dash-ui`, **290 tests,
 96 mutations.** Tasks 1-8 of `docs/superpowers/plans/2026-08-26-phase-3-dash-ui.md`
 are done: the Dash board renders, click-to-mark works, the roster is derived from
@@ -87,7 +91,20 @@ whose candidates span positions, so comparing them means seeing them in one list
 2. Mid-draft, ctrl-C the app, start `ffhelper.cli run` on the same league, and
    record the elapsed time. The fallback has to be a rehearsed motion, not a plan.
 
-### THE HANDOVER IS BROKEN, and it is an attribution bug, not a replay bug
+### Step 4 DONE 2026-08-27 — handover measured at 0.48s, roster intact
+
+`ffhelper.cli run` reaches a full board **0.48s** after launch (imports 0.26s,
+warm pool load 0.14s, 121-op replay <1ms, first board 0.02s). Cold `.cache/`
+adds one fetch. Ctrl-C out of the web board and the terminal is up before you
+have finished typing the next command.
+
+**Independently validated, which is the part that matters.** Replaying the live
+mock's own journal, the CLI derives `Gibbs, Collins, Allen, Loveland, Wilson,
+Moore, Stevenson, Warren, Thomas` — exactly the first nine of the "yours" list
+`transcribe.py` read off **Yahoo's own results page**, a separate source that
+never touched the journal.
+
+### THE HANDOVER WAS BROKEN — FIXED 2026-08-27 (attribution, not replay)
 
 Found 2026-08-27 by testing the handover offline before rehearsing it live.
 
@@ -113,11 +130,19 @@ gate, which is what once produced three quarterbacks on one roster. On Sept 1
 the terminal IS the fallback, so this fires exactly when something has already
 gone wrong.
 
-**The fix is small and the code already exists** — `board.auto_mine` reproduced
-all three transcribed mocks' rosters exactly, and is tested and mutation-covered.
-It is ~3 lines in `cli.py`'s feed-less path. **But the Phase 3 plan says
-`cli.py` is not edited, and it is the live draft path five days out.** That
-trade is the user's call, not the agent's.
+**FIXED, on the user's decision**, in `cli.py`'s feed-less path only — a league
+WITH a feed is untouched, so the Sept 6 Sleeper path does not change. `_manual_mine`
+composes attribution exactly as `app.read_state` does, reusing `board.auto_mine`.
+
+Two things worth keeping:
+
+- **The import is function-level**, because `board.py` imports `cli.py` and a
+  top-level import would be a cycle. Marked `ponytail:`; the plan already
+  schedules the real fix for after Sept 6, when `cli.py` adopts `board.py`.
+- **The restore banner counted typed marks too**, so it printed "0 yours" above a
+  board listing nine players — during a handover that reads as "the roster is
+  gone", i.e. it reported the very failure the fix removes. Now counts the
+  derived roster.
 
 **Carry into step 3:** the Sleeper mock exercised the FEED path. Yahoo has no
 feed, so it exercises the JOURNAL path instead — click-to-mark, the override, and

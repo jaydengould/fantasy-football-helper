@@ -285,7 +285,7 @@ fresh opinion.
 | 0 | Yahoo OAuth handshake; confirm league access, size, settings | Aug 25 | **blocked — awaiting Yahoo approval** |
 | 1 | `data.py` + `value.py` + `cli.py`, Sleeper feed, multi-league config, **manual mark-drafted** | Aug 28 | in progress |
 | 2 | Yahoo feed adapter + SQLite draft log | Aug 29–30 | not started (Yahoo half gated on approval) |
-| 3 | Dash UI | Sept 5 | Tasks 1-8 done; Task 9 rehearsal needs the user |
+| 3 | Dash UI | Sept 5 | **COMPLETE** — Tasks 1-9, rehearsed live |
 | 3.5 | Opponent needs, bye clustering, notifications, manual overrides | Sept 5 | not started |
 | 4 | Season mode (`nflreadpy`) | after | not started |
 | 5 | Trade finder (own spec) | in-season | not started |
@@ -336,6 +336,79 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   a config override, never trusted from the API.
 
 ## Session log
+
+### 2026-08-27 (third block) — PHASE 3 COMPLETE. Click entry rehearsed; the handover fixed.
+
+**State:** branch `phase-3-dash-ui` @ `15c17c8`, **309 tests**, 110 mutations
+(1 survivor, the documented equivalent mutant). `value.py` and `data.py` untouched.
+
+Task 9 steps 3 and 4 done, so **all nine tasks are complete**.
+
+#### Step 3: the first click-entered draft. It works.
+
+A 10-team Yahoo mock, seat 1, entered entirely by clicking, abandoned ~pick 96.
+**"Much better than having to type out names. Much more responsive too with new
+polling, almost instant."** Undo was used in anger — a pick missed six back — and
+recovered to current.
+
+**One defect, and it probably ended the run.** Clicking the cell already
+highlighted did nothing: Dash fires a callback only when a prop CHANGES, so a
+repeat click on the same cell is a silent no-op and the mark is dropped.
+**The user diagnosed it from the symptom** ("you can't click the spot that is
+already highlighted"), which was exactly right. `active_cell` is now cleared
+after every write — which would have made the override permanently inert, so the
+last-marked id moved into a Store. Also added FLEX/WRT to the filter, requested
+live.
+
+#### Step 4: the handover replayed perfectly and lost the roster anyway
+
+Found by testing it offline BEFORE rehearsing it, which is the only reason it did
+not burn the live run. The journal replay is exact — including the
+`unmark` + `mark(mine=false)` override sequence nothing else produces. **But the
+two boards derive `my_roster` differently**: Dash from your seat, the feed-less
+CLI from typed `me` marks only. Clicking never writes those. The live journal is
+**108 marks, 0 mine** — so the fallback handed you an empty roster, which makes
+MARG meaningless and disables the sort's roster-need gate. Task 13 defect #1,
+arriving silently at the moment you reach for the fallback.
+
+**Fixed on the user's explicit decision**, in `cli.py`'s feed-less path only.
+Verified against an INDEPENDENT source: the CLI now derives the same nine players
+`transcribe.py` read off Yahoo's own results page. Handover measured at **0.48s**.
+
+**Why an agreement test did not catch this.** `test_board_agreement` proves both
+paths compute the same board from the same inputs. Attribution is an INPUT, and
+the two paths built it differently — so the test was never wrong, it was aimed
+one layer too low. Same shape as the dead-feed bug earlier today, where the
+missing piece lived in the loop around the derivation rather than in it.
+**Two defects in one day from the same blind spot: I test the join, and not what
+is handed to the join.**
+
+#### mutate.py silently lost 26 mutations, and reported success
+
+I added a second `"cli.py"` key to the `MUTATIONS` dict. Python keeps the last
+one, so an entire block vanished — and the run simply printed a smaller total
+(106 → 80) with no warning. Caught only because I happened to compare the number
+against the previous run. A guard now refuses to run on a duplicate key, checked
+against the source text because by the time the dict exists the evidence is gone.
+
+**This is the tooling equivalent of the project's own recurring lesson**: the
+check reported "all killed" while checking 26 fewer things.
+
+#### The fourth calibration draft, deliberately not acted on
+
+150 picks, 10-team — the first room matching `yahoo-main`'s team count. Sleeper
+0.051 weighted error against FFC's 0.116, same direction as the n=3 result, so it
+corroborates and nothing changes. **The 0.051 must NOT be read as the model
+improving**: this room was measurably more list-following (median ADP rank taken
+5, 15% at top, against the human mocks' 7/9/10) and a room that follows the list
+flatters ADP by construction.
+
+**The user asked whether rounds 4+ were autopicks; the metric cannot answer it.**
+Split at pick 96: early reads median 5 / 16.7%, late reads median 16 / 3.7%. That
+looks like the late rounds were LESS list-following, which is an artifact — late
+in a draft most remaining players have no ADP at all, and autodraft fills roster
+requirements rather than walking a list. **Room discipline is untrustworthy once
+the ADP pool thins.** Recorded so the number is never quoted as evidence.
 
 ### 2026-08-27 (second block) — the live Sleeper mock, and the worst bug yet
 

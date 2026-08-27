@@ -24,7 +24,7 @@ are planned but not built.
 | Terminal board with auto-refresh | working |
 | Hand-typed picks survive a crash or restart | working |
 | Yahoo API feed | blocked on Yahoo developer approval |
-| Web board (`python -m ffhelper.app`) | working, not yet rehearsed live |
+| Web board (`python -m ffhelper.app`) | working |
 | Season mode, trade finder | planned |
 
 ## Requirements
@@ -182,7 +182,8 @@ sharing a band are close to interchangeable.
 **Run one board at a time.** Both read the same `.draft/<league>-<date>.jsonl`
 journal, but the terminal replays it only at startup, so a terminal board left
 running beside the web board will quietly show a stale pool. Stopping one and
-starting the other loses nothing — that is the fallback path.
+starting the other loses nothing, including your roster — measured at 0.48s from
+ctrl-C to a full terminal board. That is the fallback path, and it is rehearsed.
 
 ### Manual entry
 
@@ -403,7 +404,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 290 tests, no network, runs in ~0.3s
+.venv/bin/pytest          # 309 tests, no network, runs in ~0.3s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire
