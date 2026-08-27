@@ -243,6 +243,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "    return \"undone\""),
         ("write does not force a redraw",
          "return status, (n or 0) + 1", "return status, n"),
+        ("not-mine override forgotten on the next tick (plain union)",
+         "manual_mine = (derived - explicit_not_mine(log_path)) | mark_state.mine",
+         "manual_mine = derived | mark_state.mine"),
     ],
 }
 

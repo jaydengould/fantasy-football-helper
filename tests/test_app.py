@@ -305,3 +305,88 @@ def test_an_override_can_take_a_claim_back_without_undrafting_the_player(tmp_pat
     state, _applied, _skipped = _restore_marks(path)
     assert state.mine == set()
     assert state.drafted == {"42"}
+
+
+# --- Task 6, fix round 1: the review's Critical -- `derived` has no memory of
+# an override, so `mine=False` must be subtracted back out on EVERY
+# `read_state` call, not just honoured once. These go through `read_state`
+# itself (not `apply_override`/`board.explicit_not_mine` in isolation),
+# because the bug was in the composition, not in either piece alone.
+#
+# id/name fixtures deliberately non-derivable from each other -- reusing
+# `str(i)`/`f"Player {i}"` would pass even if the composition read the wrong
+# field.
+
+_OVERRIDE_ID = "4017"
+_OVERRIDE_PLAYERS = {
+    _OVERRIDE_ID: Player(sleeper_id=_OVERRIDE_ID, name="Bijan Robinson", position="RB",
+                         team="ATL", proj_pts=300.0, adp=1.0, adp_stdev=4.0, bye=5),
+}
+
+
+def _override_league(name: str) -> League:
+    # draft_slot=1 with _settings()'s 12 teams: pick 1 is seat 1's own turn --
+    # the simplest snake position to derive from.
+    return League(name=name, platform="sleeper", league_id="1", draft_slot=1)
+
+
+def test_a_not_mine_override_survives_a_second_read_state_call(monkeypatch, tmp_path):
+    # THE regression test. Before the fix, `derived` (recomputed fresh every
+    # call from pick position alone) silently re-added the player within one
+    # tick, because the union `mark_state.mine | derived` can only ever ADD.
+    path = tmp_path / "log.jsonl"
+    monkeypatch.setattr(app, "_draft_log_path", lambda league: path)
+    league = _override_league("override-not-mine")
+    settings = _settings()
+    apply_click(path, _OVERRIDE_ID)                # pick 1 -- auto-derived as seat 1's
+    apply_override(path, _OVERRIDE_ID, mine=False)  # explicit correction: not mine
+
+    for _ in range(2):                              # TWO calls: the bug only showed on the 2nd
+        state, _stale = read_state(league, Tunables(), _OVERRIDE_PLAYERS, settings,
+                                   FakeFeed(), has_feed=False)
+        assert _OVERRIDE_ID not in {p.sleeper_id for p in state.my_roster}
+        assert _OVERRIDE_ID in state.drafted        # never un-drafted
+
+
+def test_a_mine_override_still_wins_over_derivation(monkeypatch, tmp_path):
+    path = tmp_path / "log.jsonl"
+    monkeypatch.setattr(app, "_draft_log_path", lambda league: path)
+    league = _override_league("override-mine")
+    settings = _settings()
+    apply_click(path, _OVERRIDE_ID)
+    apply_override(path, _OVERRIDE_ID, mine=True)
+
+    state, _stale = read_state(league, Tunables(), _OVERRIDE_PLAYERS, settings,
+                               FakeFeed(), has_feed=False)
+    assert _OVERRIDE_ID in {p.sleeper_id for p in state.my_roster}
+    assert _OVERRIDE_ID in state.drafted
+
+
+def test_overriding_back_to_mine_after_not_mine_restores_the_roster(monkeypatch, tmp_path):
+    path = tmp_path / "log.jsonl"
+    monkeypatch.setattr(app, "_draft_log_path", lambda league: path)
+    league = _override_league("override-back-to-mine")
+    settings = _settings()
+    apply_click(path, _OVERRIDE_ID)
+    apply_override(path, _OVERRIDE_ID, mine=False)
+    apply_override(path, _OVERRIDE_ID, mine=True)   # changed their mind back
+
+    state, _stale = read_state(league, Tunables(), _OVERRIDE_PLAYERS, settings,
+                               FakeFeed(), has_feed=False)
+    assert _OVERRIDE_ID in {p.sleeper_id for p in state.my_roster}
+    assert _OVERRIDE_ID in state.drafted
+
+
+def test_override_button_flips_mine_through_the_row_id(monkeypatch, tmp_path):
+    # Mirrors the existing "board"/"undo" direct-call tests -- the reviewer's
+    # Minor finding was that the override branch of `_write` had no coverage
+    # at all.
+    write, path = _make_write(monkeypatch, tmp_path, league_name="write-override")
+    apply_click(path, "4017")                       # already drafted, not yet claimed
+    monkeypatch.setattr(_dash.callback_context.__class__, "triggered_id",
+                         property(lambda self: "override"))
+    rows = [{"id": "4017", "player": "Bijan Robinson"}]
+    status, _n = write({"row": 0, "column": 0}, 0, 1, rows, "write-override", 0)
+    assert status == "4017 is yours"
+    ops = [json.loads(line) for line in path.read_text().splitlines()]
+    assert ops[-1] == {"op": "mark", "id": "4017", "mine": True}

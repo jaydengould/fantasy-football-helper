@@ -129,6 +129,47 @@ def marks_in_entry_order(log_path) -> list[str]:
     return seq
 
 
+def explicit_not_mine(log_path) -> set[str]:
+    """Ids the user explicitly said are NOT theirs, via `apply_override(mine=False)`.
+
+    That call always writes an `unmark` immediately followed by a `mark` with
+    `mine: false` for the same id -- no other path produces that exact pair (a
+    plain click is a single `mark`; `undo` carries no id at all). Scanning for
+    it is how the statement survives `read_state` running again: `auto_mine`
+    recomputes the derived set from pick POSITION on every tick, with no
+    memory of the override, so without this the correction would silently
+    revert within one poll interval.
+
+    Tracks each id's own most recent relevant op, not global order --
+    interleaved ops for OTHER ids never reset the pattern. A later plain claim
+    (`mark ... mine: true`) for the same id overwrites it out of the result,
+    because the user changed their mind back.
+    """
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return set()
+    last: dict[str, str] = {}          # id -> "unmark" / "mine" / "not_mine" / "mark"
+    for line in lines:
+        try:
+            op = json.loads(line)
+        except Exception:              # noqa: BLE001 - torn final line
+            continue
+        pid = op.get("id")
+        if pid is None:
+            continue
+        if op.get("op") == "unmark":
+            last[pid] = "unmark"
+        elif op.get("op") == "mark":
+            if op.get("mine"):
+                last[pid] = "mine"
+            elif last.get(pid) == "unmark":
+                last[pid] = "not_mine"
+            else:
+                last[pid] = "mark"     # a plain draft click -- not a statement
+    return {pid for pid, state in last.items() if state == "not_mine"}
+
+
 def auto_mine(order: list[str], seat: int | None, num_teams: int) -> set[str]:
     """Which entered marks belong to `seat`, from pick number alone.
 

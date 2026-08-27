@@ -18,7 +18,9 @@ import time
 import dash
 from dash import Input, Output, dash_table, dcc, html
 
-from ffhelper.board import BoardState, auto_mine, board_state, marks_in_entry_order
+from ffhelper.board import (
+    BoardState, auto_mine, board_state, explicit_not_mine, marks_in_entry_order,
+)
 from ffhelper.cli import (
     DRAFT_LOG_DIR, ROOT, _draft_log_path, _restore_marks, _select_feed,
     load_board_inputs,
@@ -130,12 +132,16 @@ def read_state(league, tunables, players, settings, feed, has_feed):
     """
     log_path = _draft_log_path(league)
     mark_state, _applied, _skipped = _restore_marks(log_path)
-    # Seat-based attribution replaces the terminal's typed "me " prefix. An
-    # explicit override (mark_state.mine) always wins over the derived set --
-    # it exists precisely for the case where entry has drifted.
+    # Seat-based attribution replaces the terminal's typed "me " prefix, but an
+    # explicit statement always wins over the derived guess in BOTH directions
+    # -- it exists precisely for the case where entry has drifted. `derived` is
+    # recomputed from pick POSITION alone on every tick and has no memory of an
+    # override, so a `mine=False` correction must be subtracted back out here
+    # every time, not just applied once -- otherwise the very next tick
+    # silently re-derives the player as mine again.
     derived = auto_mine(marks_in_entry_order(log_path), league.draft_slot,
                         settings.num_teams)
-    manual_mine = mark_state.mine | derived
+    manual_mine = (derived - explicit_not_mine(log_path)) | mark_state.mine
 
     picks, stale_seconds = [], None
     try:
