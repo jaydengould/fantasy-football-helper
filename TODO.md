@@ -1164,6 +1164,41 @@ publishing, and re-check if anything in §3 or §9 lands afterwards.
 
 ---
 
+## 19. The web board's APPEARANCE — not in any phase, raised 2026-08-27
+
+The board is functionally rehearsed and visually untouched: **two style
+declarations in the whole app** (`width: 20rem` on the league dropdown, monospace
+cells) and **no `assets/` directory**. Everything else is default Dash chrome.
+
+**It needs no new dependency, which is the point.** Dash auto-serves any file in
+`ffhelper/assets/`, so a plain `.css` file there is applied with no config, no
+build step and no package. "Make it look good" is normally where a React/Tailwind
+toolchain arrives; here it does not have to.
+
+Fully controllable now: fonts, colour, dark mode, spacing, page chrome. The
+banners, clock and roster panel are `html.Pre` and style trivially. `DataTable`
+exposes `style_cell`, `style_header`, `style_data_conditional` (already carrying
+the tier bands), `style_table`, and a `css` escape hatch.
+
+**The one real ceiling is `DataTable`'s fixed internal DOM.** Custom row markup —
+a true `-- TIER 2 --` separator row, two-line rows, inline badges, sparklines —
+cannot be done inside it. Replacing it with a hand-rolled `html.Table` is the
+upgrade path, and it is already cheap **by design**: `board_rows()` returns plain
+dicts precisely so that swap touches no tested logic (see the `ponytail:` comment
+on `tier_styles`).
+
+**Do it AFTER Sept 6, or keep it purely additive before.** Appearance work cannot
+break the engine — it never touches `value.py` or `data.py` — but the board has
+just been rehearsed under a clock, and changing where things sit un-rehearses the
+muscle memory that rehearsal bought. Colours, fonts and dark mode are safe any
+time; moving or restructuring controls is not.
+
+**Where it belongs:** its own small phase, not 3.5. Phase 3.5 (opponent needs,
+bye clustering) reaches into the board's LOGIC and is the risky one; this is
+presentation only and shares none of that risk.
+
+---
+
 ## 14. Bench-mode ordering is honest but still weak — OBSERVED LIVE 2026-08-27
 
 Once every starting slot is full, `is_bench_only` fires and the board says so
