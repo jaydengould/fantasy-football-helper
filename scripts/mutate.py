@@ -24,6 +24,7 @@ KNOWN EQUIVALENT MUTANT (expected to survive, do not chase):
   "tier threshold strictness" -- `>` vs `>=` on float gaps. Two gaps are never
   exactly equal on real data, so no test can distinguish the two forms.
 """
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -100,6 +101,17 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "return False"),
     ],
     "cli.py": [
+        ("restore banner reports typed marks, not the roster you will see",
+         "    mine = _manual_mine(log_path, mark_state.mine, draft_slot, num_teams, has_feed)",
+         "    mine = mark_state.mine"),
+        ("handover loses your roster (feed-less CLI ignores the seat)",
+         "    if has_feed:\n        return typed_mine",
+         "    return typed_mine"),
+        ("derivation applied to a league WITH a feed, contradicting it",
+         "    if has_feed:\n        return typed_mine", "    if False:\n        return typed_mine"),
+        ("a not-mine override is re-derived on the next render",
+         "    return (derived - explicit_not_mine(log_path)) | typed_mine",
+         "    return derived | typed_mine"),
         ("commas split one line into commands", 'line.split(",")', "[line]"),
         ("every command in a batch is reported",
          'status = "  |  ".join(statuses)', 'status = statuses[-1] if statuses else ""'),
@@ -297,6 +309,17 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          '        if row[0] != "FLEX" and row[1] is None:\n            continue'),
     ],
 }
+
+
+# A duplicate key in the dict literal above keeps only the LAST block, silently.
+# That happened on 2026-08-27 and cost 26 cli.py mutations with no warning at
+# all -- the run simply reported a smaller total. Checked against the source
+# text because by the time the dict exists the evidence is already gone.
+_KEYS = re.findall(r'^    "([^"]+)": \[', Path(__file__).read_text(), re.M)
+if len(_KEYS) != len(set(_KEYS)):
+    _dupes = sorted({k for k in _KEYS if _KEYS.count(k) > 1})
+    raise SystemExit(f"duplicate key(s) in MUTATIONS: {_dupes} -- earlier blocks "
+                     "would be silently dropped. Merge them.")
 
 
 def main() -> int:

@@ -597,6 +597,39 @@ def _select_feed(league: League, settings: LeagueSettings) -> tuple[PickFeed, bo
     return NullFeed(), False
 
 
+def _manual_mine(log_path, typed_mine: set[str], draft_slot: int | None,
+                 num_teams: int, has_feed: bool) -> set[str]:
+    """Which drafted players are YOURS, for a board with no pick feed.
+
+    The web board derives this from your seat and the journal's pick order; the
+    terminal used to read only explicit `me` marks. Clicking never writes those,
+    so a ctrl-C handover from the web board arrived here with an EMPTY roster --
+    MARG meaningless, the sort's roster-need gate disabled, which is Task 13
+    defect #1 landing exactly when the fallback is being reached for.
+
+    A league WITH a feed is untouched: there, `draft_slot` on the feed's own
+    picks is authoritative, and deriving from journal order could contradict it.
+    So the Sept 6 Sleeper path does not change.
+
+    Explicit statements win over the derived guess in BOTH directions, which is
+    why `explicit_not_mine` is subtracted every call rather than once: `auto_mine`
+    recomputes from pick POSITION alone and has no memory of an override.
+
+    An unset seat is NOT guarded here: `auto_mine` already returns nothing when
+    it has no seat, and that guard is tested and mutation-covered. A second copy
+    would be a second rule to keep in step.
+    """
+    if has_feed:
+        return typed_mine
+    # ponytail: imported here, not at module scope, because board.py imports
+    # THIS module -- a top-level import would be a cycle. The plan already
+    # schedules the real fix for after 2026-09-06, when cli.py adopts board.py
+    # and the journal helpers move across for good.
+    from ffhelper.board import auto_mine, explicit_not_mine, marks_in_entry_order
+    derived = auto_mine(marks_in_entry_order(log_path), draft_slot, num_teams)
+    return (derived - explicit_not_mine(log_path)) | typed_mine
+
+
 def _render_tick(
     picks: list, last_ok: float | None, players: dict[str, Player], settings: LeagueSettings,
     league: League, tunables: Tunables, limit: int, manual_gone: set[str],
@@ -673,6 +706,25 @@ def _render_tick(
     print("\n(ctrl-c to stop; run `preflight` before the draft)")
 
 
+def _print_restore_banner(log_path, mark_state, applied: int, skipped: int,
+                          draft_slot: int | None, num_teams: int,
+                          has_feed: bool) -> None:
+    """Report what a restart recovered, counting the roster you will SEE.
+
+    Not `mark_state.mine`, which counts only typed `me` claims: a draft entered
+    by clicking on the web board has none, so this banner said "0 yours" on top
+    of a board listing nine players. During a ctrl-C handover that reads as "the
+    roster is gone", which is the failure the seat derivation exists to prevent.
+    """
+    if not (applied or skipped):
+        return
+    mine = _manual_mine(log_path, mark_state.mine, draft_slot, num_teams, has_feed)
+    print(f"restored {applied} mark(s) from {log_path}"
+          + (f" ({skipped} unreadable line(s) skipped)" if skipped else "")
+          + f"\n  -> {len(mark_state.drafted)} drafted, {len(mine)} yours."
+          " Delete that file to start fresh.")
+
+
 def _run(
     league: League, tunables: Tunables, limit: int, max_iterations: int | None = None,
     input_queue: "queue.Queue[str] | None" = None,
@@ -708,11 +760,8 @@ def _run(
     try:
         DRAFT_LOG_DIR.mkdir(exist_ok=True)
         mark_state, applied, skipped = _restore_marks(log_path)
-        if applied or skipped:
-            print(f"restored {applied} mark(s) from {log_path}"
-                  + (f" ({skipped} unreadable line(s) skipped)" if skipped else "")
-                  + f"\n  -> {len(mark_state.drafted)} drafted, {len(mark_state.mine)} yours."
-                  " Delete that file to start fresh.")
+        _print_restore_banner(log_path, mark_state, applied, skipped,
+                              league.draft_slot, settings.num_teams, has_feed)
     except Exception as exc:                          # noqa: BLE001 - never fatal
         log.warning("draft log unavailable (%s); marks will not survive a restart", exc)
         mark_state = MarkDrafted()
@@ -795,7 +844,11 @@ def _run(
         if frame != last_frame or stale or iterations == 0:
             try:
                 _render_tick(picks, last_ok, players, settings, league, tunables, limit,
-                             mark_state.drafted, mark_state.mine, league.draft_slot, status)
+                             mark_state.drafted,
+                             _manual_mine(log_path, mark_state.mine,
+                                          league.draft_slot, settings.num_teams,
+                                          has_feed),
+                             league.draft_slot, status)
                 # Only AFTER a successful draw. Marking the frame done before
                 # rendering would make a failed render freeze the screen: the
                 # next identical tick would dedup away the retry.
