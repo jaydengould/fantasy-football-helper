@@ -288,6 +288,15 @@ fresh opinion.
   is inert: the pick's own `draft_slot` is authoritative and cannot drift. `undo`
   stays on BOTH — a misclick unions into `drafted` and silently removes a player
   who is still available, and undo is the only recovery.
+- **The board will NOT fork per league.** Asked 2026-08-28: keep `DataTable` for
+  Yahoo (click entry) and give Sleeper the custom table, switched by the dropdown.
+  It works technically — `board_rows()` returns plain dicts and one consumer —
+  and is rejected because every later board change would be built twice, and
+  because the benefit (protecting a rehearsed click path) expires when Phase 3.7
+  runs, which is after both drafts. Fork on TIME instead: one `html.Table`, the
+  `DataTable` kept behind a config flag for one cycle, flag deleted once a live
+  mock passes. A dual path with a deletion date is a migration; one keyed on
+  league is a second implementation forever. `TODO.md` §19.
 - **Ruled out:** FantasyPros (paid, ToU bars reproducing content), ESPN/Yahoo
   scraping, `nfl_data_py` (deprecated by nflverse → use `nflreadpy`).
   **Refined 2026-08-26:** the FantasyPros bar is on *reproducing* their content —

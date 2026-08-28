@@ -1180,6 +1180,51 @@ record the answer, do not re-litigate mid-build.
 touches no tested ranking logic. That was designed in deliberately; see the
 `ponytail:` comment it still carries.
 
+### How to land it: fork on TIME, not on LEAGUE
+
+Asked 2026-08-28: could Yahoo keep `DataTable` (it needs click entry) while
+Sleeper gets the custom table (its feed supplies the picks), switched by the
+league dropdown?
+
+**Technically yes, and cleanly** — `board_rows()` returns plain dicts with a
+single consumer in `app.py`, and rendering both while hiding one avoids
+`suppress_callback_exceptions` entirely, the same trick the `override` button
+already uses.
+
+**Rejected anyway, on this project's own recurring lesson.** The six `"board"`
+references across two callbacks become twelve across four, and every later board
+change gets built twice — Phase 3.5's opponent needs and bye clustering both
+reach into the board. `board.py` is already one deliberate copy of the render
+path, guarded by an agreement test and recorded as debt. A second copy of the
+thing you stare at while drafting is worse.
+
+**And the benefit expires exactly when it would be collected.** The reason to
+keep `DataTable` for Yahoo is that its click path is REHEARSED. Phase 3.7 is
+scheduled after BOTH drafts, so by then there is no rehearsal left to protect and
+an entire offseason to rehearse a new one. That is a permanent maintenance cost
+bought to protect something that has stopped needing protection.
+
+The axis is also wrong: the two leagues do not want different tables, they want
+the same table under different interaction pressure. An `html.Table` clicks fine
+— it simply has not been proven yet.
+
+**So take the same de-risking on a better axis:**
+
+1. Build ONE `html.Table`, with click-to-mark.
+2. Keep the `DataTable` path behind a config flag (`board_table = "datatable" |
+   "html"`) for exactly one cycle, so a bad rehearsal is **one line to revert**.
+   Same shape as `adp_source`, which is already documented as one config line.
+3. Run one live mock on the new table. Yahoo-shaped is the harder test, since
+   every pick is clicked.
+4. **Delete the flag and the `DataTable` branch** once that passes.
+
+The difference from the per-league fork is a deletion date. A temporary
+dual-path with a scheduled removal is a migration; a permanent one keyed on
+league is a second implementation to maintain forever.
+
+**If step 4 slips, that is the finding** — write down why rather than letting the
+flag calcify, which is how a migration quietly becomes a fork.
+
 **Do it AFTER Sept 6, or keep it purely additive before.** Appearance work cannot
 break the engine — it never touches `value.py` or `data.py` — but the board has
 just been rehearsed under a clock, and changing where things sit un-rehearses the
