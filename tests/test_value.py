@@ -725,6 +725,48 @@ def test_replacement_baseline_comes_from_the_full_pool_not_whats_left():
     assert top.vbd != pytest.approx(20.0)
 
 
+def test_a_players_tier_does_not_change_when_the_players_above_him_are_drafted():
+    """Same family as the replacement defect above, one line further down.
+
+    A tier is a property of the PLAYER -- how far he sits from the next real
+    gap in his own position -- not of whoever happens to remain. Computed from
+    `available` the labels drift upward all draft: measured on the real
+    sleeper-main pool, 32 of the top 40 rows carried a wrong tier by pick 20
+    and ALL 40 did by pick 160, where a preseason tier-11 receiver rendered as
+    "tier 1" purely because he was the best one left.
+
+    Asserting the INVARIANT rather than specific numbers: whatever tier a
+    player has on the opening board, he still has it once ten players above him
+    are gone.
+    """
+    # Three clearly separated clusters, so the tier boundaries are unambiguous.
+    full = []
+    for i in range(5):
+        full.append(mk(f"wr_a{i}", "WR", 300.0 - i, adp=float(i + 1), stdev=5.0))
+    for i in range(5):
+        full.append(mk(f"wr_b{i}", "WR", 200.0 - i, adp=float(i + 20), stdev=5.0))
+    for i in range(5):
+        full.append(mk(f"wr_c{i}", "WR", 100.0 - i, adp=float(i + 40), stdev=5.0))
+
+    def tiers_at(available):
+        board = build_board(
+            available=available, my_roster=[], settings_slots=SLOTS, num_teams=12,
+            current_pick=1, my_slot=None, tunables=Tunables(), replacement_pool=full,
+        )
+        return {r.player.sleeper_id: r.tier for r in board}
+
+    opening = tiers_at(full)
+    drained = tiers_at(full[10:])          # the top two clusters are gone
+
+    assert drained, "no rows survived the drain"
+    for pid, tier in drained.items():
+        assert tier == opening[pid], f"{pid} moved from tier {opening[pid]} to {tier}"
+
+    # And concretely: the best REMAINING receiver must not be promoted to 1.
+    assert opening["wr_c0"] > 1
+    assert drained["wr_c0"] == opening["wr_c0"]
+
+
 def test_a_player_who_cannot_start_never_outranks_one_who_can():
     """Task 13 defect, and the reason that draft ended with three quarterbacks.
 

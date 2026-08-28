@@ -1,0 +1,332 @@
+/* Dash auto-serves every file in this directory -- no config, no build step,
+   no dependency. That is the whole reason the board's appearance needed no
+   toolchain (TODO.md section 19).
+
+   WHAT BELONGS HERE: the page shell, the grid, cards, the top bar, and the
+   html.Pre blocks (banners, clock, roster, status).
+
+   WHAT DOES NOT: anything inside the DataTable. Dash writes style_cell /
+   style_header / style_data as INLINE styles, which beat any rule in this
+   file. Table colours live in app.py's Python props; putting them here looks
+   right in the file and silently does nothing. */
+
+:root {
+  /* Surfaces */
+  --bg: #0f1216;
+  --card: #171b21;
+  --card-hi: #1d222a;
+  --border: #262c35;
+  --text: #e6e9ee;
+  --muted: #8b95a3;
+
+  /* State. These are the ONLY saturated colours on the page. Position colours
+     are muted by design, so state and category can never be confused: they use
+     different channels -- intensity and area for state, hue for position. */
+  --live: #22c55e;
+  --warn: #f59e0b;
+  --error: #ef4444;
+
+  --radius: 10px;
+  --gap: 16px;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- page shell ---------- */
+
+.page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 24px 48px;
+}
+
+/* Sticky because the clock is the most time-critical thing on the page and the
+   board scrolls past it. */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  /* Three tracks, not flexbox: 1fr | auto | 1fr centres the clock against the
+     PAGE, not against whatever space the brand and dropdown leave over. With
+     flex the clock would drift every time the league name changed length. */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--gap);
+  padding: 14px 0;
+  margin-bottom: var(--gap);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Rounded grotesque, to echo the card corners. System stack only -- a
+   downloaded face would be the first new dependency this page has needed. */
+.topbar__brand {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN",
+               "Avenir Next", var(--sans);
+  font-weight: 800;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+/* The artwork carries its own navy field rather than transparency, so it is
+   rounded into a badge -- an unrounded square would read as a paste onto the
+   header instead of part of it. */
+.topbar__logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: block;
+  flex: none;
+}
+
+.topbar__clock {
+  justify-self: center;
+  text-align: center;
+  margin: 0;
+}
+
+.topbar__league {
+  justify-self: end;
+  width: 18rem;
+}
+
+/* Stacked, because three tracks in a phone width squeezes the clock to nothing. */
+@media (max-width: 760px) {
+  .topbar {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 10px;
+  }
+  .topbar__brand, .topbar__clock, .topbar__league { justify-self: center; }
+  .topbar__league { width: 100%; }
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: var(--gap);
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.col-main, .col-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;          /* lets the table's own overflow scroll instead of
+                            blowing the grid column out */
+}
+
+/* ---------- cards ---------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.card--flush { padding: 6px; }        /* the board: the table draws its own */
+
+.card__title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+
+/* ---------- html.Pre blocks ---------- */
+
+/* banners, clock, roster and status are Pre because the callbacks emit
+   newline-joined strings. Kept as Pre deliberately: emitting structure instead
+   would mean changing banner_lines(), which is tested and mutation-covered. */
+#banners, #clock, #roster, #status {
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+#roster { font-variant-numeric: tabular-nums; }
+
+#banners:empty, #status:empty { display: none; }
+
+#banners {
+  color: var(--warn);
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 3px solid var(--warn);
+  border-radius: 0 6px 6px 0;
+  padding: 10px 12px;
+  margin-bottom: var(--gap);
+}
+
+#clock {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+#status {
+  color: var(--muted);
+  font-size: 12px;
+  padding-top: 2px;
+}
+
+/* ---------- on the clock ----------
+
+   State reads as intensity and area, never as a hue: a saturated colour here
+   would compete with the position colours carried by every row. */
+.page--live .topbar { border-bottom-color: var(--live); }
+/* #clock -- an ID -- also sets `color`, and an ID beats two classes, so the
+   class-only form of this rule lost silently: the border and glow turned green
+   while the text stayed grey. Matched on the ID here so the two rules are
+   comparable and the later one wins. */
+.page--live #clock { color: var(--live); font-weight: 700; }
+.page--live .board-card {
+  border-color: var(--live);
+  box-shadow: 0 0 0 1px var(--live), 0 0 24px rgba(34, 197, 94, 0.16);
+}
+
+/* ---------- controls ---------- */
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Dash renders RadioItems as label > input; the default is cramped and unstyled. */
+#pos { display: flex; gap: 4px; flex-wrap: wrap; }
+
+#pos label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+#pos label:hover { background: var(--card-hi); color: var(--text); }
+#pos input { accent-color: var(--live); margin: 0; }
+#pos label:has(input:checked) {
+  color: var(--text);
+  background: var(--card-hi);
+  border-color: var(--muted);
+}
+
+#search {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: 8px 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--sans);
+  font-size: 13px;
+  outline: none;
+}
+
+#search::placeholder { color: var(--muted); }
+#search:focus { border-color: var(--muted); }
+
+/* ---------- buttons ---------- */
+
+.actions { display: flex; flex-direction: column; gap: 8px; }
+
+.actions button {
+  width: 100%;
+  padding: 9px 14px;
+  background: var(--card-hi);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.actions button:hover { background: #252b34; border-color: var(--muted); }
+.actions button:active { transform: translateY(1px); }
+
+/* ---------- DataTable chrome ----------
+
+   Only the properties Dash does NOT write inline: hover, the pointer affordance,
+   and the scroll container. Colours are in app.py. */
+
+.board-card .dash-table-container { border-radius: 6px; }
+
+/* Every row is a click target that marks a player drafted, and nothing on the
+   board said so until now. */
+.board-card .dash-cell { cursor: pointer; }
+
+.board-card .dash-spreadsheet-container tr:hover .dash-cell {
+  background-color: var(--card-hi) !important;
+}
+
+.board-card .dash-cell.focused,
+.board-card .dash-cell--selected {
+  background-color: rgba(34, 197, 94, 0.14) !important;
+  box-shadow: none !important;
+}
+
+/* ---------- Dash's own design tokens ----------
+
+   Dash 4 renders dcc controls from ITS tokens, not from class names worth
+   guessing at: .dash-dropdown sets `background: var(--Dash-Fill-Inverse-Strong)`
+   -- which defaults to #fff -- and `color: inherit`. On this page that was
+   near-white body text on a white fill, so the selected league was invisible.
+   Overriding the tokens fixes the dropdown, its menu, and every other dcc
+   control at once; chasing .dash-dropdown-* class names would fix one.
+
+   Dash 3 and earlier used react-select (.Select-control, .Select-menu-outer).
+   Those selectors are GONE in 4.4.1 and matched nothing at all -- which is how
+   this shipped looking styled while doing nothing. */
+:root {
+  --Dash-Fill-Inverse-Strong: var(--card);
+  --Dash-Fill-Inverse-strong: var(--card);   /* Dash ships both casings */
+  --Dash-Fill-Interactive-Strong: var(--live);
+  --Dash-Fill-Interactive-Weak: rgba(255, 255, 255, 0.05);
+  --Dash-Fill-Primary-Hover: rgba(255, 255, 255, 0.06);
+  --Dash-Fill-Primary-Active: rgba(255, 255, 255, 0.10);
+  --Dash-Fill-Disabled: rgba(255, 255, 255, 0.08);
+  --Dash-Stroke-Strong: #38414e;
+  --Dash-Stroke-Weak: var(--border);
+  --Dash-Text-Primary: var(--text);
+  --Dash-Text-Strong: #ffffff;
+  --Dash-Text-Weak: var(--muted);
+  --Dash-Text-Disabled: #6b7480;
+}
+
+.dash-dropdown { border-radius: 8px; }
+.dash-dropdown-content { border-radius: 8px; overflow: hidden; }
+.dash-dropdown-value { font-weight: 600; }

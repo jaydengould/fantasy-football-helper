@@ -4,6 +4,7 @@ Nothing downstream may reference a concrete feed class by name -- the engine
 never knows which platform it is serving.
 """
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
@@ -62,8 +63,25 @@ class SleeperFeed:
         self.cache_dir = cache_dir
 
     def get_picks(self) -> list[Pick]:
+        # Sleeper serves this endpoint through Cloudflare as
+        # `public, s-maxage=86400, stale-while-revalidate=300`, so a plain poll
+        # is answered from the edge and never reaches origin: measured
+        # cf-cache-status HIT on every request with `age` climbing 516/517/518
+        # across consecutive polls. Sleeper's own app uses a websocket, which is
+        # why its UI runs seconds ahead of a board polling this URL.
+        #
+        # A `Cache-Control: no-cache` REQUEST header is ignored by their edge.
+        # A unique query param is not -- MISS on every request, measured.
+        #
+        # Cost: RTT 146ms -> 303ms, against a 1000ms poll interval, so the
+        # cadence does not change. 60 req/min at a 1s poll, against the
+        # ~1000 req/min that gets an IP blocked.
+        #
+        # The CACHE KEY stays `picks_<draft_id>`: the URL now varies per call,
+        # and keying the local cache on it would write a new file every poll.
         raw = fetch_json(
-            SLEEPER_PICKS_URL.format(draft_id=self.draft_id),
+            f"{SLEEPER_PICKS_URL.format(draft_id=self.draft_id)}"
+            f"?_={int(time.time() * 1000)}",
             f"picks_{self.draft_id}",
             ttl_seconds=0,          # live data; never serve from cache on success
             cache_dir=self.cache_dir,

@@ -396,23 +396,26 @@ def test_override_button_flips_mine_through_the_row_id(monkeypatch, tmp_path):
 
 # --- Task 7: tier bands, position filter, search ---
 
-from ffhelper.app import filter_rows, tier_styles
+from ffhelper.app import filter_rows
 
 
-def test_tier_styles_band_adjacent_tiers_differently():
+def test_the_tier_badge_is_coloured_by_its_own_position():
     # TODO.md section 15: no position ranks its own top 12 better than ~+0.35
     # Spearman. The gap between tiers is real; the order inside one is close to
-    # noise. The band is what makes same-tier players read as interchangeable.
-    rows = [
-        {"rank": 1, "pos": "RB", "tier": 1}, {"rank": 2, "pos": "RB", "tier": 1},
-        {"rank": 3, "pos": "RB", "tier": 2}, {"rank": 4, "pos": "RB", "tier": 2},
-    ]
-    styles = tier_styles(rows)
-    colours = [s["backgroundColor"] for s in styles]
-    assert len(styles) == 4
-    assert colours[0] == colours[1]
-    assert colours[2] == colours[3]
-    assert colours[0] != colours[2]
+    # noise. The badge is what makes same-tier players read as interchangeable.
+    #
+    # `tier` is a PER-POSITION column, so RB tier 1 and WR tier 1 are not the
+    # same claim. The badge separates them by COLOUR -- which is the whole
+    # reason it replaced alternating bands, that could only group adjacent rows
+    # and so said RB 4 and RB 5 were one group whenever a WR sat between them.
+    by_pos = {s["if"]["filter_query"]: s for s in app.TIER_STYLES}
+    assert len(by_pos) == len(app.POSITION_COLORS)
+    for pos, colour in app.POSITION_COLORS.items():
+        style = by_pos[f'{{pos}} = "{pos}"']
+        assert style["if"]["column_id"] == "tier"
+        assert style["color"] == colour
+    # Two positions on the same tier number must never look the same.
+    assert by_pos['{pos} = "RB"']["color"] != by_pos['{pos} = "WR"']["color"]
 
 
 def test_filter_rows_by_position():
@@ -450,14 +453,15 @@ def test_filter_then_trim_shows_a_full_screen_of_the_filtered_position():
     assert all(r["pos"] == "K" for r in filtered)
 
 
-def _make_refresh(monkeypatch, tmp_path, players):
+def _make_refresh(monkeypatch, tmp_path, players, draft_slot=5, has_feed=True):
     """Register callbacks against a fixed pool and hand back the raw _refresh."""
     monkeypatch.setattr(app, "_draft_log_path", lambda league: tmp_path / "log.jsonl")
-    league = League(name="refresh-test", platform="sleeper", league_id="1", draft_slot=5)
+    league = League(name="refresh-test", platform="sleeper", league_id="1",
+                    draft_slot=draft_slot)
     refresh, _write = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         [league], Tunables(),
-        lambda lg: (players, _settings(), FakeFeed(), True),
+        lambda lg: (players, _settings(), FakeFeed(), has_feed),
     )
     return refresh
 
@@ -487,34 +491,157 @@ def test_refresh_filters_the_wide_board_before_trimming_to_the_screen(monkeypatc
     players = _deep_pool()
     refresh = _make_refresh(monkeypatch, tmp_path, players)
 
-    unfiltered, _styles, _banners, _clock, _roster = refresh(0, "refresh-test", "ALL", "")
+    unfiltered, *_rest = refresh(0, "refresh-test", "ALL", "")
     in_top_40 = sum(1 for r in unfiltered if r["pos"] == "K")
 
-    kickers, _styles, _banners, _clock, _roster = refresh(0, "refresh-test", "K", "")
+    kickers, *_rest = refresh(0, "refresh-test", "K", "")
     assert all(r["pos"] == "K" for r in kickers)
     assert len(kickers) == 16
     assert len(kickers) > in_top_40      # fails if the trim ran before the filter
 
 
-def test_refresh_bands_the_rows_it_actually_returns(monkeypatch, tmp_path):
-    # style_data_conditional indexes rows by position, so styling the unfiltered
-    # list would paint the wrong rows once a filter is on.
+def test_refresh_styles_match_by_query_never_by_row_position(monkeypatch, tmp_path):
+    # The old alternating bands keyed on {"row_index": n}, so styling the
+    # UNFILTERED list painted the wrong rows the moment a filter was on. Every
+    # style is now a filter_query against the row's own data, which makes that
+    # whole class of bug unreachable rather than merely tested for.
     players = _deep_pool()
     refresh = _make_refresh(monkeypatch, tmp_path, players)
-    rows, styles, _banners, _clock, _roster = refresh(0, "refresh-test", "QB", "")
-    assert len(styles) == len(rows)
-    assert [s["if"]["row_index"] for s in styles] == list(range(len(rows)))
+    rows, styles, *_rest = refresh(0, "refresh-test", "QB", "")
+    assert rows
+    assert styles
+    assert not any("row_index" in s["if"] for s in styles)
+    assert all("filter_query" in s["if"] for s in styles)
 
 
-def test_tier_bands_never_group_across_positions():
-    # `tier` is a PER-POSITION column, so tier 1 at RB and tier 1 at WR are not
-    # the same claim. Banding them together tells the user Gibbs and Chase are
-    # interchangeable, which is exactly the reading TODO.md section 15 supports
-    # WITHIN a position and the VONA column contradicts across them: on the real
-    # sleeper-main opening board those two sat in one band at vona 50.1 vs 16.5.
-    rows = [{"pos": "RB", "tier": 1}, {"pos": "WR", "tier": 1}]
-    colours = [s["backgroundColor"] for s in tier_styles(rows)]
-    assert colours[0] != colours[1]
+def test_refresh_ships_the_position_and_tier_styles(monkeypatch, tmp_path):
+    # Asserting this on POS_STYLES directly would pass against a callback that
+    # never sends them, which is the whole defect. Reach it through _refresh.
+    players = _deep_pool()
+    refresh = _make_refresh(monkeypatch, tmp_path, players)
+    rows, styles, *_rest = refresh(0, "refresh-test", "ALL", "")
+
+    # Keyed on (query, COLUMN): POS_STYLES and TIER_STYLES share the same
+    # filter_query, so a dict keyed on the query alone collapses them and the
+    # assertion passes even when POS_STYLES is dropped entirely. mutate.py
+    # caught exactly that -- the first version of this test proved nothing.
+    keys = {(s["if"]["filter_query"], s["if"].get("column_id")) for s in styles}
+    assert keys, "no conditional styles reached the table"
+    for pos in {r["pos"] for r in rows}:
+        q = f'{{pos}} = "{pos}"'
+        assert (q, "pos") in keys, f"{pos}: POS cell colour missing"
+        assert (q, "rank") in keys, f"{pos}: row stripe missing"
+        assert (q, "tier") in keys, f"{pos}: tier badge missing"
+    # Muted, and distinct per position -- a shared colour would say two
+    # positions are one category.
+    assert len(set(app.POSITION_COLORS.values())) == len(app.POSITION_COLORS)
+
+
+def test_the_page_reports_live_state_only_at_the_seats_own_pick(monkeypatch, tmp_path):
+    # The live class and the clock TEXT read one predicate. If they are ever
+    # allowed to drift apart, the page glows on someone else's pick -- the one
+    # piece of styling that can actively mislead at the table.
+    players = _deep_pool()
+
+    # Indexed, not tail-unpacked: outputs get appended over time and a
+    # positional unpack silently starts reading the wrong one.
+    CLOCK, PAGE_CLASS = 3, 5
+    mine = _make_refresh(monkeypatch, tmp_path, players, draft_slot=1)
+    out = mine(0, "refresh-test", "ALL", "")
+    clock_mine, cls_mine = out[CLOCK], out[PAGE_CLASS]
+
+    theirs = _make_refresh(monkeypatch, tmp_path, players, draft_slot=5)
+    out = theirs(0, "refresh-test", "ALL", "")
+    clock_theirs, cls_theirs = out[CLOCK], out[PAGE_CLASS]
+
+    assert "ON THE CLOCK" in clock_mine and "page--live" in cls_mine
+    assert "ON THE CLOCK" not in clock_theirs and "page--live" not in cls_theirs
+
+
+def test_a_bye_clashes_only_with_the_same_position_already_on_your_roster():
+    # A bye you already own at this position is a week you start nobody there.
+    # Scoped to the SAME position deliberately: a WR sharing your RB's bye is
+    # not the problem, and flagging it would make the warning noise.
+    players = {
+        "1": Player(sleeper_id="1", name="My Back", position="RB", team="CHI",
+                    proj_pts=300.0, adp=1.0, adp_stdev=4.0, bye=6),
+        "2": Player(sleeper_id="2", name="Same Bye RB", position="RB", team="GB",
+                    proj_pts=290.0, adp=2.0, adp_stdev=4.0, bye=6),
+        "3": Player(sleeper_id="3", name="Same Bye WR", position="WR", team="GB",
+                    proj_pts=280.0, adp=3.0, adp_stdev=4.0, bye=6),
+        "4": Player(sleeper_id="4", name="Other Bye RB", position="RB", team="GB",
+                    proj_pts=270.0, adp=4.0, adp_stdev=4.0, bye=9),
+    }
+    # Player 1 is drafted AND claimed, so he is on the roster and off the board.
+    state, _ = _state(gone={"1"}, mine={"1"}, players=players)
+    assert [p.sleeper_id for p in state.my_roster] == ["1"]
+
+    flags = {r["player"]: r["flags"] for r in
+             board_rows(state, limit=10, divergence_flag_slots=10)}
+    assert "BYE6 CLASH" in flags["Same Bye RB"]
+    assert "CLASH" not in flags["Same Bye WR"] and "bye6" in flags["Same Bye WR"]
+    assert "CLASH" not in flags["Other Bye RB"] and "bye9" in flags["Other Bye RB"]
+
+
+def test_an_empty_roster_clashes_with_nothing():
+    # The opening board. Every row shares a bye with something, and none of it
+    # matters yet -- a board that opens covered in red warnings is a board you
+    # stop reading.
+    players = {
+        "2": Player(sleeper_id="2", name="A", position="RB", team="GB",
+                    proj_pts=290.0, adp=2.0, adp_stdev=4.0, bye=6),
+        "3": Player(sleeper_id="3", name="B", position="RB", team="CHI",
+                    proj_pts=280.0, adp=3.0, adp_stdev=4.0, bye=6),
+    }
+    state, _ = _state(players=players)
+    assert state.my_roster == []
+    rows = board_rows(state, limit=10, divergence_flag_slots=10)
+    assert not any("CLASH" in r["flags"] for r in rows)
+
+
+def test_the_override_is_hidden_when_the_feed_reports_who_drafted_whom(
+    monkeypatch, tmp_path,
+):
+    """The override corrects SEAT-DERIVED attribution, which a league with a
+    feed never uses -- the pick's own draft_slot is authoritative and cannot
+    drift. On Sleeper it is a dead control.
+
+    Undo is NOT hidden with it, on either league: a misclick unions into
+    `drafted` and silently removes a player who is still available, and undo is
+    the only way back.
+    """
+    players = _deep_pool()
+
+    with_feed = _make_refresh(monkeypatch, tmp_path, players, has_feed=True)
+    *_head, override_style = with_feed(0, "refresh-test", "ALL", "")
+    assert override_style == {"display": "none"}
+
+    without = _make_refresh(monkeypatch, tmp_path, players, has_feed=False)
+    *_head, override_style = without(0, "refresh-test", "ALL", "")
+    assert override_style != {"display": "none"}
+
+    # The assertions above read a VALUE out of the tuple and cannot see which
+    # component it lands on -- mutate.py proved that by retargeting the Output
+    # at `undo` with the whole suite still green. Assert the wiring itself, so
+    # hiding the one control that recovers a misclick cannot pass unnoticed.
+    probe = _dash.Dash(__name__, suppress_callback_exceptions=True)
+    app._register_callbacks(
+        probe,
+        [League(name="refresh-test", platform="sleeper", league_id="1", draft_slot=5)],
+        Tunables(), lambda lg: (players, _settings(), FakeFeed(), True))
+    wiring = " ".join(probe.callback_map)
+    assert "override.style" in wiring
+    assert "undo.style" not in wiring, "undo is the only misclick recovery"
+
+
+def test_only_a_clash_flag_is_styled_red_not_an_ordinary_bye():
+    # The style matches CASE: informational flags are `bye6`, a warning is
+    # `BYE6 CLASH`. If it ever matched lowercase too, every row on the board
+    # would turn red and the warning would carry no information at all.
+    assert len(app.CLASH_STYLES) == 1
+    q = app.CLASH_STYLES[0]["if"]["filter_query"]
+    assert "CLASH" in q and "bye" not in q
+    assert app.CLASH_STYLES[0]["if"]["column_id"] == "flags"
 
 
 # --- Task 8: the roster panel ---

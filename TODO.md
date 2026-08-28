@@ -33,16 +33,27 @@ work, in priority order:
 5. **FantasyPros ECR local look.** Section 18 — 20 minutes, needs a manual
    download. Run the ECR-vs-ADP correlation first; it decides the rest.
 6. **Deferred minors.** Section 9 — two left, both trivial, neither load-bearing.
-7. **Delete the `yahoo-mock` block** from `config.toml` once no more mocks are
-   planned. It is scratch, and its `draft_slot` has been edited four times.
-   **Note the coupling:** `calibrate.py` reads `num_teams` from that block, so it
-   is now 10 and the three 12-team transcripts from 2026-08-26 will be REFUSED
-   until it is set back. That refusal is the guard working, not a bug.
+7. **Delete the `yahoo-mock` AND `sleeper-mock` blocks** from `config.toml` once
+   no more mocks are planned. Both are scratch. `sleeper-mock` was added
+   2026-08-28 and its `draft_id` points at a finished mock.
+   **Note the coupling:** `calibrate.py` reads `num_teams` from the named league,
+   so `yahoo-mock` at 10 teams will REFUSE the three 12-team transcripts from
+   2026-08-26 until it is set back. That refusal is the guard working, not a bug.
 8. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
 
-**Optional, now cheap:** full-PPR 12-team mocks would test `sleeper-main`'s
-`adp_ppr` directly, which the half-PPR mocks did not. Join, do not type, paste
-the results page afterwards.
+**CLOSED 2026-08-28 — Sleeper mocks CANNOT settle this.** The "optional, now
+cheap" full-PPR 12-team mock was run (`1399171308415102976`, 180 picks, seat 5)
+and **room discipline came back median rank taken 2, 36% at top — identical to
+the Task 13 bot mock.** Sleeper mock lobbies are CPU-filled and autodraft walks
+straight down Sleeper's own ADP, so the table is circular by construction. That
+is exactly why §12a moved the human mock to Yahoo. Extraction itself is free
+(Sleeper's picks endpoint is public — `transcribe.py` is not needed), so the
+temptation to pool five of them is real. **Do not.** A non-circular full-PPR
+12-team sample needs a room with humans in it.
+
+**Phase 3.6 (web board appearance) is COMPLETE**, built 2026-08-28 ahead of
+Phase 4 on the user's call. Layout, palette and the tier badge shipped; the
+`html.Table` half is still deferred (§19).
 
 **PHASE 3 IS COMPLETE (2026-08-27), Tasks 1-9.** Branch `phase-3-dash-ui`,
 **309 tests, 110 mutations.** The Dash board renders the same engine the terminal
@@ -1096,6 +1107,23 @@ upgrade path, and it is already cheap **by design**: `board_rows()` returns plai
 dicts precisely so that swap touches no tested logic (see the `ponytail:` comment
 on `tier_styles`).
 
+**STATUS 2026-08-28: the CSS half is DONE.** `ffhelper/assets/board.css` plus a
+two-column layout, cards, a sticky header, dark palette, position colours and the
+tier badge all shipped. `logo.png` is the user's own artwork — the first logo was
+an NFL trademark and was removed before commit, since the repo is public.
+
+**Still deferred, and it is the expensive half:** replacing `DataTable` with a
+hand-rolled `html.Table`. That is what real `-- TIER 2 --` separator rows, inline
+badges and two-line rows need. **The cost is not markup, it is the click path:**
+`Input("board", "active_cell")` IS how a click marks a player, and
+`Output("board", "active_cell") -> None` is the fix for the repeat-click no-op
+found live on 2026-08-27. An `html.Table` has neither prop, so the whole
+entry mechanism gets rebuilt and needs its own live rehearsal. After Sept 1.
+
+Also deferred with it: **per-severity banner colours.** `banner_lines` returns a
+newline-joined string into an `html.Pre`, so colouring STALE amber and OVERRULED
+red needs it to return structure — tested, mutation-covered code.
+
 **Do it AFTER Sept 6, or keep it purely additive before.** Appearance work cannot
 break the engine — it never touches `value.py` or `data.py` — but the board has
 just been rehearsed under a clock, and changing where things sit un-rehearses the
@@ -1105,6 +1133,54 @@ time; moving or restructuring controls is not.
 **Where it belongs:** its own small phase, not 3.5. Phase 3.5 (opponent needs,
 bye clustering) reaches into the board's LOGIC and is the risky one; this is
 presentation only and shares none of that risk.
+
+---
+
+## 20. Sleeper's CDN — FIXED 2026-08-28, and how to re-check it
+
+Sleeper serves `/v1/draft/<id>/picks` as
+`public, s-maxage=86400, stale-while-revalidate=300` behind Cloudflare, so a
+plain poll is answered from the edge and never reaches origin. `feeds.py` now
+appends `?_=<ms>`; a `Cache-Control: no-cache` REQUEST header is ignored.
+
+**Measured on a live 180-pick draft**, polling both URLs once a second in
+parallel: the plain URL was late on **180/180 picks, median 8.3s, p90 14.9s,
+max 27.9s, never once ahead.** The delta held at ~8.6s in both halves, so it is
+not a startup artifact.
+
+**Read that number correctly.** The room ran at **2.48s per pick** (CPU
+autopick). Sept 6 is a 120s clock, where an 8s staleness is nearly invisible.
+The fix is real and cheap, but it mattered most in a cadence only a mock
+produces — the same lesson as §12a run 2, *the mock is not the draft to optimise
+for.*
+
+**The cache KEY must stay `picks_<draft_id>`.** The URL now varies per poll, so
+keying the local cache on it writes one file per second for a whole draft. Both
+halves carry a mutation.
+
+To re-check after any Sleeper API change:
+
+    curl -sD - -o /dev/null "https://api.sleeper.app/v1/draft/<id>/picks" | grep -i "cf-cache-status\|age:"
+
+`MISS` and no `age` means the buster still works. `HIT` means it stopped.
+
+---
+
+## 21. `calibrate.py`'s draft-id path was broken for two days — FIXED 2026-08-28
+
+`calibrate.py <draft_id> <slot>` raised `IndexError`; with a league argument it
+fetched the **league name** as a draft id and scored the **19-digit draft id as
+the seat number**. Introduced by the 2026-08-26 pooling refactor, which split
+argv on `isdecimal()` — and every Sleeper draft id is all digits.
+
+Green suite throughout. Nothing reached the branch, because reaching it needed
+the network. Parsing is now `parse_draft_args`, split out **so it can be tested
+without one**; two mutations cover it.
+
+**The generalisable bit:** the pooling refactor was verified by running the
+JOURNAL path, which is what it changed. The draft-id path shared the argument
+parser and was never re-run. *A refactor's blast radius is every caller of what
+it touched, not the feature it was for.*
 
 ---
 
@@ -1199,10 +1275,20 @@ Options, cheapest first:
    interchangeable and break ties on your own read. Zero cost, and given the
    Sept 1 deadline this is almost certainly the right call for this year.
 2. ~~**Make the tier visually dominant** in the Phase 3 Dash UI rather than a
-   column.~~ **DONE 2026-08-27.** The web board bands rows by tier. Keyed on
-   `(position, tier)`, not tier alone: `tier` is a per-position column, and
-   banding on it alone put Gibbs, Bijan, Nacua and Chase in one block on the real
-   opening board — two positions, VONA 50.1 down to 16.5.
+   column.~~ **DONE 2026-08-27, then REDONE 2026-08-28.** The banding shipped
+   first and was wrong by construction: the board interleaves positions by VONA,
+   so a `(pos, tier)` group is **not contiguous** — RB tier 4 sat at rows 7, 8
+   and 10 with a WR between — and two alternating shades can only group ADJACENT
+   rows. Found by the user reading a real board: "you have to double check the
+   position and tier of that position." Replaced by a **tier badge coloured by
+   position**, so the group travels with the row instead of sitting behind it.
+
+   **And the number itself was wrong.** Tiers were computed from `available`, so
+   the labels drifted upward all draft — 32 of the top 40 rows carried a wrong
+   tier by pick 20 and **all 40 did by pick 160**, where a preseason tier-11
+   receiver rendered as "tier 1" for being the best one left. Same defect as
+   §11 #3, one line below it. Fixed by drawing tiers from the full pool;
+   `value.py` unfrozen a second time on a measured zero change to ordering.
 3. **Give the board an interval instead of a point estimate.** The honest fix:
    `backtest.py` can now produce the historical projection-vs-outcome error
    distribution per position, which is exactly the input a confidence band needs.

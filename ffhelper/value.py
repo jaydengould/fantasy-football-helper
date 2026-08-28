@@ -318,8 +318,9 @@ def build_board(
 ) -> list[Row]:
     """Assemble the ranked board. Pure: same inputs, same output, always.
 
-    `replacement_pool` is the pool the replacement BASELINE is drawn from, and
-    live callers must pass the FULL player pool, not the available one.
+    `replacement_pool` is the pool the replacement BASELINE and the TIER
+    boundaries are both drawn from, and live callers must pass the FULL player
+    pool, not the available one.
     Replacement level is a property of the league -- "what the last startable
     player at this position is worth" -- not of whoever happens to be left.
 
@@ -348,9 +349,19 @@ def build_board(
         else current_pick + 1
     )
     ranks = replacement_ranks(settings_slots, num_teams, tunables.flex_share)
-    repl = replacement_points(replacement_pool if replacement_pool is not None else available, ranks)
+    pool = replacement_pool if replacement_pool is not None else available
+    repl = replacement_points(pool, ranks)
     vbd_scores = vbd(available, repl)
-    tiers = assign_tiers(available, vbd_scores, tunables.tier_break_sigma)
+    # Tiers come from the FULL pool for exactly the reason replacement does: a
+    # tier is a property of the PLAYER, not of whoever happens to be left. Drawn
+    # from `available` the labels drift upward as the board drains -- measured on
+    # the real sleeper-main pool, 32 of the top 40 rows carried a wrong tier by
+    # pick 20 and ALL 40 did by pick 160, where a preseason tier-11 receiver was
+    # being shown as "tier 1" because he was merely the best one left.
+    #
+    # `tier` is not in the sort key, so this changes the LABEL and never the
+    # ordering -- verified byte-identical across picks 1/20/40/80/120/160.
+    tiers = assign_tiers(pool, vbd(pool, repl), tunables.tier_break_sigma)
     divs = divergence(available, vbd_scores)
 
     rows = [
