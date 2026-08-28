@@ -316,7 +316,8 @@ fresh opinion.
 | 2 | Yahoo feed adapter + SQLite draft log | Aug 29–30 | not started (Yahoo half gated on approval) |
 | 3 | Dash UI | Sept 5 | **COMPLETE** — Tasks 1-9, rehearsed live |
 | 3.5 | Opponent needs, bye clustering, notifications, manual overrides | Sept 5 | not started — but the bye CLASH flag landed 2026-08-28 in `board_rows`, presentation only, sort untouched |
-| 3.6 | Web board appearance (`assets/*.css`, no new dependency) | Aug 28 | **COMPLETE** — built early on the user's call |
+| 3.6 | Web board appearance — CSS/layout half (`assets/*.css`, no new dependency) | Aug 28 | **COMPLETE** — built early on the user's call |
+| 3.7 | Web board — the `DataTable` replacement and what it unlocks | after Sept 6 | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope |
 | 4 | Season mode (`nflreadpy`) | after | not started |
 | 5 | Trade finder (own spec) | in-season | not started |
 
@@ -382,7 +383,11 @@ constraint was §19's rehearsal risk, not the bones.
 
 Scope was cut to layout + palette, keeping `DataTable`: the click path IS
 `active_cell`, and replacing it rebuilds the exact surface the Aug 27 mock found
-a defect in. `html.Table` waits until after Sept 1.
+a defect in. **The cut half is now PHASE 3.7**, written up in `TODO.md` §19 with
+its five gated items — so "3.6 complete" cannot read as finishing the appearance
+work. `dash_table.DataTable` is deprecated in Dash 4.4.1, so that swap is coming
+regardless; the `html.Table` vs `dash-ag-grid` call is a new-dependency decision
+to take at the START of 3.7.
 
 #### Two of my own CSS rules were dead on arrival
 

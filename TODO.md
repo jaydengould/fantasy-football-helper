@@ -39,7 +39,12 @@ work, in priority order:
    **Note the coupling:** `calibrate.py` reads `num_teams` from the named league,
    so `yahoo-mock` at 10 teams will REFUSE the three 12-team transcripts from
    2026-08-26 until it is set back. That refusal is the guard working, not a bug.
-8. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
+8. **Phase 3.7 — the `DataTable` swap** (§19). After Sept 6. Carries a decision
+   to take FIRST: `html.Table` or `dash-ag-grid`. The suite already warns that
+   `dash_table.DataTable` is deprecated, so the swap is coming regardless — but
+   ag-grid is a new dependency against a rule that says `requests`, `yfpy`,
+   `dash` and nothing else.
+9. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
 
 **CLOSED 2026-08-28 — Sleeper mocks CANNOT settle this.** The "optional, now
 cheap" full-PPR 12-team mock was run (`1399171308415102976`, 180 picks, seat 5)
@@ -51,9 +56,17 @@ is exactly why §12a moved the human mock to Yahoo. Extraction itself is free
 temptation to pool five of them is real. **Do not.** A non-circular full-PPR
 12-team sample needs a room with humans in it.
 
-**Phase 3.6 (web board appearance) is COMPLETE**, built 2026-08-28 ahead of
-Phase 4 on the user's call. Layout, palette and the tier badge shipped; the
-`html.Table` half is still deferred (§19).
+**Phase 3.6 (web board appearance) is COMPLETE AS SCOPED**, built 2026-08-28
+ahead of Phase 4 on the user's call — layout, palette, cards, header and the
+tier badge.
+
+**The restructure was deliberately split in two, and the second half is now
+PHASE 3.7** (§19): replacing `DataTable` with a hand-rolled `html.Table`, plus
+the five things gated on it — separator rows, per-severity banner colours, SURV
+bars, coloured divergence, live page title. **Merging 3.6 does not finish the
+appearance work.** It is deferred on a measured cost, not forgotten: the swap
+rebuilds the click path, which is the surface the Aug 27 mock already found a
+defect in.
 
 **PHASE 3 IS COMPLETE (2026-08-27), Tasks 1-9.** Branch `phase-3-dash-ui`,
 **309 tests, 110 mutations.** The Dash board renders the same engine the terminal
@@ -1112,17 +1125,60 @@ two-column layout, cards, a sticky header, dark palette, position colours and th
 tier badge all shipped. `logo.png` is the user's own artwork — the first logo was
 an NFL trademark and was removed before commit, since the repo is public.
 
-**Still deferred, and it is the expensive half:** replacing `DataTable` with a
-hand-rolled `html.Table`. That is what real `-- TIER 2 --` separator rows, inline
-badges and two-line rows need. **The cost is not markup, it is the click path:**
-`Input("board", "active_cell")` IS how a click marks a player, and
-`Output("board", "active_cell") -> None` is the fix for the repeat-click no-op
-found live on 2026-08-27. An `html.Table` has neither prop, so the whole
-entry mechanism gets rebuilt and needs its own live rehearsal. After Sept 1.
+### The deferred half is now PHASE 3.7. Do not let "3.6 complete" bury it.
 
-Also deferred with it: **per-severity banner colours.** `banner_lines` returns a
-newline-joined string into an `html.Pre`, so colouring STALE amber and OVERRULED
-red needs it to return structure — tested, mutation-covered code.
+The restructure was split in two at the start of the 2026-08-28 session, on a
+measured cost, and **only the first half shipped.** Phase 3.6 is complete as
+scoped; the rest is Phase 3.7 and is listed here so merging 3.6 does not read as
+finishing the appearance work.
+
+**The blocker for all of it is one thing: `DataTable` cannot hold custom row
+markup.** Replacing it with a hand-rolled `html.Table` unlocks every item below
+at once, and nothing below is worth doing separately.
+
+**Why it is expensive, and it is not the markup.** The click path IS the
+DataTable:
+
+- `Input("board", "active_cell")` is how a click marks a player
+- `dash.State("board", "data")` resolves that click to a row id
+- `Output("board", "active_cell") -> None` is the fix for the repeat-click no-op
+  the user diagnosed live on 2026-08-27
+- `style_data_conditional` is how POS_STYLES, TIER_STYLES and CLASH_STYLES land
+
+An `html.Table` has none of those props, so the entry mechanism is rebuilt from
+scratch on pattern-matching callbacks and **needs its own live rehearsal** —
+against the exact defect class the Aug 27 mock already found once.
+
+**Phase 3.7 scope, all of it gated on that swap:**
+
+1. **Real `-- RB · TIER 2 --` separator rows.** The badge is the DataTable-shaped
+   answer; a separator row is the right one.
+2. **Per-severity banner colours.** STALE amber, CLAIM OVERRULED red. Needs
+   `banner_lines` to return structure instead of a newline-joined string, which
+   is tested, mutation-covered code — so it is a real change, not a CSS tweak.
+3. **SURV as a bar behind the number.** Also the honest rendering: §15 says read
+   SURV as an ordering, and a bar reads as ordering where `71%` reads as
+   precision.
+4. **`MODEL+` / `MARKET+` in colour**, so divergence stops hiding in a text
+   column.
+5. **Live page title** — `🏈 pick 42 — sleeper-main` in the tab.
+6. **Two-line rows / inline badges** (team, bye, DIV on a second line).
+
+**Decide `dash-ag-grid` vs `html.Table` at the START of 3.7, not during it.**
+The suite now warns on every run:
+
+    DeprecationWarning: dash_table.DataTable will be removed from the builtin
+    dash components in a future major version. We recommend dash-ag-grid.
+
+So the swap is coming regardless of appearance. But **`dash-ag-grid` is a new
+dependency**, and the draft-mode dependency rule is `requests`, `yfpy`, `dash`
+and nothing else. `html.Table` is stdlib-shaped and keeps that rule; ag-grid
+buys sorting/virtualisation the board does not need for 40 rows. Weigh it once,
+record the answer, do not re-litigate mid-build.
+
+**`board_rows()` returning plain dicts is what keeps this cheap** — the swap
+touches no tested ranking logic. That was designed in deliberately; see the
+`ponytail:` comment it still carries.
 
 **Do it AFTER Sept 6, or keep it purely additive before.** Appearance work cannot
 break the engine — it never touches `value.py` or `data.py` — but the board has
