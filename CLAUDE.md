@@ -259,6 +259,44 @@ fresh opinion.
 - **Trade finder will not output an acceptance probability.** Acceptance depends
   on attention, name-brand bias, and stubbornness; a confident percentage would
   dress up a guess. Rank by a transaction-history prior instead.
+- **Sleeper's picks endpoint is CDN-cached and the poll must defeat it.** It is
+  served `public, s-maxage=86400, stale-while-revalidate=300` behind Cloudflare,
+  so a plain poll is answered from the edge and never reaches origin. Measured on
+  a LIVE 180-pick draft by polling both ways at once: the plain URL was late on
+  **180 of 180 picks, median 8.3s, p90 14.9s, max 27.9s, never once ahead.** A
+  `Cache-Control: no-cache` REQUEST header is ignored; a unique query param is
+  not. `feeds.py` now appends `?_=<ms>`; the CACHE KEY stays `picks_<draft_id>`
+  or a long draft writes one cache file per second. Cost: RTT 146→303ms against
+  a 1000ms poll, 60 req/min against the ~1000/min block threshold.
+  **Right-size it:** that room ran at 2.48s/pick; at Sept 6's 120s clock an 8s
+  staleness is nearly invisible. Sleeper's own app uses a websocket, which is why
+  its UI always looked ahead of the board.
+- **Tiers are drawn from the FULL pool, not the available one.** Same defect as
+  `TODO.md` §11 #3 (replacement level), one line below the fix that was already
+  made for it. From `available`, labels drift upward all draft: 32 of the top 40
+  rows carried a wrong tier by pick 20 and **all 40 did by pick 160**, where a
+  preseason tier-11 receiver rendered as "tier 1" because he was merely the best
+  one left. `value.py` was unfrozen a SECOND time for this, deliberately, on a
+  measured blast radius: every row at picks 1/20/40/80/120/160 came back in the
+  identical order, because `tier` is not in the sort key.
+- **The web board's tier BANDS were replaced by a coloured tier BADGE.** Two
+  alternating background shades cannot group a board that interleaves positions
+  by VONA — RB tier 4 sat at rows 7, 8 and 10 with a WR between, and a band can
+  only group ADJACENT rows. Found by the user reading a real board. The signal
+  had to move into the row, not sit behind it.
+- **The `toggle 'mine'` override hides itself on a league with a feed**, where it
+  is inert: the pick's own `draft_slot` is authoritative and cannot drift. `undo`
+  stays on BOTH — a misclick unions into `drafted` and silently removes a player
+  who is still available, and undo is the only recovery.
+- **The board will NOT fork per league.** Asked 2026-08-28: keep `DataTable` for
+  Yahoo (click entry) and give Sleeper the custom table, switched by the dropdown.
+  It works technically — `board_rows()` returns plain dicts and one consumer —
+  and is rejected because every later board change would be built twice, and
+  because the benefit (protecting a rehearsed click path) expires when Phase 3.7
+  runs, which is after both drafts. Fork on TIME instead: one `html.Table`, the
+  `DataTable` kept behind a config flag for one cycle, flag deleted once a live
+  mock passes. A dual path with a deletion date is a migration; one keyed on
+  league is a second implementation forever. `TODO.md` §19.
 - **Ruled out:** FantasyPros (paid, ToU bars reproducing content), ESPN/Yahoo
   scraping, `nfl_data_py` (deprecated by nflverse → use `nflreadpy`).
   **Refined 2026-08-26:** the FantasyPros bar is on *reproducing* their content —
@@ -286,8 +324,9 @@ fresh opinion.
 | 1 | `data.py` + `value.py` + `cli.py`, Sleeper feed, multi-league config, **manual mark-drafted** | Aug 28 | **COMPLETE** — incl. Task 13 |
 | 2 | Yahoo feed adapter + SQLite draft log | Aug 29–30 | not started (Yahoo half gated on approval) |
 | 3 | Dash UI | Sept 5 | **COMPLETE** — Tasks 1-9, rehearsed live |
-| 3.5 | Opponent needs, bye clustering, notifications, manual overrides | Sept 5 | not started |
-| 3.6 | Web board appearance (`assets/*.css`, no new dependency) | after Sept 6 | not started — `TODO.md` §19 |
+| 3.5 | Opponent needs, bye clustering, notifications, manual overrides | Sept 5 | not started — but the bye CLASH flag landed 2026-08-28 in `board_rows`, presentation only, sort untouched |
+| 3.6 | Web board appearance — CSS/layout half (`assets/*.css`, no new dependency) | Aug 28 | **COMPLETE** — built early on the user's call |
+| 3.7 | Web board — the `DataTable` replacement and what it unlocks | after Sept 6 | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope |
 | 4 | Season mode (`nflreadpy`) | after | not started |
 | 5 | Trade finder (own spec) | in-season | not started |
 
@@ -337,6 +376,108 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   a config override, never trusted from the API.
 
 ## Session log
+
+### 2026-08-28 — PHASE 3.6. The board became a website; four defects fell out of it.
+
+**State:** branch `phase-3.6-board-appearance`, **320 tests**, 122 mutations
+(1 survivor, the documented equivalent mutant). New: `ffhelper/assets/board.css`,
+`ffhelper/assets/logo.png`.
+
+Built appearance BEFORE Phase 4 on the user's call, over my recommendation to do
+the season-mode spec first. **They were right and my reasoning was half wrong:**
+I argued layout work needs the "bones" of a finished dashboard, but that only
+applies to LAYOUT — a token system (colour, type, spacing) is inherited free by
+every page added later, so building it first is cheaper, not dearer. The binding
+constraint was §19's rehearsal risk, not the bones.
+
+Scope was cut to layout + palette, keeping `DataTable`: the click path IS
+`active_cell`, and replacing it rebuilds the exact surface the Aug 27 mock found
+a defect in. **The cut half is now PHASE 3.7**, written up in `TODO.md` §19 with
+its five gated items — so "3.6 complete" cannot read as finishing the appearance
+work. `dash_table.DataTable` is deprecated in Dash 4.4.1, so that swap is coming
+regardless; the `html.Table` vs `dash-ag-grid` call is a new-dependency decision
+to take at the START of 3.7.
+
+#### Two of my own CSS rules were dead on arrival
+
+- **The entire dropdown block matched nothing.** Dash 4.4.1 rewrote `dcc.Dropdown`;
+  `.Select-control` and friends are Dash 3 and earlier. It shipped looking styled
+  while doing nothing, and the control kept Dash's default `#fff` fill under
+  `color: inherit` — near-white text on white, so the selected league was
+  invisible. Fixed by overriding **Dash's own design tokens** (`--Dash-Fill-*`,
+  `--Dash-Text-*`), which fixes every dcc control at once rather than one.
+- **The green on-the-clock text never fired.** `#clock` (an ID, specificity 100)
+  set `color`, beating `.page--live .topbar__clock` (two classes, 20). The border
+  and glow went green; the text could not. **I wrote both rules myself, one
+  cancelling the other** — the exact trap `frontend-design` warns about.
+
+Both found by the user looking at the screen. Neither was findable by a test.
+
+#### The user found a real engine defect by reading the tier column
+
+Reported as "confusing"; it was `TODO.md` §11 #3 all over again, one line below
+the line that fixed it. Full costing in Decisions above. **`value.py` unfrozen a
+second time**, deliberately, after measuring that every row at six pick numbers
+comes back in the identical order.
+
+Worth recording HOW it was settled: the user described the symptom, I measured it
+before proposing anything, and the numbers (40/40 rows wrong at pick 160) made the
+decision obvious rather than a judgement call.
+
+#### The lag was Sleeper's CDN, and I got the framing wrong
+
+Diagnosed by measuring every layer instead of guessing — browser poll 1000ms,
+server callback 154ms, our cache TTL 0, and Cloudflare serving `HIT` with `age`
+climbing. Fix and numbers in Decisions.
+
+**Then I over-claimed and the user caught it.** I said the lag was "worse than you
+perceived" (8.3s vs their 3-5s). But their board was on the FIXED path during that
+mock, so what they saw — near-instant — was correct; the 8.3s was the parallel
+counterfactual, and their 3-5s came from a DIFFERENT draft. Two numbers from two
+drafts on two code paths, presented as one correcting the other.
+**Measuring correctly is not the same as reporting correctly.**
+
+#### `calibrate.py`'s Sleeper draft-id path was entirely broken
+
+`calibrate.py <id> <slot>` raised IndexError; with a league argument it fetched
+the LEAGUE NAME as a draft id and scored the 19-digit id as the seat. Cause: the
+2026-08-26 pooling refactor split argv on `isdecimal()`, and every Sleeper draft
+id is all digits. Silent since that session; `tests/test_calibrate.py` green
+throughout and never reached the branch. Parsing is now a `parse_draft_args`
+seam **specifically so it can be tested without the network**, which is why it
+survived.
+
+#### Five Sleeper mocks will NOT settle `adp_source`
+
+The user offered ~5 mocks matching the league exactly. Extraction is free —
+Sleeper's picks endpoint is public, so `transcribe.py` (which exists only because
+Yahoo has no API) is not needed. **But room discipline read median rank taken 2,
+36% at top — identical to the Task 13 bot mock.** Sleeper mock lobbies are CPU,
+which is why §12a moved the human mock to Yahoo in the first place. Pooling five
+circular drafts would have produced a very confident wrong number. Recorded so
+the offer is not re-accepted later.
+
+#### mutation testing paid three times, and twice on tests written this session
+
+1. `POS_STYLES` and `TIER_STYLES` share a `filter_query` string, so a dict keyed
+   on the query alone collapsed them — drop POS_STYLES entirely and the test
+   still passed. Now keyed on `(query, column)`.
+2. The `undo`/`override` Output target could be swapped with the suite green: the
+   test read a VALUE from the tuple and could not see which component it hit. Now
+   asserts `app.callback_map` wiring.
+3. The picks cache-key test made all three polls inside one millisecond, so the
+   buggy key was identical anyway. It passed against the exact bug it existed for.
+
+**Two mutation runs were also INVALID** — a stale assertion left the suite red,
+and every mutation "kills" trivially against a failing suite. `mutate.py` reported
+"0 needing a look", which reads like success. Check the suite is green before
+believing a mutation run.
+
+#### Verified live, by the user, in a Sleeper mock
+
+Board tracking Sleeper's own UI instantaneously; tier badges correct; green clock
+firing; bye clash working. Every change this session confirmed in a real draft
+rather than a screenshot.
 
 ### 2026-08-27 (third block) — PHASE 3 COMPLETE. Click entry rehearsed; the handover fixed.
 

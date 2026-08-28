@@ -168,6 +168,24 @@ def load_draft(path: Path, num_teams: int, slot_override: int | None) -> tuple:
     return drafted_at, my_turns[:-1], slot
 
 
+def parse_draft_args(argv: list[str]) -> tuple[str, int, str] | None:
+    """`<draft_id> <slot> [league]` -> (draft_id, slot, league), or None.
+
+    POSITIONAL on purpose. A Sleeper draft id is all digits, so it cannot be
+    told from the slot by isdecimal() -- and the names/numeric split that
+    pooling introduced did exactly that, swallowing the id into `numeric`. With
+    two arguments this path raised IndexError; with three it fetched the LEAGUE
+    NAME as a draft id and used the real id as the seat number. Both were silent
+    until run, and the suite never reached the branch.
+
+    Split out so it can be tested without the network, which is why the bug
+    survived in the first place.
+    """
+    if len(argv) < 2 or not argv[1].isdecimal():
+        return None
+    return argv[0], int(argv[1]), argv[2] if len(argv) > 2 else "sleeper-main"
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         print(__doc__)
@@ -207,10 +225,11 @@ def main(argv: list[str]) -> int:
                 return 1
             drafts.append((path.name, drafted_at, turns, slot))
     else:
-        if len(argv) < 2 or not numeric:
+        parsed = parse_draft_args(argv)
+        if parsed is None:
             print(__doc__)
             return 2
-        draft_id, slot = names[0], numeric[0]
+        draft_id, slot, league_from_args = parsed
         picks = sorted(
             json.load(urllib.request.urlopen(PICKS_URL.format(draft_id=draft_id), timeout=10)),
             key=lambda r: r["pick_no"],
@@ -223,7 +242,7 @@ def main(argv: list[str]) -> int:
             print(f"no picks carry draft_slot {slot}; seats present: "
                   f"{sorted({p.get('draft_slot') for p in picks})}")
             return 1
-        league_name = names[1] if len(names) > 1 else "sleeper-main"
+        league_name = league_from_args
         base = get_league(leagues, league_name)
         settings = resolve_settings(base)
         drafts.append((draft_id,

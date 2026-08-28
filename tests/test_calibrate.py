@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import pytest
 
 from calibrate import (
-    LEAGUE_FROM_LOG, load_draft, picks_from_journal, snake_turns,
+    LEAGUE_FROM_LOG, load_draft, parse_draft_args, picks_from_journal, snake_turns,
 )
 
 
@@ -124,3 +124,27 @@ def test_the_first_turn_is_scored_once_not_twice(tmp_path):
     assert slot == 1
     assert turns == [1, 8, 9]           # not [1, 1, 8, 9]; 16 has no next pick
     assert turns.count(turns[0]) == 1
+
+
+def test_a_numeric_sleeper_draft_id_is_not_mistaken_for_the_seat():
+    """Every Sleeper draft id is all digits, so an isdecimal() split files it
+    with the slot. That is what happened: `calibrate.py <id> <slot>` raised
+    IndexError, and `<id> <slot> <league>` fetched the LEAGUE NAME as a draft
+    id while scoring the real id as the seat number. Both silent until run.
+    """
+    assert parse_draft_args(["1399171308415102976", "5"]) == (
+        "1399171308415102976", 5, "sleeper-main")
+    # The regression exactly: the id must never end up in the slot.
+    _id, slot, _lg = parse_draft_args(["1399171308415102976", "5"])
+    assert slot == 5
+
+
+def test_an_explicit_league_is_read_from_the_third_slot_not_guessed():
+    assert parse_draft_args(["1399171308415102976", "5", "sleeper-mock"]) == (
+        "1399171308415102976", 5, "sleeper-mock")
+
+
+def test_a_malformed_draft_invocation_prints_usage_rather_than_crashing():
+    assert parse_draft_args(["1399171308415102976"]) is None
+    assert parse_draft_args([]) is None
+    assert parse_draft_args(["1399171308415102976", "five"]) is None

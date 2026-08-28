@@ -232,3 +232,17 @@ pts_allow_14_20 = 1
 pts_allow_21_27 = 0
 pts_allow_28_34 = -1
 pts_allow_35p = -4
+
+# SCRATCH -- delete after the mock, same as the yahoo-mock block.
+# A Sleeper mock has a draft_id but no league of its own, so its scoring and
+# roster cannot be fetched. This borrows sleeper-main's league_id for exactly
+# that (synced 12-team full PPR, 6-pt passing TDs) and overrides only where the
+# picks come from. Verified against the API before writing: the mock really is
+# 12 teams / 15 rounds / snake / ppr / 120s, so the borrowed settings are right.
+[[league]]
+name = "sleeper-mock"
+platform = "sleeper"
+league_id = "1395959490938966016"
+adp_source = "sleeper"
+draft_slot = 5
+draft_id = "1399182116683530240"

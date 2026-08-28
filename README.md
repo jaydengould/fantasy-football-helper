@@ -175,11 +175,13 @@ known state behind a `FEED STALE` banner rather than dying.
 
 The same engine, in a browser at `http://127.0.0.1:8050`. Click a row to mark that
 player drafted; your own roster is derived from your `draft_slot` and the pick
-number rather than typed, with a per-row override for when entry has drifted.
-Filter by position (or `FLEX` for everything RB/WR/TE-eligible), search by name,
-and read the tier bands — same-position rows sharing a band are close to
-interchangeable. A panel shows your starting lineup slot by slot, empty slots
-included, then your bench.
+number rather than typed. On a league with no feed, a per-row override corrects
+attribution when entry has drifted — leagues that have a feed do not show it,
+since the feed's own pick data settles who drafted whom. Filter by position (or
+`FLEX` for everything RB/WR/TE-eligible), search by name, and read the `TIER`
+badge, which is coloured by position: rows sharing a colour and a number are
+close to interchangeable. A panel shows your starting lineup slot by slot, empty
+slots included, then your bench.
 
 **Run one board at a time.** Both read the same `.draft/<league>-<date>.jsonl`
 journal, but the terminal replays it only at startup, so a terminal board left
@@ -247,16 +249,17 @@ He stays off the board — he really was drafted, just not by you.
 
 ## Reading the board
 
-A real board, 12-team full PPR, on the clock at pick 45:
+A real board, 12-team full PPR, on the clock at pick 45, holding
+Henry / Etienne / Kyren Williams / Smith-Njigba:
 
 ```
 #   PLAYER                   POS     VONA     VBD    MARG TIER   SURV   DIV  FLAGS
-1   Drake Maye               QB       7.4    31.3   378.8    1    25%    +0  bye11
-2   Tyler Warren             TE       5.3    38.6   201.1    1    28%    +0  Questionable bye13
-3   D'Andre Swift            RB       3.8    60.1   208.0    1    71%    +3  bye10
-4   Garrett Wilson           WR       2.8    47.6   224.9    1    20%    +0  bye13
-5   David Montgomery         RB       1.9    58.2   206.1    1    35%    -1  bye8
-6   Sam LaPorta              TE       0.7    34.0   196.5    1    84%    +0  Questionable bye6
+1   Drake Maye               QB       7.3    31.3   378.8    2    27%    +0  bye11
+2   Tyler Warren             TE       5.2    38.6   201.1    4    27%    +0  Questionable bye13
+3   D'Andre Swift            RB       4.8    60.1   208.0    7    67%    +3  bye10
+4   David Montgomery         RB       2.9    58.2   206.1    7    34%    -1  BYE8 CLASH
+5   Garrett Wilson           WR       2.8    47.6   224.9    7    21%    +0  bye13
+6   Joe Burrow               QB       0.7    24.6   372.1    2    45%    +0  bye6
 ```
 
 | Column | Meaning |
@@ -264,22 +267,29 @@ A real board, 12-team full PPR, on the clock at pick 45:
 | **VONA** | What you lose by waiting. **The board sorts by this.** Negative means waiting is strictly better. |
 | **VBD** | Points above a replacement-level player at that position |
 | **MARG** | How much this player improves your *starting lineup* — a third RB is worth less than a first |
-| **TIER** | Players in a tier are roughly interchangeable |
+| **TIER** | Players in a tier are roughly interchangeable. Fixed from the full preseason pool, so a tier number means the same thing at pick 160 as at pick 1 |
 | **SURV** | Probability of lasting to your next pick, **given he is on the board now** |
 | **DIV** | Projection rank minus market rank, **within position**. A flag, never blended into the score. `-` means the market never priced him — no opinion is not agreement. |
 
 That board is the whole argument. **Swift has the highest VBD on screen (60.1)
-and is third.** He has a 71% chance of lasting to your next turn, so waiting
-costs you 3.8 points. Maye is worth half as much by VBD but only 25% likely to
-survive, so waiting costs 7.4 — and LaPorta, at 84% survival, costs 0.7, which
-is the board telling you that tight end can wait a round.
+and is third.** He has a 67% chance of lasting to your next turn, so waiting
+costs you 4.8 points. Maye is worth half as much by VBD but only 27% likely to
+survive, so waiting costs 7.3.
+
+Maye and Burrow show what `TIER` and `SURV` do together: both are tier 2
+quarterbacks, so the projections cannot confidently separate them — yet waiting
+costs 7.3 for one and 0.7 for the other, purely because one is 27% to last and
+the other 45%. Take the tier the board points at; which name inside it is your
+call.
 
 A value-ranked cheat sheet puts Swift first and is wrong. The question is never
 "who is best available", it is "who will not be here next time".
 
 `FLAGS` carries injury status, bye week, and — where the model and the market
 disagree by more than `divergence_flag_slots` places within a position —
-`MODEL+n` or `MARKET+n`. `MODEL+` means the projection likes him more than the
+`MODEL+n` or `MARKET+n`. A bye reads lowercase (`bye8`) until you already roster
+someone at that position on that week, when it becomes `BYE8 CLASH`: Montgomery
+flags above because the roster already holds Derrick Henry, also out in week 8. `MODEL+` means the projection likes him more than the
 room does. It is a prompt to look, never an instruction, and it is deliberately
 rare: about 6% of top-20 rows.
 
@@ -406,7 +416,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 309 tests, no network, runs in ~0.3s
+.venv/bin/pytest          # 320 tests, no network, runs in ~0.4s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

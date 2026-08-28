@@ -51,6 +51,8 @@ def board_rows(state: BoardState, limit: int, divergence_flag_slots: int) -> lis
     ever added, would use per-row background colour rather than header rows.
     Not implemented yet: no such styling exists in this module today.
     """
+    # Byes already spoken for, by position. Built once per render, not per row.
+    rostered_byes = {(p.position, p.bye) for p in state.my_roster if p.bye}
     rows = []
     for i, r in enumerate(state.board[:limit], 1):
         flags = []
@@ -60,8 +62,14 @@ def board_rows(state: BoardState, limit: int, divergence_flag_slots: int) -> lis
         # opinion is not agreement, so no flag and a dash, never a 0.
         if r.divergence is not None and abs(r.divergence) >= divergence_flag_slots:
             flags.append(f"{'MODEL' if r.divergence > 0 else 'MARKET'}+{abs(r.divergence)}")
+        # A bye you already own at this position is a week you start nobody
+        # there. Lowercase `bye6` is information; uppercase CLASH is a warning,
+        # and the case difference is what the red style matches on.
         if r.player.bye:
-            flags.append(f"bye{r.player.bye}")
+            if (r.player.position, r.player.bye) in rostered_byes:
+                flags.append(f"BYE{r.player.bye} CLASH")
+            else:
+                flags.append(f"bye{r.player.bye}")
         rows.append({
             "rank": i,
             "id": r.player.sleeper_id,      # every click resolves through this
@@ -78,38 +86,61 @@ def board_rows(state: BoardState, limit: int, divergence_flag_slots: int) -> lis
     return rows
 
 
-# ponytail: bands are alternating background colours, not "-- TIER 2 --" header
-# rows: a DataTable row cannot contain arbitrary markup. Upgrade path is to
-# replace the DataTable with a hand-rolled html.Table -- board_rows() returns
-# plain dicts specifically so that swap does not touch tested logic.
-_BAND_A = "rgba(255,255,255,0)"
-_BAND_B = "rgba(127,127,127,0.14)"
+# Position colour is CATEGORICAL and deliberately muted. State (on the clock,
+# stale, overruled) is the only thing on this page allowed a saturated colour,
+# so the two signals can never be confused: they use different channels --
+# hue for position, intensity and area for state. Forty rows each carrying a
+# saturated border is noise, and it would drown the one row that matters.
+POSITION_COLORS = {
+    "QB": "#c98bb0", "RB": "#7fb894", "WR": "#7fa3cc",
+    "TE": "#c9a978", "K": "#8b95a3", "DEF": "#9b8bc4",
+}
+
+# Static filter_query rules, not a per-row pass: `pos` is a real column id, so
+# the table matches these itself. Two per position -- the POS cell's text and a
+# stripe down the first column, which is what makes a row scan as one unit.
+POS_STYLES = [
+    style
+    for pos, colour in POSITION_COLORS.items()
+    for style in (
+        {"if": {"filter_query": f'{{pos}} = "{pos}"', "column_id": "pos"},
+         "color": colour, "fontWeight": "600"},
+        {"if": {"filter_query": f'{{pos}} = "{pos}"', "column_id": "rank"},
+         "borderLeft": f"3px solid {colour}"},
+    )
+]
 
 
-def tier_styles(rows: list[dict]) -> list[dict]:
-    """One style_data_conditional entry per row, alternating on tier change.
+def _alpha(hex_colour: str, a: float) -> str:
+    """#rrggbb -> rgba(). Keeps one source of truth for the position hues."""
+    r, g, b = (int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+    return f"rgba({r}, {g}, {b}, {a})"
 
-    Keyed on (position, tier), never tier alone: `tier` is a PER-POSITION
-    column, so RB tier 1 and WR tier 1 are different claims and banding them
-    together would say two players are interchangeable when VONA says they are
-    30 points apart.
 
-    ponytail: two alternating colours cannot encode group identity on a board
-    that interleaves positions -- two non-adjacent runs of the same (pos, tier)
-    may land on the same colour by chance. It only has to make each contiguous
-    run read as one block. Upgrade path is a per-tier colour scale.
-    """
-    styles, band, prev = [], _BAND_A, None
-    for r in rows:
-        key = (r["pos"], r["tier"])
-        if prev is not None and key != prev:
-            band = _BAND_B if band == _BAND_A else _BAND_A
-        prev = key
-        styles.append({
-            "if": {"row_index": len(styles)},
-            "backgroundColor": band,
-        })
-    return styles
+# The TIER cell is a badge in its OWN position's colour, which is what makes
+# "who is interchangeable with whom" a one-cell read.
+#
+# This REPLACED alternating background bands, which were wrong by construction:
+# the board interleaves positions by VONA, so a (pos, tier) group is not
+# contiguous -- RB tier 4 sat at rows 7, 8 and 10 with a WR between. A
+# background band can only group ADJACENT rows, so it could never express the
+# grouping, and two shades cycling over eight groups said nothing at all. The
+# signal has to travel with the row, not sit behind it.
+TIER_STYLES = [
+    {"if": {"filter_query": f'{{pos}} = "{pos}"', "column_id": "tier"},
+     "color": colour,
+     "backgroundColor": _alpha(colour, 0.14),
+     "fontWeight": "700"}
+    for pos, colour in POSITION_COLORS.items()
+]
+
+# Uppercase CLASH never appears in an informational flag, so this matches the
+# warning and nothing else. Red is a STATE colour, which is why no position is
+# allowed one: a clash has to out-shout the row it sits in.
+CLASH_STYLES = [
+    {"if": {"filter_query": '{flags} contains "CLASH"', "column_id": "flags"},
+     "color": "#ef4444", "fontWeight": "700"},
+]
 
 
 def filter_rows(rows: list[dict], position: str, query: str) -> list[dict]:
@@ -208,13 +239,28 @@ def banner_lines(
     return lines
 
 
+def is_on_the_clock(state: BoardState, league: League, num_teams: int) -> bool:
+    """True when the current pick belongs to this seat.
+
+    Extracted so the clock TEXT and the page's live-state styling read one
+    predicate instead of two copies. Same reasoning as the roster panel
+    importing FLEX_ELIGIBLE rather than restating it: two views of one fact
+    that can drift apart will eventually disagree, and here they would disagree
+    about whether you are on the clock.
+    """
+    if not league.draft_slot:
+        return False
+    # next_pick_number is strictly-after, so ask from one pick earlier and see
+    # whether it lands here.
+    return next_pick_number(
+        state.current_pick - 1, league.draft_slot, num_teams) == state.current_pick
+
+
 def clock_line(state: BoardState, league: League, num_teams: int) -> str:
     if not league.draft_slot:
         return f"pick {state.current_pick}"
     nxt = next_pick_number(state.current_pick, league.draft_slot, num_teams)
-    # next_pick_number is strictly-after, so ask from one pick earlier and see
-    # whether it lands here.
-    if next_pick_number(state.current_pick - 1, league.draft_slot, num_teams) == state.current_pick:
+    if is_on_the_clock(state, league, num_teams):
         return (f">>> PICK {state.current_pick} IS YOURS -- YOU ARE ON THE CLOCK <<<"
                 f"   (next after this: {nxt})")
     return (f"pick {state.current_pick}   your next pick: {nxt} "
@@ -339,24 +385,101 @@ def poll_interval_ms(tunables: Tunables, platform: str) -> int:
     return max(tunables.poll_seconds.get(platform, 5), 1) * 1000
 
 
+_SANS = ('-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, '
+         '"Helvetica Neue", Arial, sans-serif')
+
+# Numbers are the reason the board was monospace. tabular-nums gives a
+# proportional font fixed-width DIGITS, so the columns still line up and the
+# page stops reading as a terminal -- which was the whole point.
+_TABLE_CELL = {
+    "fontFamily": _SANS,
+    "fontVariantNumeric": "tabular-nums",
+    "textAlign": "left",
+    "backgroundColor": "transparent",
+    "color": "#e6e9ee",
+    "border": "none",
+    "borderBottom": "1px solid #262c35",
+    "padding": "9px 12px",
+    "fontSize": "13px",
+}
+
+_TABLE_HEADER = {
+    "backgroundColor": "#171b21",
+    "color": "#8b95a3",
+    "fontFamily": _SANS,
+    "fontSize": "11px",
+    "fontWeight": "700",
+    "letterSpacing": "0.06em",
+    "textTransform": "uppercase",
+    "border": "none",
+    "borderBottom": "1px solid #262c35",
+    "padding": "10px 12px",
+}
+
+_NUMERIC_COLUMNS = ("rank", "vona", "vbd", "marg", "tier", "surv", "div")
+
+
 def _layout(league_names: list[str], default_league: str, poll_ms: int = 5000):
-    return html.Div([
-        dcc.Dropdown(id="league", options=league_names, value=default_league,
-                     clearable=False, style={"width": "20rem"}),
+    return html.Div(id="page", className="page", children=[
+        # DOM order IS the grid order: brand, clock, league. The clock sits in
+        # the centre track, which is where the eye goes first on the clock.
+        html.Header(className="topbar", children=[
+            html.Div(className="topbar__brand", children=[
+                # Literal path: Dash serves ffhelper/assets/ at /assets/ and
+                # this app never reconfigures assets_url_path.
+                html.Img(src="/assets/logo.png", className="topbar__logo",
+                         alt="FFHelper"),
+                html.Span("FFHelper"),
+            ]),
+            html.Pre(id="clock", className="topbar__clock"),
+            html.Div(className="topbar__league", children=[
+                dcc.Dropdown(id="league", options=league_names,
+                             value=default_league, clearable=False),
+            ]),
+        ]),
         html.Pre(id="banners"),
-        html.Pre(id="clock"),
-        dcc.RadioItems(id="pos", value="ALL", inline=True,
-                       options=["ALL", "FLEX", "QB", "RB", "WR", "TE", "K", "DEF"]),
-        dcc.Input(id="search", type="text", placeholder="search name", debounce=False),
-        html.Pre(id="roster"),
-        dash_table.DataTable(
-            id="board", columns=COLUMNS, data=[], cell_selectable=True,
-            style_cell={"fontFamily": "monospace", "textAlign": "left"},
-        ),
+        html.Div(className="grid", children=[
+            html.Main(className="col-main", children=[
+                html.Div(className="card", children=[
+                    html.Div(className="controls", children=[
+                        dcc.RadioItems(
+                            id="pos", value="ALL", inline=True,
+                            options=["ALL", "FLEX", "QB", "RB", "WR", "TE", "K", "DEF"]),
+                        dcc.Input(id="search", type="text",
+                                  placeholder="search name", debounce=False),
+                    ]),
+                ]),
+                html.Div(className="card card--flush board-card", children=[
+                    dash_table.DataTable(
+                        id="board", columns=COLUMNS, data=[], cell_selectable=True,
+                        style_as_list_view=True,
+                        style_cell=_TABLE_CELL,
+                        style_header=_TABLE_HEADER,
+                        style_cell_conditional=[
+                            {"if": {"column_id": c}, "textAlign": "right"}
+                            for c in _NUMERIC_COLUMNS
+                        ],
+                        style_table={"overflowX": "auto"},
+                    ),
+                ]),
+            ]),
+            html.Aside(className="col-side", children=[
+                html.Div(className="card", children=[
+                    html.P("Roster", className="card__title"),
+                    html.Pre(id="roster"),
+                ]),
+                html.Div(className="card", children=[
+                    html.P("Actions", className="card__title"),
+                    html.Div(className="actions", children=[
+                        html.Button("undo", id="undo", n_clicks=0),
+                        html.Button("toggle 'mine' on selected", id="override",
+                                    n_clicks=0),
+                    ]),
+                    html.Pre(id="status"),
+                ]),
+            ]),
+        ]),
         dcc.Store(id="last_marked"),
-        html.Button("undo", id="undo", n_clicks=0),
-        html.Button("toggle 'mine' on selected", id="override", n_clicks=0),
-        html.Pre(id="status"),
         dcc.Interval(id="tick", interval=poll_ms),
     ])
 
@@ -365,7 +488,8 @@ def _register_callbacks(app, leagues, tunables, cache):
     @app.callback(
         Output("board", "data"), Output("board", "style_data_conditional"),
         Output("banners", "children"), Output("clock", "children"),
-        Output("roster", "children"),
+        Output("roster", "children"), Output("page", "className"),
+        Output("override", "style"),
         Input("tick", "n_intervals"), Input("league", "value"),
         Input("pos", "value"), Input("search", "value"),
     )
@@ -381,8 +505,10 @@ def _register_callbacks(app, leagues, tunables, cache):
                        divergence_flag_slots=tunables.divergence_flag_slots),
             position, query,
         )[:40]
+        # All three match by filter_query and target different column_ids, so
+        # none of them contend for the same declaration.
         return (
-            rows, tier_styles(rows),
+            rows, POS_STYLES + TIER_STYLES + CLASH_STYLES,
             "\n".join(banner_lines(state, stale, players)),
             clock_line(state, league, settings.num_teams),
             "\n".join(f"{label:<5} {filled or '(empty)'}"
@@ -390,6 +516,14 @@ def _register_callbacks(app, leagues, tunables, cache):
                           state.my_roster, settings.roster_slots,
                           bench_slots=max(0, settings.rounds
                                           - sum(settings.roster_slots.values())))),
+            "page page--live" if is_on_the_clock(state, league, settings.num_teams)
+            else "page",
+            # The override corrects SEAT-DERIVED attribution, which a league
+            # with a feed never uses: the pick's own draft_slot says who took
+            # whom and cannot drift. Undo stays on BOTH -- it is the only
+            # recovery from a misclick, which unions into `drafted` and quietly
+            # removes a player who is in fact still available.
+            {"display": "none"} if has_feed else {},
         )
 
     @app.callback(
