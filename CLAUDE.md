@@ -406,6 +406,115 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
 
 ## Session log
 
+### 2026-08-31 — the Sleeper draft moved onto Yahoo's night. ECR closed on measurement.
+
+**State:** branch `main`, **320 tests**, no code changed. `value.py` and `data.py`
+untouched — the freeze held all session. Docs only, plus one new file:
+`docs/2026-09-01-draft-day-strategy.md`.
+
+**Sleeper moved Sept 6 -> Sept 1, 6:00 PM.** Yahoo is 7:00 PM the same evening, so
+180 picks on a 120s clock means Sleeper is still running for the whole Yahoo draft.
+Confirmed against the API rather than taken on trust: `start_time` reads
+2026-09-01 18:00 local, settings unchanged at 12/15/snake/120s.
+
+**`draft_order` re-checked, because a rescheduled draft is exactly when a league
+re-rolls it.** It did not: still slot 5, still 11 of 12 with slot 8 open, identical
+to the 2026-08-25 check. `config.toml`'s comment asked for precisely this and now
+records the answer instead of the question.
+
+#### The user will NOT use the tool for the Yahoo draft
+
+Decided this session, and it is the right call — Yahoo is 100% hand-entry and
+attention would be split against a live Sleeper clock. Two consequences:
+
+- **The two-boards-at-once check is no longer needed.** It was the top outstanding
+  item this morning. `--port` and the atomic cache make it work; nobody has to
+  prove it now. The Known open risks entry stays as a record of the analysis.
+- **§16 (the command cheat sheet) is close to moot.** Its whole purpose was the
+  hand-typed Yahoo draft. Sleeper has a feed and needs no typing. Do not build it
+  for Sept 1; re-raise only if a feed-less draft is ever run again.
+
+#### §18 CLOSED — ECR fired its own stop condition
+
+Both sheets downloaded by the user, joined on `(norm_name, position, team)`,
+**zero unmatched in the ECR top 150**. Spearman vs our ADP at the top 100: +0.954
+PPR, +0.972 half-PPR. §18 set the bar at ~0.95 and both clear it. ECR is PRICE and
+the board already carries price twice. Nothing built, nothing committed from
+FantasyPros, no fetcher — the ToU line held.
+
+**The tier-break test was the better one, and I validated WHERE it is readable
+before reading it.** FP ships a global tier; ours is per-position. Measured: RB/WR
+sit ~2 apart in overall rank so a boundary between them is a real cliff, but QB
+sit median 6 / max 17 apart and TE 7 / 21 against FP tiers of 5-9 players — so any
+QB or TE "cliff" read off FP's global tier is an artifact. **I generated those rows
+and then threw them out.** That check is the only reason the finding is trustworthy.
+
+What survived: FP's tier 1 is six players including **Smith-Njigba and St. Brown**,
+where ours is Nacua and Chase only. It lands on pick 5. Both sources agree RB tier
+1 is Gibbs + Bijan.
+
+#### Our projections vs the consensus — and the QB gap is OUR OWN SCORING
+
+Asked as a follow-up and it was the better question. Within-position Spearman:
+RB +0.99/+0.98, WR +0.95/+0.93, TE +0.95/+0.96 — median disagreement **one place**.
+QB is the only exception: **+0.77 Sleeper, +0.44 Yahoo.**
+
+Direction is identical in both leagues — we are higher on Prescott, Purdy, Nix,
+Lawrence and lower on Daniels, Hurts, C. Williams. **Pocket passers up, rushing QBs
+down: exactly what this file predicted from arithmetic on 2026-08-24 for the
+0.25/completion bonus.** First external confirmation of the custom scoring, from a
+source that has never seen `config.toml`.
+
+**It is NOT evidence our QB numbers are better** — the two are scoring different
+rulebooks, and who is right is a question this data cannot answer.
+
+The wider result is worth keeping: ECR, ADP and Rotowire are one blob on RB/WR/TE.
+There is no third opinion to be had, which argues FOR the tool rather than against
+it — if every source agrees on the ORDER and §15 says order-within-tier is noise,
+the edge was never in the ordering. It is in survival and VONA, which none of them
+compute.
+
+#### Two things nobody had noticed, both found by running the code
+
+1. **Yahoo slot 2 picks back-to-back all draft** — 19/22, 39/42, 59/62, 79/82.
+   Two or three apart every round from the second. You can take a PAIR, and you
+   must never reach at the front of one. Nothing in the docs had said this.
+2. **The real "take QBs earlier in Yahoo" rule is a TIER SHAPE, not a pick count.**
+   This file says "~15 picks earlier", which was August arithmetic. Measured today:
+   Sleeper is Allen then a flat **18-man** tier; Yahoo is Allen then **exactly
+   three** (Burrow, Maye, Prescott) then flat. Also: Prescott is QB4 at ADP 84 and
+   Purdy QB6 at ADP 124 — the completion bonus surfacing as a market error, right
+   on the 79/82 pair.
+
+#### Docs corrected, and what was deliberately left alone
+
+Forward-looking, load-bearing statements only: the leagues table, the deadlines
+table, Phase 3.7's "after Sept 6", §19/§20 labels, `config.toml`'s slot comment,
+and README's "run one board at a time" (which was about to block a two-league
+evening — it is per-LEAGUE, and the `--port` line is now there).
+
+**Session-log entries and `docs/superpowers/` specs and plans were NOT edited.**
+They record what was true when written; rewriting them falsifies the log.
+
+**Also left undone on purpose: the `frozen until Sept 6` comments in `app.py`,
+`board.py`, `cli.py` and three test files.** Wrong by four days, but `cli.py` is
+the live draft path and it is not worth touching for a comment the night before a
+draft. They self-obsolete Sept 2 — delete them then rather than editing them now.
+
+#### Deliverable
+
+`docs/2026-09-01-draft-day-strategy.md` — strategy differences only, no board
+tutorial, every number generated by running the engine rather than transcribed.
+Also published as a private phone-readable page (Artifact "Two Drafts, One Night")
+since the Yahoo half has to work at a table with no tool. Two copies; keep them in
+step by hand if either changes.
+
+**Next session (Sept 1, pre-draft): get the Sleeper board running.**
+`preflight --league sleeper-main` was already green today — draft_id
+`1395959491899449344` resolves, feed reachable, slot 5 — but re-run it in the
+morning anyway, because it is the only thing that catches an overnight settings
+change.
+
 ### 2026-08-28 — PHASE 3.6. The board became a website; four defects fell out of it.
 
 **State:** branch `phase-3.6-board-appearance`, **320 tests**, 122 mutations
