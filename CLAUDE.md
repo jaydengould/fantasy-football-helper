@@ -83,8 +83,14 @@ reporting what's ready rather than committing unprompted. Read-only inspection
 
 | League | Platform | Draft | Format |
 | --- | --- | --- | --- |
-| Bros with no hoes (`1395959490938966016`) | Sleeper | **Sept 6 2026, 7:00 PM** | snake, 12 team, 15 rd, 120s clock |
-| Yahoo league (id in `.env`) | Yahoo | **Sept 1 2026** | snake, **10 team** |
+| Bros with no hoes (`1395959490938966016`) | Sleeper | **Sept 1 2026, 6:00 PM** | snake, 12 team, 15 rd, 120s clock |
+| Yahoo league (id in `.env`) | Yahoo | **Sept 1 2026, 7:00 PM** | snake, **10 team** |
+
+**BOTH DRAFTS ARE THE SAME EVENING AND THEY OVERLAP.** Sleeper moved from Sept 6
+to Sept 1 (user-informed 2026-08-31; confirmed against the API — `start_time`
+reads 2026-09-01 18:00 local, settings unchanged at 12/15/snake/120s). 180 picks
+on a 120s clock is 2–4 hours, so Sleeper is still running for the whole Yahoo
+draft. See Known open risks.
 
 Sleeper scoring: full PPR, 0.1/yd rush+rec, 0.04/yd pass, **6-pt passing TDs**
 (not Sleeper's default 4). Roster `QB/RB/RB/WR/WR/TE/FLEX/FLEX/K/DEF` + 5 bench.
@@ -268,7 +274,7 @@ fresh opinion.
   not. `feeds.py` now appends `?_=<ms>`; the CACHE KEY stays `picks_<draft_id>`
   or a long draft writes one cache file per second. Cost: RTT 146→303ms against
   a 1000ms poll, 60 req/min against the ~1000/min block threshold.
-  **Right-size it:** that room ran at 2.48s/pick; at Sept 6's 120s clock an 8s
+  **Right-size it:** that room ran at 2.48s/pick; at the Sleeper draft's 120s clock an 8s
   staleness is nearly invisible. Sleeper's own app uses a websocket, which is why
   its UI always looked ahead of the board.
 - **Tiers are drawn from the FULL pool, not the available one.** Same defect as
@@ -326,7 +332,7 @@ fresh opinion.
 | 3 | Dash UI | Sept 5 | **COMPLETE** — Tasks 1-9, rehearsed live |
 | 3.5 | Opponent needs, bye clustering, notifications, manual overrides | Sept 5 | not started — but the bye CLASH flag landed 2026-08-28 in `board_rows`, presentation only, sort untouched |
 | 3.6 | Web board appearance — CSS/layout half (`assets/*.css`, no new dependency) | Aug 28 | **COMPLETE** — built early on the user's call |
-| 3.7 | Web board — the `DataTable` replacement and what it unlocks | after Sept 6 | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope |
+| 3.7 | Web board — the `DataTable` replacement and what it unlocks | after Sept 1 | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope |
 | 4 | Season mode (`nflreadpy`) | after | not started |
 | 5 | Trade finder (own spec) | in-season | not started |
 
@@ -373,7 +379,30 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   is poor for everybody (2025 top-N MAE of 66.5 season points), so the honest
   upgrade is a confidence interval on the board, not another opinion. Offseason.
 - **Draft slot is not final** — Sleeper `draft_order` has 11 of 12 slots. Must be
-  a config override, never trusted from the API.
+  a config override, never trusted from the API. **Re-checked 2026-08-31** after
+  the reschedule, because a moved draft is exactly when a league might re-roll
+  the order: it did not. Still slot 5, still 11 of 12 with slot 8 unassigned —
+  identical to the 2026-08-25 check.
+- **THE TWO DRAFTS OVERLAP, AND THE RISK LANDS ENTIRELY ON YAHOO.** Sleeper has a
+  feed: ignore it for ten minutes and one poll catches up. Yahoo has none, so
+  every pick is hand-entered, and attribution is derived from POSITION — a missed
+  entry shifts every later pick and silently hands you the wrong roster. Both
+  rehearsals ran with one draft's attention; Sept 1 interrupts you every ~24
+  picks. The mitigations all exist already and are now load-bearing rather than
+  conveniences: **comma batching** (`nacua, chase, gibbs`, built as "the catch-up
+  path if the real draft ever gets ahead"), the on-clock banner as a drift
+  detector (it firing when you are NOT on the clock means you missed an entry),
+  and the per-row override.
+- **Running two boards at once is UNREHEARSED.** It needs no code — `app.py` has
+  `--port` (default 8050) and the shared state is safe: `.cache/` writes are
+  `mkstemp` + `os.replace`, and journals are keyed `<league>-<date>` so the two
+  leagues cannot collide. But it has never been executed. That was established by
+  READING the code on 2026-08-31, not by running it; the 5-minute check is
+  outstanding. **Use two browser WINDOWS, not two tabs**: the 14s/34s/49s
+  client-side gaps in the 2026-08-27 mock were hypothesised (n=1) as Safari
+  throttling `dcc.Interval` in a background tab, and dismissed because "the tab is
+  foregrounded exactly when you are on the clock" — reasoning that does not
+  survive two simultaneous clocks.
 
 ## Session log
 

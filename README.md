@@ -183,11 +183,19 @@ badge, which is coloured by position: rows sharing a colour and a number are
 close to interchangeable. A panel shows your starting lineup slot by slot, empty
 slots included, then your bench.
 
-**Run one board at a time.** Both read the same `.draft/<league>-<date>.jsonl`
-journal, but the terminal replays it only at startup, so a terminal board left
-running beside the web board will quietly show a stale pool. Stopping one and
-starting the other loses nothing, including your roster — measured at 0.48s from
-ctrl-C to a full terminal board. That is the fallback path, and it is rehearsed.
+**Run one board at a time _per league_.** Both read the same
+`.draft/<league>-<date>.jsonl` journal, but the terminal replays it only at
+startup, so a terminal board left running beside the web board will quietly show
+a stale pool. Stopping one and starting the other loses nothing, including your
+roster — measured at 0.48s from ctrl-C to a full terminal board. That is the
+fallback path, and it is rehearsed.
+
+Two leagues drafting at once is fine — the journals are keyed by league and the
+cache is written atomically. Give the second web board its own port:
+
+```bash
+.venv/bin/python -m ffhelper.app --league my-other-league --port 8051
+```
 
 ### Manual entry
 

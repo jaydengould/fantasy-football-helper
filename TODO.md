@@ -30,8 +30,11 @@ work, in priority order:
    strong ordering rather than a literal probability, but it is no longer
    misleading by ~25 points.
 4. **Bench-mode ordering.** Section 14. Honest but still weak once starters fill.
-5. **FantasyPros ECR local look.** Section 18 — 20 minutes, needs a manual
-   download. Run the ECR-vs-ADP correlation first; it decides the rest.
+5. ~~**FantasyPros ECR local look.**~~ **DONE / CLOSED 2026-08-31**, section 18.
+   The correlation test fired its stop condition (top-100 Spearman vs ADP:
+   +0.954 PPR, +0.972 half-PPR) — ECR is price, and the board already carries
+   price twice. The tier-break comparison found ONE thing worth knowing at the
+   table: FP's tier 1 includes Smith-Njigba and St. Brown where ours does not.
 6. **Deferred minors.** Section 9 — two left, both trivial, neither load-bearing.
 7. **Delete the `yahoo-mock` AND `sleeper-mock` blocks** from `config.toml` once
    no more mocks are planned. Both are scratch. `sleeper-mock` was added
@@ -39,7 +42,7 @@ work, in priority order:
    **Note the coupling:** `calibrate.py` reads `num_teams` from the named league,
    so `yahoo-mock` at 10 teams will REFUSE the three 12-team transcripts from
    2026-08-26 until it is set back. That refusal is the guard working, not a bug.
-8. **Phase 3.7 — the `DataTable` swap** (§19). After Sept 6. Carries a decision
+8. **Phase 3.7 — the `DataTable` swap** (§19). After Sept 1. Carries a decision
    to take FIRST: `html.Table` or `dash-ag-grid`. The suite already warns that
    `dash_table.DataTable` is deprecated, so the swap is coming regardless — but
    ag-grid is a new dependency against a rule that says `requests`, `yfpy`,
@@ -94,11 +97,22 @@ rejected, do not reopen without new data).**
 
 ## Deadlines
 
-| Event | Date | Days out |
+| Event | Date | Days out (from 2026-08-31) |
 | --- | --- | --- |
-| Yahoo draft | **Sept 1 2026** | 7 |
-| Sleeper draft | **Sept 6 2026, 7:00 PM** | 12 |
-| Yahoo API approval (applied Aug 24, quoted 1–2 weeks) | Aug 31 – Sept 7 | will miss Sept 1 |
+| Sleeper draft | **Sept 1 2026, 6:00 PM** | 1 |
+| Yahoo draft | **Sept 1 2026, 7:00 PM** | 1 |
+| Yahoo API approval (applied Aug 24, quoted 1–2 weeks) | Aug 31 – Sept 7 | will miss both |
+
+**Sleeper moved Sept 6 → Sept 1 (user-informed 2026-08-31, confirmed against the
+API). The two drafts now OVERLAP** — 180 picks on a 120s clock is 2–4 hours, so
+Sleeper is still running for the whole Yahoo draft. Consequences are in
+`CLAUDE.md` Known open risks. Two that bind on this file:
+
+- **The `value.py` / `data.py` freeze now lifts the evening of Sept 1**, not
+  Sept 6. Phase 3.7 (§19) and the `board.py` extraction unblock five days early.
+- **Every remaining pre-draft item is due today.** There is no rehearsal time
+  left. The one outstanding check is running both boards at once
+  (`--port 8051` on the second), which needs no code and has never been done.
 
 ---
 
@@ -616,8 +630,8 @@ seconds across 12 seats.
 
 | | teams | hand-entry burden |
 | --- | --- | --- |
-| Sleeper, Sept 6 | 12, 120s | **none — it has a live feed** |
-| Yahoo, Sept 1 | 10, **90s+** (user-confirmed) | ~150 picks, ≈1 per 36s over a 90-min draft |
+| Sleeper, Sept 1 6pm | 12, 120s | **none — it has a live feed** |
+| Yahoo, Sept 1 7pm | 10, **90s+** (user-confirmed) | ~150 picks, ≈1 per 36s over a 90-min draft |
 | Yahoo mock | 12, 30s + autopicks | ~180 picks, ≈1 per 8s |
 
 Hand-entry matters for exactly ONE draft, and the mock demanded it 4× faster
@@ -1020,6 +1034,91 @@ board.** Worth 20 minutes to settle permanently.
 
 ---
 
+### CLOSED 2026-08-31 — run against the real sheets. Do not reopen for 2026.
+
+Both sheets downloaded by the user (PPR for `sleeper-main`, half-PPR for
+`yahoo-main`), joined to the live pool on `(norm_name, position, team)` — the
+same key `apply_ffc_adp` uses. **Zero unmatched inside the ECR top 150 on both.**
+Analysis ran in scratch; nothing was written into the repo and no fetcher exists.
+
+**The stop condition fired.** Spearman(ECR rank, our Sleeper ADP rank):
+
+| | overall | top 50 | top 100 |
+| --- | --- | --- | --- |
+| PPR (Sleeper) | +0.931 (n=313) | +0.877 | **+0.954** |
+| half-PPR (Yahoo) | +0.800 (n=503) | **+0.956** | **+0.972** |
+
+§18 set the bar at ~0.95 and both leagues clear it at the top 100. ECR also
+correlates *better* with ADP than with our own value axis (ECR vs VBD rank:
++0.817 / +0.811 overall, +0.895 top-100 both) — which is the section's own
+prediction confirmed: **it is PRICE, and the board already carries price twice.**
+No integration. Nothing to build.
+
+**The tier-break comparison was the better test, and it is valid ONLY at RB/WR.**
+FP ships a GLOBAL tier; ours is per-position, so the two are comparable only
+where a position is dense enough at the top that consecutive same-position
+players sit adjacent in the overall order. Measured rather than assumed:
+
+| | FP top tier sizes | RB spacing | WR spacing | QB spacing | TE spacing |
+| --- | --- | --- | --- | --- | --- |
+| PPR | 6 / 5 / 9 | median 2 | median 2 | median 6, max 17 | median 7, max 21 |
+| half-PPR | 10 / 14 / 18 | median 2 | median 2 | median 3, max 18 | median 8, max 17 |
+
+Against tiers of 5–9 players, consecutive QBs and TEs straddle a boundary almost
+by construction. **Any QB or TE "cliff" read off FP's global tier is an artifact.**
+The half-PPR sheet's own tiers are coarser (10/14/18), so "FP is coarser than us"
+is only clean on the PPR sheet.
+
+**The one real disagreement, and it lands on the Sleeper pick you actually own:**
+
+    FP PPR tier 1 (6): Chase, Gibbs, Nacua, Bijan, JAXON SMITH-NJIGBA, AMON-RA ST. BROWN
+    ours:              WR tier 1 = Nacua, Chase.  JSN and St. Brown are WR tier 2.
+                       RB tier 1 = Gibbs, Bijan  -- both sources AGREE.
+
+You draft at slot 5 and the four names above JSN are ECR 1–4. So pick 5 is
+precisely the seat where our board says "you have dropped a tier" and a ~100-expert
+consensus says you have not. §15 says the tier is the signal and the order inside
+it is noise, so this is a legitimate second opinion on a CLIFF LOCATION — the one
+axis where a second opinion can help. Same shape one rung down: FP groups
+McCaffrey and Taylor with Lamb/Jefferson/London; we split them into two tiers.
+
+**General pattern: `tier_break_sigma = 1.0` draws finer distinctions at the very
+top than the consensus does.** Do NOT turn the knob on this. `value.py` is frozen,
+it is one download of one season from one source, and §18's own limitation stands
+— **historical preseason ECR is paywalled, so this shows WHERE the two disagree
+and never WHO IS RIGHT.** It fails §13's standard by construction. Offseason
+question if ever; the deliverable was awareness and awareness is delivered.
+
+#### Bonus: our PROJECTIONS vs the consensus, within position
+
+Asked afterwards, and it is the more interesting half. Spearman on the top of
+each position (RB30/WR36/TE14/QB14), our VBD order against FP's positional rank:
+
+| | RB | WR | TE | QB |
+| --- | --- | --- | --- | --- |
+| Sleeper (full PPR) | +0.987 | +0.949 | +0.947 | **+0.771** |
+| Yahoo (half PPR) | +0.978 | +0.934 | +0.956 | **+0.437** |
+
+Median disagreement at RB/WR/TE is **one place**. So ECR, ADP and Rotowire are
+all one blob on RB/WR/TE — there is no third opinion to be had, which is an
+argument FOR the tool: if every price and value source agrees on the ORDER, and
+§15 says the order inside a tier is noise against real outcomes, then the edge
+was never in the ordering. It is in survival and VONA, which none of them compute.
+
+**QB is the exception and the cause is our own scoring, not a difference of
+opinion.** The direction is identical in both leagues: we are HIGHER on Prescott,
+Purdy, Nix, Lawrence and LOWER on Daniels, Hurts, Caleb Williams — pocket passers
+up, rushing QBs down. That is precisely what `CLAUDE.md` predicted from
+arithmetic on 2026-08-24 for Yahoo's 0.25/completion bonus, and Sleeper's 6-pt
+passing TD does the same thing more weakly, which is why Yahoo (+0.437) diverges
+far more than Sleeper (+0.771). **First external confirmation of the custom
+scoring, from a source that has never seen `config.toml`.**
+
+**It is NOT evidence our QB numbers are better.** The two are scoring different
+rulebooks; who is right is a different question and this data cannot answer it.
+
+---
+
 ## 17. DONE 2026-08-26 — hand-typed marks survive a restart
 
 **The gap:** `MarkDrafted` lived only in memory. For Sleeper this never mattered
@@ -1225,7 +1324,7 @@ league is a second implementation to maintain forever.
 **If step 4 slips, that is the finding** — write down why rather than letting the
 flag calcify, which is how a migration quietly becomes a fork.
 
-**Do it AFTER Sept 6, or keep it purely additive before.** Appearance work cannot
+**Do it AFTER Sept 1, or keep it purely additive before.** Appearance work cannot
 break the engine — it never touches `value.py` or `data.py` — but the board has
 just been rehearsed under a clock, and changing where things sit un-rehearses the
 muscle memory that rehearsal bought. Colours, fonts and dark mode are safe any
@@ -1250,7 +1349,8 @@ max 27.9s, never once ahead.** The delta held at ~8.6s in both halves, so it is
 not a startup artifact.
 
 **Read that number correctly.** The room ran at **2.48s per pick** (CPU
-autopick). Sept 6 is a 120s clock, where an 8s staleness is nearly invisible.
+autopick). The Sleeper draft is a 120s clock, where an 8s staleness is nearly
+invisible.
 The fix is real and cheap, but it mattered most in a cadence only a mock
 produces — the same lesson as §12a run 2, *the mock is not the draft to optimise
 for.*

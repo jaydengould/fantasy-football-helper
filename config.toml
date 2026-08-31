@@ -45,7 +45,9 @@ adp_source = "sleeper"
 # deliberately does not guess this, because a wrong slot silently produces the
 # wrong next-pick number for every pick of the draft. Cross-checked against the
 # live draft_order, which independently maps this user to slot 5 and still has
-# slot 8 unassigned; if the order is reshuffled before Sept 6, re-check it.
+# slot 8 unassigned. RE-CHECKED 2026-08-31 after the draft moved to Sept 1 -- a
+# rescheduled draft is exactly when a league might re-roll the order. It did not:
+# still slot 5, still 11 of 12 with slot 8 open.
 draft_slot = 5
 
 # Task 13 rehearsal. Borrows sleeper-main's synced scoring and roster and points
@@ -58,7 +60,7 @@ draft_slot = 5
 # for it. draft_order confirms seat 5. Delete this block after Task 13.
 # adp_source MUST match sleeper-main, or the rehearsal is not a rehearsal: it is
 # the one setting that changes every SURV number on screen, and the point of the
-# mock is to see the board you will see on Sept 6.
+# mock is to see the board you will see on Sept 1.
 [[league]]
 name = "mock"
 platform = "sleeper"
