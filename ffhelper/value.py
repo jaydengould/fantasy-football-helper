@@ -88,36 +88,64 @@ def assign_tiers(
 FLEX_ELIGIBLE = {"RB", "WR", "TE"}
 
 
+def optimal_lineup(
+    roster: list[Player], roster_slots: dict[str, int]
+) -> list[tuple[str, Player | None]]:
+    """The optimal starting lineup as (slot, player) pairs, in roster order.
+
+    The same greedy assignment `lineup_value` scores -- this is the half that
+    knows WHICH player fills WHICH slot, which a float cannot say. Season mode's
+    start/sit answer and the web board's roster panel are both that question,
+    and a second hand-copy of this rule is what lets two views disagree about
+    one roster.
+
+    FLEX is FILLED last, because it takes whatever the fixed slots leave, but is
+    DISPLAYED where the roster defines it -- which is how both platforms draw a
+    lineup. A slot nothing may legally fill reports None rather than reaching
+    for an ineligible player.
+    """
+    remaining = sorted(roster, key=lambda p: -p.proj_pts)
+    used: set[str] = set()
+    view: list[list] = [[slot, None]
+                        for slot, count in roster_slots.items()
+                        for _ in range(count)]
+
+    for row in view:
+        if row[0] == "FLEX":
+            continue
+        match = next((p for p in remaining
+                      if p.position == row[0] and p.sleeper_id not in used), None)
+        if match is not None:
+            used.add(match.sleeper_id)
+            row[1] = match
+
+    for row in view:
+        if row[0] != "FLEX":
+            continue
+        match = next((p for p in remaining
+                      if p.position in FLEX_ELIGIBLE and p.sleeper_id not in used), None)
+        if match is not None:
+            used.add(match.sleeper_id)
+            row[1] = match
+
+    return [(slot, filled) for slot, filled in view]
+
+
 def lineup_value(roster: list[Player], roster_slots: dict[str, int]) -> float:
     """Points scored by the optimal starting lineup drawn from `roster`.
 
     Phase 1 uses this for starter-slot awareness; Phase 5's trade finder uses
     the identical function. Never inline it into the board.
+
+    ponytail: sharing `optimal_lineup` costs 2.9 -> 6.8 us a call (build_board
+    on the real 626-player pool, 29.8 -> 35.2 ms a tick), because the assignment
+    allocates rows this function then throws away. Measured both directions
+    2026-09-01 and accepted: one tick against a 90s clock is invisible, and one
+    greedy rule beats two that can disagree. If the trade finder ever calls this
+    in a hot loop, give it a `_lineup_total` fast path -- do NOT re-copy the
+    assignment.
     """
-    remaining = sorted(roster, key=lambda p: -p.proj_pts)
-    used: set[str] = set()
-    total = 0.0
-
-    for pos, count in roster_slots.items():
-        if pos == "FLEX":
-            continue
-        picked = 0
-        for p in remaining:
-            if picked >= count:
-                break
-            if p.position == pos and p.sleeper_id not in used:
-                used.add(p.sleeper_id)
-                total += p.proj_pts
-                picked += 1
-
-    for _ in range(roster_slots.get("FLEX", 0)):
-        for p in remaining:
-            if p.position in FLEX_ELIGIBLE and p.sleeper_id not in used:
-                used.add(p.sleeper_id)
-                total += p.proj_pts
-                break
-
-    return total
+    return sum(p.proj_pts for _, p in optimal_lineup(roster, roster_slots) if p is not None)
 
 
 def marginal_value(

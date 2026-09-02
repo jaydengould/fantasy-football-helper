@@ -27,7 +27,7 @@ from ffhelper.cli import (
 )
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import Player
-from ffhelper.value import FLEX_ELIGIBLE, is_bench_only, next_pick_number
+from ffhelper.value import FLEX_ELIGIBLE, is_bench_only, next_pick_number, optimal_lineup
 
 log = logging.getLogger(__name__)
 CONFIG_PATH = ROOT / "config.toml"
@@ -165,44 +165,26 @@ def roster_slots_view(
     """Starting slots in roster order, then the bench. Each filled or empty.
 
     Greedy by projected points within a position, FLEX last from whatever is
-    left. FLEX_ELIGIBLE is IMPORTED from value.py rather than restated here: a
-    second copy of that rule would let the panel start a quarterback at FLEX
-    while MARG says otherwise, and the two would disagree about one roster.
+    left. The FLEX rule is value.py's and is never restated here: a second copy
+    would let the panel start a quarterback at FLEX while MARG says otherwise,
+    and the two would disagree about one roster.
 
-    ponytail: the greedy assignment itself is a COPY of value.lineup_value,
-    which returns only a total and cannot be asked which player filled which
-    slot. value.py is frozen until Sept 6, so it cannot grow that return today.
-    test_the_panel_starts_exactly_the_lineup_lineup_value_scores guards the copy
-    and is the proof that folding the two together afterwards is a no-op.
+    The assignment itself is `value.optimal_lineup`, not a copy of it. It WAS a
+    copy while value.py was frozen for the 2026 drafts; the freeze lifted on
+    2026-09-01 and the fold happened, which is what
+    test_the_panel_starts_exactly_the_lineup_lineup_value_scores had been
+    guarding all along.
     """
-    remaining = sorted(my_roster, key=lambda p: -p.proj_pts)
-    # Lay the slots out in config order first, FLEX included, then fill. FLEX is
-    # filled in a second pass because it takes whatever the fixed slots leave --
-    # but it is DISPLAYED where the roster defines it, which is how both
-    # platforms draw it.
-    view: list[list] = [[slot, None]
-                        for slot, count in roster_slots.items()
-                        for _ in range(count)]
-    for row in view:
-        if row[0] == "FLEX":
-            continue
-        match = next((p for p in remaining if p.position == row[0]), None)
-        if match is not None:
-            remaining.remove(match)
-            row[1] = match.name
-    for row in view:
-        if row[0] != "FLEX":
-            continue
-        match = next((p for p in remaining if p.position in FLEX_ELIGIBLE), None)
-        if match is not None:
-            remaining.remove(match)
-            row[1] = match.name
+    view = optimal_lineup(my_roster, roster_slots)
+    started = {p.sleeper_id for _, p in view if p is not None}
+    remaining = [p for p in sorted(my_roster, key=lambda p: -p.proj_pts)
+                 if p.sleeper_id not in started]
     # The bench is not decoration: once STARTING LINEUP FULL is up, every
     # remaining pick goes here, and a panel that hides it shows a third of your
     # team. Overflow past `bench_slots` is still listed -- never silently
     # dropped -- because being over the roster limit is a drift symptom you need
     # to see, not one to hide.
-    out = [(slot, filled) for slot, filled in view]
+    out = [(slot, p.name if p is not None else None) for slot, p in view]
     out += [("BN", p.name) for p in remaining]
     out += [("BN", None)] * max(0, bench_slots - len(remaining))
     return out

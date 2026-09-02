@@ -8,3 +8,6 @@ __pycache__/
 
 # Hand-typed draft marks -- draft state, never source.
 .draft/
+
+# Hand-entered rosters for leagues with no API (Yahoo). League state, not source.
+.roster/

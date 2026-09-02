@@ -13,6 +13,14 @@ class League:
     adp_format: str | None = None    # None means derive from league scoring
     adp_teams: int | None = None     # None means derive from league size
     settings: dict | None = None     # hand-entered [league.settings]; first-class, not a fallback
+    # Manual override for the Sleeper roster_id the `lineup` command reads.
+    # Mirrors draft_slot -- "must be a config override, never trusted from the
+    # API" -- for the same reason: derivation (roster_id_for_slot, keyed off
+    # draft_slot) depends on a draft that may be a mock, may have aged out of
+    # the feed, or may not exist at all for a league joined mid-season. When
+    # set, `_lineup` prefers it over derivation and says so on screen, because
+    # a hand-set roster id that is wrong must not be silent.
+    roster_id: int | None = None
     # Point the pick feed at a different draft than the one the league reports,
     # keeping that league's synced scoring and roster. This is what makes a
     # Sleeper MOCK draft usable as a rehearsal: a mock has a draft_id but no
@@ -58,6 +66,11 @@ class Tunables:
     poll_seconds: dict[str, int] = field(
         default_factory=lambda: {"sleeper": 5, "yahoo": 12}
     )
+    # How close two players must be for a start/sit call to be worth printing.
+    # A 30-point gap is not a decision and printing it buries the 1.5-point one
+    # that is. 3.0 is a starting value, NOT a measured one -- it is expected to
+    # move once backtest_weekly.py measures the real weekly projection error.
+    close_call_points: float = 3.0
 
 
 def load_config(path: Path) -> tuple[list[League], Tunables]:
@@ -76,6 +89,7 @@ def load_config(path: Path) -> tuple[list[League], Tunables]:
         divergence_flag_slots=tun_raw.get("divergence_flag_slots", defaults.divergence_flag_slots),
         flex_share=flex_share_merged,
         poll_seconds=poll_seconds_merged,
+        close_call_points=tun_raw.get("close_call_points", defaults.close_call_points),
     )
     return leagues, tun
 

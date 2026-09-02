@@ -69,8 +69,25 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("board sort vbd tiebreak",
          "            -r.vbd,\n", ""),
         ("lineup flex eligibility",
-         "if p.position in FLEX_ELIGIBLE and p.sleeper_id not in used:",
-         "if p.sleeper_id not in used:"),
+         "if p.position in FLEX_ELIGIBLE and p.sleeper_id not in used), None)",
+         "if p.sleeper_id not in used), None)"),
+        ("one player fills two fixed slots",
+         "if p.position == row[0] and p.sleeper_id not in used), None)",
+         "if p.position == row[0]), None)"),
+        ("leftovers spill into fixed slots, not just FLEX",
+         '        if row[0] != "FLEX":\n            continue',
+         '        if row[0] != "FLEX" and row[1] is None:\n            continue'),
+        ("optimal lineup fills slots worst-first",
+         "remaining = sorted(roster, key=lambda p: -p.proj_pts)",
+         "remaining = sorted(roster, key=lambda p: p.proj_pts)"),
+        ("FLEX filled BEFORE the fixed slots, so it steals the best RB",
+         '        if row[0] == "FLEX":\n            continue\n'
+         '        match = next((p for p in remaining\n'
+         '                      if p.position == row[0] and p.sleeper_id not in used), None)',
+         '        match = next((p for p in remaining\n'
+         '                      if (p.position == row[0] or row[0] == "FLEX"\n'
+         '                          and p.position in FLEX_ELIGIBLE)\n'
+         '                      and p.sleeper_id not in used), None)'),
         ("static replacement baseline",
          "    repl = replacement_points(pool, ranks)",
          "    repl = replacement_points(available, ranks)"),
@@ -175,6 +192,101 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if frame != last_frame or stale or iterations == 0:", "if True:"),
         ("adp_source validated",
          "if league.adp_source not in ADP_SOURCES:", "if False:"),
+        ("ambiguous roster line silently resolved to the first match",
+         "        if len(matches) == 1:\n            players.append(matches[0])",
+         "        if matches:\n            players.append(matches[0])"),
+        ("unresolved roster lines dropped silently",
+         'problems.append(f"no player matches {name!r}")', "pass"),
+        ("empty lineup slots hidden, so a hole in the roster is invisible",
+         '            out.append(f"  {slot:<5} -- EMPTY --   no eligible player on this roster")',
+         "            pass"),
+        ("degradation notes dropped from the screen",
+         '        out += [""] + [f"!! {n}" for n in notes]', "        pass"),
+        ("a dead draft feed crashes _lineup instead of degrading",
+         '                except Exception as exc:                  # noqa: BLE001 - never fatal\n'
+         '                    notes.append(f"could not reach the Sleeper draft feed to derive your "\n'
+         '                                 f"roster_id ({exc}) -- showing an empty roster")\n'
+         '                    feed_failed = True',
+         "                except Exception:\n                    raise"),
+        ("roster_id override silently used with no note",
+         '            if used_override:\n'
+         '                # Names WHOSE roster is being read, not just that an override\n'
+         '                # happened -- `owner` was already resolved above for exactly\n'
+         '                # this, so this is reuse, not a second network call.\n'
+         '                notes.append(f"using roster_id {rid} from config.toml (override) -- "\n'
+         '                             f"reading {owner or \'an unrecognised owner\'}\'s roster, "\n'
+         '                             f"not derived from the draft")',
+         "            pass"),
+        ("an orphaned roster_id renders a blank screen with no explanation",
+         '                notes.append(f"roster_id {rid} is not in this league\'s rosters -- "\n'
+         '                             f"the roster data may be stale or the id may be wrong")',
+         "                pass"),
+        ("rostered players missing from the pool go unreported",
+         '                notes.append(f"{len(missing)} rostered players are not in the player pool: "\n'
+         '                             f"{\', \'.join(missing)}")',
+         "                pass"),
+        ("lineup's nfl-state guard removed -- a dead endpoint crashes 'lineup --week 4' too",
+         '    try:\n'
+         '        state = load_nfl_state()\n'
+         '    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate\n'
+         '        state = {}\n'
+         '        notes.append(f"could not reach Sleeper\'s /state/nfl ({exc}) -- season defaults "\n'
+         '                     f"to {SEASON}")',
+         '    state = load_nfl_state()'),
+        ("preflight's nfl-state guard removed -- a dead endpoint aborts the report early again",
+         '    try:\n'
+         '        state = load_nfl_state()\n'
+         '        week = state.get("week")\n'
+         '        season_str = str(state.get("season") or SEASON)\n'
+         '        print(f"nfl week        : {week} ({state.get(\'season\')} {state.get(\'season_type\')})")\n'
+         '    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate\n'
+         '        print(f"nfl week        : NO -- {exc}")\n'
+         '        ok = False',
+         '    state = load_nfl_state()\n'
+         '    week = state.get("week")\n'
+         '    season_str = str(state.get("season") or SEASON)\n'
+         '    print(f"nfl week        : {week} ({state.get(\'season\')} {state.get(\'season_type\')})")'),
+        ("preflight's rosters guard removed -- a dead endpoint aborts before the feed check again",
+         '        try:\n'
+         '            rosters = load_league_rosters(league.league_id)\n'
+         '            print(f"rosters         : {len(rosters)} teams")\n'
+         '            rostered_ids = sorted({pid for r in rosters for pid in (r.get("players") or [])})\n'
+         '            roster_scope = "rostered league-wide"\n'
+         '        except Exception as exc:                      # noqa: BLE001 - degrade, never fabricate\n'
+         '            print(f"rosters         : NO -- {exc}")\n'
+         '            ok = False',
+         '        rosters = load_league_rosters(league.league_id)\n'
+         '        print(f"rosters         : {len(rosters)} teams")\n'
+         '        rostered_ids = sorted({pid for r in rosters for pid in (r.get("players") or [])})\n'
+         '        roster_scope = "rostered league-wide"'),
+        ("preflight projections join reports everyone rostered as projected",
+         "projected = sum(1 for pid in rostered_ids if pid in weekly)",
+         "projected = len(rostered_ids)"),
+        ("lineup total's floor caveat dropped when a starter is unprojected",
+         '    caveat = (f"  (floor -- {unprojected_starters} starter"\n'
+         '              f"{\'s\' if unprojected_starters != 1 else \'\'} unprojected)"\n'
+         '              if unprojected_starters else "")',
+         '    caveat = ""'),
+        ("roster_id override note drops the owner's name",
+         'notes.append(f"using roster_id {rid} from config.toml (override) -- "\n'
+         '                             f"reading {owner or \'an unrecognised owner\'}\'s roster, "\n'
+         '                             f"not derived from the draft")',
+         'notes.append(f"using roster_id {rid} from config.toml (override) -- '
+         'not derived from the draft")'),
+        ("misleading injury codes rendered raw instead of through the display map",
+         "injury = INJURY_STATUS_DISPLAY.get(p.injury_status, p.injury_status)",
+         "injury = p.injury_status"),
+        ("lineup's rosters-fetch guard drops its note, so a dead endpoint says nothing",
+         'notes.append(f"could not reach Sleeper\'s league rosters endpoint "\n'
+         '                         f"({exc}) -- showing an empty roster")',
+         "pass"),
+        ("lineup's users-fetch guard no longer catches, so a display name kills the lineup",
+         "            except Exception as exc:                      "
+         "# noqa: BLE001 - degrade, never fabricate\n"
+         "                # The last unguarded fetch in this function",
+         "            except ZeroDivisionError as exc:              "
+         "# noqa: BLE001 - degrade, never fabricate\n"
+         "                # The last unguarded fetch in this function"),
     ],
     "feeds.py": [
         ("picks poll drops the cache-buster, so Cloudflare serves a stale board",
@@ -237,6 +349,12 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if set_adp and row.get(\"adp\") is not None:", "if row.get(\"adp\") is not None:"),
         ("ffc bye is taken regardless of adp_source",
          "if row.get(\"bye\"):", "if set_adp and row.get(\"bye\"):"),
+        ("weekly projection cache key drops the week -- every week serves week 1",
+         'f"proj_{season}_wk{week}_{pos}"', 'f"proj_{season}_{pos}"'),
+        ("missing depth chart reads as first string",
+         'depth_chart_order=(int(p["depth_chart_order"])\n'
+         '                               if p.get("depth_chart_order") is not None else None),',
+         'depth_chart_order=int(p.get("depth_chart_order") or 0),'),
     ],
     "ffhelper/board.py": [
         ("pick count ignores manual marks",
@@ -300,14 +418,17 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("search matches on prefix only, not substring",
          'out = [r for r in out if q in r["player"].lower()]',
          'out = [r for r in out if r["player"].lower().startswith(q)]'),
-        ("panel starts a QB at FLEX (disagrees with MARG)",
-         'match = next((p for p in remaining if p.position in FLEX_ELIGIBLE), None)',
-         'match = next((p for p in remaining), None)'),
-        ("panel fills slots worst-first",
-         "remaining = sorted(my_roster, key=lambda p: -p.proj_pts)",
-         "remaining = sorted(my_roster, key=lambda p: p.proj_pts)"),
+        ("panel counts a starter on the bench as well",
+         "if p.sleeper_id not in started]", "]"),
         ("panel hides empty slots instead of showing them",
-         "    return out", "    return [r for r in out if r[1] is not None]"),
+         # Anchored on the line above, because a bare "    return out" also
+         # matches `board_rows`'s filter 30 lines earlier -- and replace(.., 1)
+         # took THAT one, so this mutation was reporting "killed" for breaking
+         # a completely different function.
+         '    out += [("BN", None)] * max(0, bench_slots - len(remaining))\n'
+         "    return out",
+         '    out += [("BN", None)] * max(0, bench_slots - len(remaining))\n'
+         "    return [r for r in out if r[1] is not None]"),
         ("override shown on a feed league, where it is a dead control",
          '            {"display": "none"} if has_feed else {},',
          "            {},"),
@@ -341,10 +462,39 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "        pass"),
         ("bench picks hidden -- you cannot see your own bench",
          '    out += [("BN", p.name) for p in remaining]', "    pass"),
-        ("leftovers spill into fixed slots, not just FLEX",
-         '        if row[0] != "FLEX":\n            continue',
-         '        if row[0] != "FLEX" and row[1] is None:\n            continue'),
     ],
+    "season.py": [
+        ("weekly projection guard stops rejecting a null stats row",
+         "if not pid or not stats:", "if not pid:"),
+        ("weekly scoring mutates the shared season pool",
+         "return [replace(p, proj_pts=weekly.get(p.sleeper_id, 0.0)) for p in roster]",
+         "for p in roster:\n        p.proj_pts = weekly.get(p.sleeper_id, 0.0)\n    return roster"),
+        ("close-call challenger ignores slot eligibility (a kicker challenges a WR)",
+         "challenger = next((b for b in bench if _eligible(b, slot) and b.sleeper_id not in unprojected_ids), None)",
+         "challenger = next((b for b in bench if b.sleeper_id not in unprojected_ids), None)"),
+        ("every gap reported, so the real decision is buried",
+         "if gap <= close_call_points:", "if gap >= 0:"),
+        ("bench ordered worst-first",
+         "key=lambda p: -p.proj_pts)", "key=lambda p: p.proj_pts)"),
+        ("projected_ids distinction lost -- unprojected treated as projected",
+         "unprojected_ids = set() if projected_ids is None else {p.sleeper_id for p in roster if p.sleeper_id not in projected_ids}",
+         "unprojected_ids = set()"),
+        ("descriptive-only rows scored as zero instead of omitted",
+         "if not any(k in scoring for k in stats):\n            continue",
+         "pass"),
+        ("close call built on an unprojected starter's fabricated 0.0",
+         "        if starter.sleeper_id in unprojected_ids:\n            continue",
+         "        pass"),
+        ("roster_id assumed equal to draft_slot -- you manage someone else's team",
+         "    found = {p.roster_id for p in picks\n"
+         "             if p.draft_slot == draft_slot and p.roster_id is not None}\n"
+         "    return found.pop() if len(found) == 1 else None",
+         "    return draft_slot"),
+        ("a contradictory draft picks the first roster_id instead of refusing",
+         "return found.pop() if len(found) == 1 else None",
+         "return found.pop() if found else None"),
+    ],
+
 }
 
 
@@ -359,17 +509,34 @@ if len(_KEYS) != len(set(_KEYS)):
                      "would be silently dropped. Merge them.")
 
 
+def _target_path(fname: str) -> Path:
+    """A key with a slash is a path from ROOT (scripts/); anything else is a
+    module in the package."""
+    return ROOT / fname if "/" in fname else ROOT / "ffhelper" / fname
+
+
 def main() -> int:
     results = []
     for fname, muts in MUTATIONS.items():
-        # A key with a slash is a path from ROOT (scripts/); anything else is a
-        # module in the package.
-        path = ROOT / fname if "/" in fname else ROOT / "ffhelper" / fname
+        path = _target_path(fname)
         original = path.read_text()
         try:
             for label, old, new in muts:
-                if old not in original:
+                n = original.count(old)
+                if n == 0:
                     results.append((fname, label, "STALE - pattern gone, update this script"))
+                    continue
+                if n > 1:
+                    # `replace(old, new, 1)` silently takes the FIRST match, so
+                    # an ambiguous pattern mutates somewhere other than the line
+                    # the label names -- and then reports "killed" for breaking
+                    # an unrelated function. Found 2026-09-02 in app.py, where a
+                    # bare "    return out" hit `board_rows` instead of the
+                    # roster panel. Same failure shape as the duplicate-key bug
+                    # above: the check reports success while checking the wrong
+                    # thing. Anchor the pattern on an adjacent line instead.
+                    results.append((fname, label, f"AMBIGUOUS - matches {n} places, "
+                                                  "anchor it on an adjacent line"))
                     continue
                 path.write_text(original.replace(old, new, 1))
                 p = subprocess.run(

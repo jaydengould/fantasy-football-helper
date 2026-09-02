@@ -1,118 +1,154 @@
 # Outstanding work
 
-Written 2026-08-25, first working session. **Revised 2026-08-25, second session.**
-Ordered by deadline.
+Written 2026-08-25. **Rewritten 2026-09-01, after both drafts.** Ordered by
+what blocks what.
+
+The numbered sections below are the historical record — decisions, measurements
+and the reasoning behind them. They are not a queue. **This summary is the
+queue.**
 
 ## What is left, in one place
 
-**Task 13 is DONE** (section 11). **The human mocks are DONE and `adp_source` is
-settled at n=3** (section 12a) — `yahoo-main` moved to `"sleeper"`. Remaining
-work, in priority order:
+**Both drafts are done (2026-09-01).** Everything scheduled against them is
+closed: the cheat sheet (§16, its purpose was the hand-typed Yahoo draft), the
+two-boards check, the `value.py` / `data.py` freeze, and every "before Sept 1"
+item. The project is now a season-mode project.
 
-1. **Draft-day command cheat sheet — SCHEDULED for Aug 30–31. Not open, not
-   overdue, do not re-raise before then.** Section 16. User's call, 2026-08-26,
-   and the reasoning is sound: it is ~30 minutes, and writing it *immediately
-   before* the draft is what guarantees it matches the notation actually shipping.
-   **That caution was justified: Phase 3 DID change the terminal path** — the
-   handover fix (§ below) altered how `my_roster` is derived with no feed, so a
-   sheet written before 2026-08-27 would already be wrong. **The notation has now
-   stopped moving.** Write it from `_handle_command`'s docstring and `render()`'s
-   help line, and cover the WEB board too: clicking, the override button, undo,
-   the position filter, and ctrl-C to the terminal.
-2. **Treat the top of each position as a tier, not a ranking.** Section 15.
-   Across 2021–2025 no position ranks its own top 12 better than ~+0.35
-   Spearman. **Section 15's option 2 SHIPPED in Phase 3**: the web board bands
-   rows by tier, keyed on `(position, tier)` so it never claims two positions are
-   interchangeable. The terminal still only prints the column, so on that board
-   awareness is still the whole fix.
-3. **SURV is now conditional and roughly twice as accurate** (section 2, shipped
-   2026-08-26). It still reads low — says 0–20%, 30% survive — so treat it as a
-   strong ordering rather than a literal probability, but it is no longer
-   misleading by ~25 points.
-4. **Bench-mode ordering.** Section 14. Honest but still weak once starters fill.
-5. ~~**FantasyPros ECR local look.**~~ **DONE / CLOSED 2026-08-31**, section 18.
-   The correlation test fired its stop condition (top-100 Spearman vs ADP:
-   +0.954 PPR, +0.972 half-PPR) — ECR is price, and the board already carries
-   price twice. The tier-break comparison found ONE thing worth knowing at the
-   table: FP's tier 1 includes Smith-Njigba and St. Brown where ours does not.
-6. **Deferred minors.** Section 9 — two left, both trivial, neither load-bearing.
-7. **Delete the `yahoo-mock` AND `sleeper-mock` blocks** from `config.toml` once
-   no more mocks are planned. Both are scratch. `sleeper-mock` was added
-   2026-08-28 and its `draft_id` points at a finished mock.
-   **Note the coupling:** `calibrate.py` reads `num_teams` from the named league,
-   so `yahoo-mock` at 10 teams will REFUSE the three 12-team transcripts from
-   2026-08-26 until it is set back. That refusal is the guard working, not a bug.
-8. **Phase 3.7 — the `DataTable` swap** (§19). After Sept 1. Carries a decision
-   to take FIRST: `html.Table` or `dash-ag-grid`. The suite already warns that
-   `dash_table.DataTable` is deprecated, so the swap is coming regardless — but
-   ag-grid is a new dependency against a rule that says `requests`, `yfpy`,
-   `dash` and nothing else.
-9. Task 1 (Yahoo OAuth) is blocked externally; later phases have their own specs.
+1. ~~**THE DRAFT DEBRIEF.**~~ **DONE 2026-09-01**, recorded in `CLAUDE.md`. Two
+   outcomes: the board may have stopped updating mid-draft and NOTHING on disk
+   can say (hence item 2), and pick 5 was the user's own call, not the board's.
+   Why it mattered, kept because the reasoning generalises: nine of this
+   project's defects were found by a human USING the tool and none by the suite,
+   so what the user noticed is evidence nothing else can produce — and it decays
+   within days.
+2. **A RUN LOG — small, and the draft debrief is what proves it is needed.**
+   The user reported the board "died at some point" during the live Sleeper
+   draft, and **nothing on disk can confirm or refute it**: no journal (feeds
+   write none), no log file (stderr only), and the picks cache mtime gets
+   overwritten by the next run. The 2026-08-27 mock was diagnosable ONLY because
+   a server log happened to sit in a terminal. Write poll successes, failures and
+   callback timings to a dated file under `.draft/` or `.cache/`, the same
+   append-and-close shape as the mark journal, so the next "I think it died" is
+   answerable. Cheap, and it is the difference between a diagnosis and a shrug.
+3. ~~**FINISH THE 4a MERGE CHECK.**~~ **DONE 2026-09-02.** Branch
+   `phase-4a-start-sit`, 20 commits, **377 tests**, **153 mutations, 1 needing a
+   look** (the documented `value.py` tier-threshold equivalent mutant), exit 0,
+   run in the foreground alone and verified byte-identical before and after.
+   `lineup` and `preflight` re-run clean on both leagues. **PHASE 4a IS
+   FINISHED; the branch is ready for the user to merge.**
+   Two corrections to what this item claimed:
+   - **The rosters-guard mutation HAD been added** (in `fc47a73`, after this
+     item was written) and is killed. Nothing was missing.
+   - **The first two mutation runs were contaminated and thrown away.** The
+     re-review agent ran its own `mutate.py` concurrently with mine — the exact
+     hazard below, arriving from a second process rather than an interrupted
+     one. The tree recovered via the in-flight run's `finally`, but the results
+     were untrustworthy and the run was repeated alone. **The hazard is not
+     just "don't interrupt it" — it is "nothing else may run it at the same
+     time", and a subagent counts.**
+   **HAZARD, now hit twice:** `mutate.py` rewrites source files in place. The
+   2026-09-02 session killed an agent mid-run and left `ffhelper/value.py`
+   holding a live mutation (`prob_all_gone *= surv` instead of `1.0 - surv`).
+   Caught by `git diff` and restored. **Always check `git status` is clean before
+   trusting a suite after an interrupted mutation run.**
+3a. **What the scoped re-review found — eight defects, none Critical, all
+   fixed** (`c45a8cd`, `1a23576`). Recorded because six of the eight are the
+   same shape as defects this project has already had:
+   - **`load_league_users` was the last unguarded fetch in `_lineup`**, on the
+     happy path, and it threw away a lineup whose roster and projections had
+     both already succeeded — over a display name. Rounds 1 and 2 guarded
+     `/state/nfl`, the feed and the rosters endpoint and missed the sibling.
+     **Found by grepping the other callers of the endpoints the fix wave
+     touched, not by re-reading the paths it had changed.**
+   - **`preflight` printed `PREFLIGHT OK` and exited 0 with the projections
+     endpoint down** — the only failure branch that never set `ok = False`,
+     in the one check that exists to prove season mode can run.
+   - **`preflight` and `_lineup` disagreed about what "no week" means**
+     (`week is None` vs `not week`); Sleeper serves `"week": 0` in the
+     offseason, so preflight fetched projections for week 0.
+   - **One `projections` label covered two different populations** — 177 of 180
+     league-wide on Sleeper, 13 of 14 on your own Yahoo roster.
+   - **The `roster_id` override note vanished when the rosters fetch failed**,
+     leaving a hand-set override unmentioned in exactly the run that read
+     nothing. TODO item 6 calls that note "the passive check made active".
+   - **`mutate.py` was checking the wrong thing, again.** The
+     `"panel hides empty slots"` mutation used a bare `"    return out"`, which
+     matches TWO places in `app.py`; `replace(old, new, 1)` took the first, so
+     it broke `board_rows`'s filter and reported **killed** for a function it
+     does not name. **Root cause fixed rather than the instance**: an
+     old-string matching more than one place is now refused as `AMBIGUOUS`.
+     Identical failure shape to the 2026-08-27 duplicate-key bug — the check
+     reporting success while checking something else. That is now twice, from
+     the same tool.
+   - **A test asserted a filename by deriving it from the function under
+     test**, so it passed for any key format — including the exact
+     `"rosters_123_v2"` case its own comment claimed to catch. Now the literal,
+     verified red by actually changing the key format.
+4. ~~**Phase 4 — season mode: start/sit.**~~ **4a COMPLETE AND MERGE-CHECKED
+   2026-09-02**, branch `phase-4a-start-sit`, 20 commits, 377 tests, 153
+   mutations. `lineup` runs against both leagues. Final whole-branch review plus
+   a scoped re-review of the fix wave: sound, merge recommended, no Criticals.
+   **Merging is the user's call — agents never touch `main`.**
+   What is left of Phase 4:
+   - **4b — the matchup adjustment**, which is the measured gap: 2026 preseason
+     projections vary **1.4%** week to week for a top-40 RB/WR, so the schedule
+     is essentially not priced in. Plus `backtest_weekly.py` to validate it
+     before it may reorder anything, the snapshot table, and the nflverse
+     injury CSV (spec §5b — 99% practice-status coverage against Sleeper's 0%,
+     joining on `gsis_id` through the crosswalk already fetched).
+     **`injuries_2026.csv` is a 404 until week 1 is played.**
+   - **4c — waivers**: free-agent pool, rest-of-season horizon, trending
+     add/drop as the FAAB price signal.
+5. ~~**The Yahoo roster must be hand-entered.**~~ **DONE 2026-09-01.**
+   `.roster/yahoo-main.txt`, 14 players, all resolving unambiguously, gitignored.
+   It must be UPDATED after every add/drop — `lineup` and `preflight` both print
+   its age for exactly that reason.
+6. **Deferred minors from the 4a review, none blocking** — all triaged as ship
+   in the final review: roster-file inline comments and duplicates (both fail
+   safe), `SUPER_FLEX`/`WRRB_FLEX` slot names printing a false "no eligible
+   player" line, an unprojected starter appearing in two sections, close-call
+   lines not repeating both projections, and one stale test comment.
+   **Plus one risk introduced deliberately:** a wrong-but-valid hand-set
+   `League.roster_id` produces a coherent lineup for someone else's team. The
+   override note now names the owner, which is the passive check made active.
+   A derive-and-compare cross-check was considered and rejected — it
+   re-introduces the feed dependency in the one path whose purpose is to survive
+   a missing draft, and only helps when both values are set, which is the case
+   that was already right.
+7. **Phase 5 — trade finder.** Unblocked earlier than expected: every Sleeper
+   roster is public and needs no auth. Own spec, after Phase 4.
+8. **Phase 3.7 — the `DataTable` swap** (§19). Offseason. Carries a decision to
+   take FIRST: `html.Table` or `dash-ag-grid`. **It is also the trigger for the
+   deferred `board.py` fold** — 3.7 is the point where a board change would
+   otherwise be written twice, which is the only reason to pay that cost.
+9. **Bench-mode ordering** (§14) and **tier-not-ranking awareness** (§15) are
+   both still true and both still unfixed. Neither is actionable without either
+   an upside model or a confidence interval — §15 option 3 is the honest fix and
+   `backtest.py` can now produce its input.
+10. **Deferred minors** (§9) — two left, both trivial, neither load-bearing.
+11. **Task 1 (Yahoo OAuth)** — still no reply, 1–2 weeks quoted on 2026-08-24.
+   Now costs MORE than it did: season mode wants that roster every week.
 
-**CLOSED 2026-08-28 — Sleeper mocks CANNOT settle this.** The "optional, now
-cheap" full-PPR 12-team mock was run (`1399171308415102976`, 180 picks, seat 5)
-and **room discipline came back median rank taken 2, 36% at top — identical to
-the Task 13 bot mock.** Sleeper mock lobbies are CPU-filled and autodraft walks
-straight down Sleeper's own ADP, so the table is circular by construction. That
-is exactly why §12a moved the human mock to Yahoo. Extraction itself is free
-(Sleeper's picks endpoint is public — `transcribe.py` is not needed), so the
-temptation to pool five of them is real. **Do not.** A non-circular full-PPR
-12-team sample needs a room with humans in it.
+**Cut 2026-09-01, do not rebuild:** Phase 2's SQLite draft log. Crash recovery
+mid-draft is moot with the drafts over, and "it is season mode's persistence
+layer anyway" is not a reason to inherit a draft-log schema — season mode's
+persistence is one snapshot table and is specced with the thing that needs it.
 
-**Phase 3.6 (web board appearance) is COMPLETE AS SCOPED**, built 2026-08-28
-ahead of Phase 4 on the user's call — layout, palette, cards, header and the
-tier badge.
-
-**The restructure was deliberately split in two, and the second half is now
-PHASE 3.7** (§19): replacing `DataTable` with a hand-rolled `html.Table`, plus
-the five things gated on it — separator rows, per-severity banner colours, SURV
-bars, coloured divergence, live page title. **Merging 3.6 does not finish the
-appearance work.** It is deferred on a measured cost, not forgotten: the swap
-rebuilds the click path, which is the surface the Aug 27 mock already found a
-defect in.
-
-**PHASE 3 IS COMPLETE (2026-08-27), Tasks 1-9.** Branch `phase-3-dash-ui`,
-**309 tests, 110 mutations.** The Dash board renders the same engine the terminal
-renders, entered by clicking; tier bands, position filter (incl. FLEX), name
-search and the starting-lineup panel are in; and the ctrl-C handover to the
-terminal is rehearsed at **0.48s with the roster intact**.
-
-All three rehearsal steps are done — offline replay of three transcripts, a live
-Sleeper mock, and a live Yahoo mock entered entirely by clicking. **They found
-six defects a green suite had passed over**, every one now fixed. The narrative,
-the measurements and what each defect taught are in `CLAUDE.md`'s session log for
-2026-08-27; they are history, not outstanding work, and are deliberately not
-repeated here.
-
-**Phases 4 and 5 can be built in parallel with all of the above**, under
-one rule: **`value.py` and `data.py` are frozen until both drafts are done.**
-Phase 3 lives behind its own entry point and never imports into the terminal
-path. Phase 3.5 is the exception to watch — opponent-needs and bye-clustering
-reach into the board.
-
-**Closed since:** `draft_slot` for both leagues (section 6 — `preflight` is now
-OK for `sleeper-main` and `yahoo-main`), the Yahoo `league_id` placeholder
-(section 7), and **ESPN as a second projection source (section 13 — measured,
-rejected, do not reopen without new data).**
+**Kept 2026-09-01, reversing this file's own earlier instruction:** the
+`yahoo-mock` and `sleeper-mock` blocks in `config.toml`. `calibrate.py` reads
+`num_teams` from the named league, so deleting `yahoo-mock` would destroy the
+ability to re-score the three transcribed 12-team mocks — the only non-circular
+calibration data the project has. `sleeper-mock` is one `draft_id` edit from
+serving a fill-in draft. The reasoning now lives in `config.toml` beside them.
 
 ## Deadlines
 
-| Event | Date | Days out (from 2026-08-31) |
+| Event | Date | Note |
 | --- | --- | --- |
-| Sleeper draft | **Sept 1 2026, 6:00 PM** | 1 |
-| Yahoo draft | **Sept 1 2026, 7:00 PM** | 1 |
-| Yahoo API approval (applied Aug 24, quoted 1–2 weeks) | Aug 31 – Sept 7 | will miss both |
-
-**Sleeper moved Sept 6 → Sept 1 (user-informed 2026-08-31, confirmed against the
-API). The two drafts now OVERLAP** — 180 picks on a 120s clock is 2–4 hours, so
-Sleeper is still running for the whole Yahoo draft. Consequences are in
-`CLAUDE.md` Known open risks. Two that bind on this file:
-
-- **The `value.py` / `data.py` freeze now lifts the evening of Sept 1**, not
-  Sept 6. Phase 3.7 (§19) and the `board.py` extraction unblock five days early.
-- **Every remaining pre-draft item is due today.** There is no rehearsal time
-  left. The one outstanding check is running both boards at once
-  (`--port 8051` on the second), which needs no code and has never been done.
+| Sleeper draft | ~~Sept 1~~ | **DONE** — 180 picks, seat 5 |
+| Yahoo draft | ~~Sept 1~~ | **DONE** — hand-entered, no feed |
+| **NFL week 1** | **Sept 9 2026** | first live use of season mode. **start/sit is BUILT and checked**; 4b (matchup) is what remains and is not a blocker for week 1 |
+| Yahoo API approval (applied Aug 24, quoted 1–2 weeks) | overdue | no reply as of Sept 1 |
 
 ---
 
@@ -630,7 +666,7 @@ seconds across 12 seats.
 
 | | teams | hand-entry burden |
 | --- | --- | --- |
-| Sleeper, Sept 1 6pm | 12, 120s | **none — it has a live feed** |
+| Sleeper, Sept 1 6pm | 12, 90s | **none — it has a live feed** |
 | Yahoo, Sept 1 7pm | 10, **90s+** (user-confirmed) | ~150 picks, ≈1 per 36s over a 90-min draft |
 | Yahoo mock | 12, 30s + autopicks | ~180 picks, ≈1 per 8s |
 
@@ -1349,7 +1385,7 @@ max 27.9s, never once ahead.** The delta held at ~8.6s in both halves, so it is
 not a startup artifact.
 
 **Read that number correctly.** The room ran at **2.48s per pick** (CPU
-autopick). The Sleeper draft is a 120s clock, where an 8s staleness is nearly
+autopick). The Sleeper draft is a 90s clock, where an 8s staleness is nearly
 invisible.
 The fix is real and cheap, but it mattered most in a cadence only a mock
 produces — the same lesson as §12a run 2, *the mock is not the draft to optimise

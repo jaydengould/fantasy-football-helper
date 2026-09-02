@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ffhelper.data import fetch_json, load_crosswalk
+from ffhelper.data import fetch_json, load_crosswalk, load_league_rosters, rosters_cache_key
 
 
 def test_fetches_and_caches(tmp_path: Path):
@@ -439,3 +439,66 @@ def test_ffc_ambiguous_def_team_matches_neither():
     assert players["SEA"].adp_stdev == 5.0
     assert players["SEA_ALT"].adp == 50.0
     assert players["SEA_ALT"].adp_stdev == 6.0
+
+
+def test_load_weekly_projections_asks_for_the_week_and_caches_per_week(tmp_path):
+    """The season endpoint is frozen preseason; only the weekly one is revised
+    in-season. The cache key must carry the week, or week 2 is served week 1's
+    numbers for the rest of the season while looking healthy."""
+    from ffhelper.data import load_weekly_projections
+    seen = []
+
+    def fake(url):
+        seen.append(url)
+        return '[{"player_id": "4034", "stats": {"pts_ppr": 21.5, "rush_yd": 88.0}}]'
+
+    rows = load_weekly_projections("2026", 3, cache_dir=tmp_path, fetcher=fake)
+
+    assert all("/2026/3?" in u for u in seen), seen
+    assert len(rows) == 6          # one call per position
+    assert rows[0]["stats"]["rush_yd"] == 88.0
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert any("wk3" in n for n in names), names
+
+
+def test_build_players_carries_status_fields_and_tolerates_their_absence():
+    """Sleeper's player DB has 52 fields and we keep six. These four are the
+    structured form of the injury news start/sit needs, and depth_chart_order is
+    the waiver signal: the backup who becomes the starter on Wednesday.
+
+    Absent fields must be None, never 0 -- depth_chart_order 0 would read as
+    'first on the depth chart' for every player Sleeper has no data for."""
+    raw = {
+        "1": {"player_id": "1", "full_name": "Hurt Guy", "position": "RB", "team": "SEA",
+              "active": True, "injury_status": "Questionable", "injury_body_part": "Ankle",
+              "practice_participation": "Limited", "depth_chart_order": 1},
+        "2": {"player_id": "2", "full_name": "Fine Guy", "position": "RB", "team": "SEA",
+              "active": True},
+    }
+    players = build_players(raw, crosswalk={})
+
+    assert players["1"].injury_status == "Questionable"
+    assert players["1"].injury_body_part == "Ankle"
+    assert players["1"].practice_participation == "Limited"
+    assert players["1"].depth_chart_order == 1
+    assert players["2"].practice_participation is None
+    assert players["2"].depth_chart_order is None
+
+
+def test_league_loaders_hit_the_right_urls_and_cache_per_league(tmp_path):
+    seen = []
+
+    def fake(url):
+        seen.append(url)
+        return '[{"roster_id": 3, "players": ["a"]}]'
+
+    got = load_league_rosters("123", cache_dir=tmp_path, fetcher=fake)
+    assert seen == ["https://api.sleeper.app/v1/league/123/rosters"]
+    assert got[0]["roster_id"] == 3
+    # The LITERAL filename. Deriving it from `rosters_cache_key` -- the very
+    # function under test -- made this assertion pass for any key format at
+    # all, including the "rosters_123_v2" case the comment claimed to catch:
+    # both sides moved together. The exact string is the only form that
+    # actually pins the on-disk name.
+    assert (tmp_path / "rosters_123.json").exists()
+    assert rosters_cache_key("123") == "rosters_123"

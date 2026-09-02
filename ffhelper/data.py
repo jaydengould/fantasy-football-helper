@@ -125,6 +125,9 @@ class Player:
     team: str | None
     yahoo_id: str | None = None
     injury_status: str | None = None
+    injury_body_part: str | None = None
+    practice_participation: str | None = None
+    depth_chart_order: int | None = None
     proj_pts: float = 0.0
     adp: float = ADP_UNKNOWN
     adp_stdev: float | None = None
@@ -180,6 +183,12 @@ def build_players(raw: dict, crosswalk: dict[str, str]) -> dict[str, Player]:
             team=p.get("team"),
             yahoo_id=crosswalk.get(pid),
             injury_status=p.get("injury_status"),
+            injury_body_part=p.get("injury_body_part"),
+            practice_participation=p.get("practice_participation"),
+            # int() not `or 0`: a missing depth chart must stay None, because 0
+            # would read as "first string" for everyone Sleeper has no data on.
+            depth_chart_order=(int(p["depth_chart_order"])
+                               if p.get("depth_chart_order") is not None else None),
         )
     return out
 
@@ -222,6 +231,13 @@ SLEEPER_PROJ_URL = (
     "https://api.sleeper.com/projections/nfl/{season}"
     "?season_type=regular&position[]={pos}&order_by=pts_ppr"
 )
+SLEEPER_WEEKLY_PROJ_URL = (
+    "https://api.sleeper.com/projections/nfl/{season}/{week}"
+    "?season_type=regular&position[]={pos}&order_by=pts_ppr"
+)
+SLEEPER_ROSTERS_URL = "https://api.sleeper.app/v1/league/{league_id}/rosters"
+SLEEPER_USERS_URL = "https://api.sleeper.app/v1/league/{league_id}/users"
+SLEEPER_STATE_URL = "https://api.sleeper.app/v1/state/nfl"
 
 
 @dataclass(frozen=True)
@@ -282,6 +298,47 @@ def load_sleeper_settings(
     )
 
 
+def rosters_cache_key(league_id: str) -> str:
+    """The `.cache/<key>.json` key `load_league_rosters` writes under.
+
+    Exported so `cli.cache_age_minutes` can name the exact same key instead of
+    composing the literal by hand a second time -- a rename here would
+    otherwise silently stop the CLI's stale-roster warning from ever firing.
+    """
+    return f"rosters_{league_id}"
+
+
+def load_league_rosters(
+    league_id: str, cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
+) -> list[dict]:
+    """Every team's roster. Public: Sleeper needs no auth for this."""
+    return fetch_json(
+        SLEEPER_ROSTERS_URL.format(league_id=league_id), rosters_cache_key(league_id),
+        ttl_seconds=300, cache_dir=cache_dir, fetcher=fetcher,
+    )
+
+
+def load_league_users(
+    league_id: str, cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
+) -> list[dict]:
+    """Managers, so a derived roster can be shown with its owner's name."""
+    return fetch_json(
+        SLEEPER_USERS_URL.format(league_id=league_id), f"users_{league_id}",
+        ttl_seconds=3600, cache_dir=cache_dir, fetcher=fetcher,
+    )
+
+
+def load_nfl_state(
+    cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
+) -> dict:
+    """Current week and season. Short TTL: this is what makes a Tuesday run
+    ask about the right week without the user typing one."""
+    return fetch_json(
+        SLEEPER_STATE_URL, "nfl_state", ttl_seconds=600,
+        cache_dir=cache_dir, fetcher=fetcher,
+    )
+
+
 def load_projections(
     season: str, cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
 ) -> list[dict]:
@@ -291,6 +348,34 @@ def load_projections(
             fetch_json(
                 SLEEPER_PROJ_URL.format(season=season, pos=pos),
                 f"proj_{season}_{pos}",
+                cache_dir=cache_dir,
+                fetcher=fetcher,
+            )
+        )
+    return rows
+
+
+def load_weekly_projections(
+    season: str, week: int, cache_dir: Path = CACHE_DIR,
+    fetcher: Callable[[str], str] | None = None,
+) -> list[dict]:
+    """One week's projections, same row shape as `load_projections`.
+
+    The SEASON endpoint is frozen preseason -- `backtest.py` proves it, every
+    player carries gp=18 regardless of what happened -- so it is useless once
+    anyone is hurt. The weekly endpoint IS revised: verified on 2025, where
+    Ekeler reads 12.1, 10.4, then 0.0 for every week after his week-3 injury.
+
+    The cache key carries the week. Without it, week 2 would be served week 1's
+    numbers for the rest of the season and the board would look healthy.
+    """
+    rows: list[dict] = []
+    for pos in ("QB", "RB", "WR", "TE", "K", "DEF"):
+        rows.extend(
+            fetch_json(
+                SLEEPER_WEEKLY_PROJ_URL.format(season=season, week=week, pos=pos),
+                f"proj_{season}_wk{week}_{pos}",
+                ttl_seconds=3600,
                 cache_dir=cache_dir,
                 fetcher=fetcher,
             )

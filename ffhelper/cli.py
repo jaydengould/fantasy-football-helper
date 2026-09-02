@@ -12,11 +12,13 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
+from ffhelper import season as season_mod
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import (
-    LeagueSettings, Player, SLEEPER_ADP_FIELD, adp_format_for, apply_ffc_adp,
-    apply_projections, apply_sleeper_adp, fetch_json, load_ffc_adp, load_players,
-    load_projections, load_sleeper_settings, norm_name,
+    CACHE_DIR, LeagueSettings, Player, SLEEPER_ADP_FIELD, adp_format_for, apply_ffc_adp,
+    apply_projections, apply_sleeper_adp, fetch_json, load_ffc_adp, load_league_rosters,
+    load_league_users, load_nfl_state, load_players, load_projections, load_sleeper_settings,
+    load_weekly_projections, norm_name, rosters_cache_key,
 )
 from ffhelper.feeds import Pick, PickFeed, SleeperFeed
 from ffhelper.value import Row, build_board, detect_run, is_bench_only, next_pick_number
@@ -56,6 +58,70 @@ def find_players(pool: dict[str, Player], query: str) -> list[Player]:
         (p for p in pool.values() if q in norm_name(p.name)),
         key=lambda p: (p.name, p.sleeper_id),
     )
+
+
+ROSTER_DIR = ROOT / ".roster"
+
+
+def read_roster_file(path: Path, pool: dict[str, Player]) -> tuple[list[Player], list[str]]:
+    """A hand-maintained roster for a league with no API. One name per line.
+
+    Yahoo requires per-developer approval that has not arrived, so for that
+    league this file IS the roster and nothing else can supply it. Blank lines
+    and `#` comments are ignored.
+
+    Ambiguous and unknown lines are REPORTED and EXCLUDED, never guessed --
+    "robinson" is both Bijan and Brian, both ATL RBs, and picking one silently
+    starts the wrong player every week. Anchored to ROOT, not cwd: the roster you
+    read must not depend on which directory you launched from.
+    """
+    if not path.exists():
+        return [], []
+    players: list[Player] = []
+    problems: list[str] = []
+    for line in path.read_text().splitlines():
+        name = line.strip()
+        if not name or name.startswith("#"):
+            continue
+        matches = find_players(pool, name)
+        if len(matches) == 1:
+            players.append(matches[0])
+        elif not matches:
+            problems.append(f"no player matches {name!r}")
+        else:
+            shown = ", ".join(f"{p.name} ({p.position} {p.team})" for p in matches[:6])
+            problems.append(f"{name!r} is ambiguous: {shown}")
+    return players, problems
+
+
+def cache_age_minutes(cache_key: str) -> int | None:
+    """Whole minutes since `.cache/<cache_key>.json` was last written, or None.
+
+    `fetch_json` serves a stale cached copy when a fetch fails (stale_ok=True by
+    default), and says nothing. This is how the caller finds out. Same job as
+    `roster_file_age_days` does for the hand-maintained file: an age on screen,
+    so "healthy but wrong" is visible rather than inferred.
+
+    ponytail: this was specified in the Task 6 brief but never actually landed
+    in that task's diff -- `_lineup` (this task) is the first caller, so it is
+    added here rather than re-derived or skipped.
+    """
+    path = CACHE_DIR / f"{cache_key}.json"
+    if not path.exists():
+        return None
+    return int((time.time() - path.stat().st_mtime) // 60)
+
+
+def roster_file_age_days(path: Path) -> int | None:
+    """Whole days since the roster file was last edited, or None if absent.
+
+    A hand-maintained roster is stale the moment a waiver claim lands, and a
+    stale roster produces a confidently wrong lineup. The age goes on screen so
+    the user can see how much to trust it.
+    """
+    if not path.exists():
+        return None
+    return int((time.time() - path.stat().st_mtime) // 86400)
 
 
 class MarkDrafted:
@@ -609,7 +675,7 @@ def _manual_mine(log_path, typed_mine: set[str], draft_slot: int | None,
 
     A league WITH a feed is untouched: there, `draft_slot` on the feed's own
     picks is authoritative, and deriving from journal order could contradict it.
-    So the Sept 6 Sleeper path does not change.
+    So a league with a feed does not change.
 
     Explicit statements win over the derived guess in BOTH directions, which is
     why `explicit_not_mine` is subtracted every call rather than once: `auto_mine`
@@ -887,6 +953,75 @@ def _preflight(league: League, tunables: Tunables) -> int:
     else:
         print(f"draft_slot      : {league.draft_slot}")
 
+    # /state/nfl and /league/{id}/rosters are two more Sleeper endpoints that
+    # "can change or vanish" per the spec's own risk register, and they used
+    # to sit unguarded ABOVE the feed-reachability check -- so a failure in
+    # either aborted the report before it reached the one check this command
+    # exists to run. Both degrade to a visible line and keep going.
+    week: int | None = None
+    season_str = SEASON
+    try:
+        state = load_nfl_state()
+        week = state.get("week")
+        season_str = str(state.get("season") or SEASON)
+        print(f"nfl week        : {week} ({state.get('season')} {state.get('season_type')})")
+    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+        print(f"nfl week        : NO -- {exc}")
+        ok = False
+
+    rostered_ids: list[str] = []
+    # Named because the Sleeper and hand-entered branches below count different
+    # populations: every team in the league, versus your roster alone. Under a
+    # single "rostered players" label those two numbers read as the same
+    # measurement and neither reader can tell which one they got.
+    roster_scope = "rostered"
+    if league.platform == "sleeper":
+        try:
+            rosters = load_league_rosters(league.league_id)
+            print(f"rosters         : {len(rosters)} teams")
+            rostered_ids = sorted({pid for r in rosters for pid in (r.get("players") or [])})
+            roster_scope = "rostered league-wide"
+        except Exception as exc:                      # noqa: BLE001 - degrade, never fabricate
+            print(f"rosters         : NO -- {exc}")
+            ok = False
+    else:
+        path = ROSTER_DIR / f"{league.name}.txt"
+        roster, problems = read_roster_file(path, players)
+        age = roster_file_age_days(path)
+        print(f"roster file     : {path} -- {len(roster)} players, "
+              f"{len(problems)} unresolved, "
+              f"{'missing' if age is None else f'{age}d old'}")
+        rostered_ids = [p.sleeper_id for p in roster]
+        roster_scope = "on your roster"
+
+    # The spec's Testing section requires this: "rosters fetch, weekly
+    # projections join". The join is exactly what broke mid-build -- most
+    # rows for an unprojected week carry only descriptive fields, and a bad
+    # guard once reported zero unprojected players when one was correct.
+    # `not week`, not `is None`: Sleeper serves "week": 0 in the offseason, and
+    # `_lineup` already refuses to treat that as a week. Two sibling functions
+    # disagreeing about what counts as "no week" is how one of them ends up
+    # fetching projections for week 0.
+    if not week:
+        print("projections     : not checked -- no NFL week resolved")
+    elif not rostered_ids:
+        # No network call to make: nobody is rostered (or the roster fetch
+        # already failed and said so above).
+        print(f"projections     : 0 of 0 players {roster_scope} projected for week {week}")
+    else:
+        try:
+            weekly = season_mod.weekly_points(
+                load_weekly_projections(season_str, week), settings.scoring)
+            projected = sum(1 for pid in rostered_ids if pid in weekly)
+            print(f"projections     : {projected} of {len(rostered_ids)} players "
+                  f"{roster_scope} projected for week {week}")
+        except Exception as exc:                      # noqa: BLE001 - degrade, never fabricate
+            # Every sibling check sets ok=False on failure. Without it the one
+            # check that proves season mode can run printed PREFLIGHT OK and
+            # exited 0 while the projections endpoint was down.
+            print(f"projections     : NO -- {exc}")
+            ok = False
+
     if settings.draft_id:
         try:
             n = len(SleeperFeed(settings.draft_id).get_picks())
@@ -898,13 +1033,273 @@ def _preflight(league: League, tunables: Tunables) -> int:
     return 0 if ok else 1
 
 
+# Codes that read as something other than what they mean if left raw. "NA"
+# is the worst of these -- it reads as "not applicable / no data" and actually
+# means "not active". Codes that are already plain English (Out, Questionable,
+# Doubtful) are left alone rather than run through a map that adds nothing.
+INJURY_STATUS_DISPLAY = {
+    "NA": "not active",
+    "Sus": "suspended",
+    "DNR": "did not report",
+    "PUP": "PUP list",
+    "COV": "COVID list",
+    "IR": "injured reserve",
+}
+
+
+def _status_note(p: Player) -> str:
+    """Injury and practice, where they exist. Absent means absent, not healthy."""
+    injury = INJURY_STATUS_DISPLAY.get(p.injury_status, p.injury_status)
+    bits = [b for b in (injury, p.practice_participation) if b]
+    return f"  [{' / '.join(bits)}]" if bits else ""
+
+
+def render_lineup(
+    state: "season_mod.StartSit", week: int, league_name: str,
+    owner: str | None, notes: list[str],
+) -> str:
+    """One frame of the lineup screen. Pure -- no I/O, so it tests without a network."""
+    who = f"  ({owner})" if owner else ""
+    out = [f"{league_name}{who}   week {week}", ""]
+    # Unprojected starters contribute their invented 0.0 to this total, so the
+    # total is a floor when any starter has no projection. Said on screen below.
+    total = sum(p.proj_pts for _, p in state.lineup if p is not None)
+    out.append("STARTERS")
+    unprojected_ids = {p.sleeper_id for p in state.unprojected}
+    for slot, p in state.lineup:
+        if p is None:
+            out.append(f"  {slot:<5} -- EMPTY --   no eligible player on this roster")
+        elif p.sleeper_id in unprojected_ids:
+            # A starter can be unprojected when nothing else is eligible for the
+            # slot. Print "--", never "0.0": the 0.0 is a sort value we invented,
+            # and printing it as a projection is the fabrication this whole
+            # design exists to prevent -- arriving in the one place the user is
+            # most likely to trust it.
+            out.append(f"  {slot:<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
+                       f"{'   --':>6}  NO PROJECTION{_status_note(p)}")
+        else:
+            out.append(f"  {slot:<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
+                       f"{p.proj_pts:6.1f}{_status_note(p)}")
+    # The per-player row already says NO PROJECTION, but the total itself was
+    # unlabelled -- a reader who skims sees an unqualified number that may be
+    # an undercount, with the total's floor-ness living only in a source
+    # comment. Name it on screen, right next to the number it qualifies.
+    unprojected_starters = sum(
+        1 for _, p in state.lineup if p is not None and p.sleeper_id in unprojected_ids)
+    caveat = (f"  (floor -- {unprojected_starters} starter"
+              f"{'s' if unprojected_starters != 1 else ''} unprojected)"
+              if unprojected_starters else "")
+    out.append(f"  {'':<5} {'projected total':<24} {'':<3} {'':<3} {total:6.1f}{caveat}")
+
+    projected_bench = [p for p in state.bench if p not in state.unprojected]
+    if projected_bench:
+        out += ["", "BENCH"]
+        for p in projected_bench:
+            out.append(f"  {'':<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
+                       f"{p.proj_pts:6.1f}{_status_note(p)}")
+
+    # NOT a "!!" note. A player can carry no projection for MONTHS -- a deliberate
+    # last-round stash on the exempt list is the real case -- and an alert that
+    # fires every week for the whole season is how a user learns to ignore alerts.
+    # It is also the only honest rendering: the source gave no number, so we print
+    # no number. "0.0" would be a projection we invented.
+    if state.unprojected:
+        out += ["", "NO PROJECTION THIS WEEK -- not started, and not a zero"]
+        for p in state.unprojected:
+            out.append(f"  {'':<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
+                       f"{'   --':>6}{_status_note(p)}")
+
+    if state.close_calls:
+        out += ["", "CLOSE CALLS -- worth your own read"]
+        for c in state.close_calls:
+            out.append(f"  {c.slot:<5} starting {c.starter.name} over {c.challenger.name} "
+                       f"by {c.gap:.1f}{_status_note(c.challenger)}")
+    if notes:
+        out += [""] + [f"!! {n}" for n in notes]
+    return "\n".join(out)
+
+
+def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
+    """Print this week's optimal lineup. One shot -- no loop, no polling."""
+    settings = resolve_settings(league)
+    notes: list[str] = []
+    # /state/nfl is one more Sleeper endpoint that "can change or vanish" --
+    # the spec's own risk register says every such endpoint must degrade to an
+    # absent column. `season_str` used to come straight from it unguarded, so
+    # even `lineup --week 4` -- the obvious thing to try when the week on
+    # screen looks wrong -- could not run without it.
+    try:
+        state = load_nfl_state()
+    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+        state = {}
+        notes.append(f"could not reach Sleeper's /state/nfl ({exc}) -- season defaults "
+                     f"to {SEASON}")
+
+    if week is None:
+        week = state.get("week")
+        if not week:
+            # Neither the endpoint nor --week can supply a week -- guessing
+            # one (the old `or 1` fallback) is exactly the fabrication this
+            # whole design forbids, so say so and stop instead.
+            print("no NFL week available: /state/nfl is unreachable and --week "
+                  "was not given -- pass e.g. '--week 1' to run without it")
+            return 1
+    week = int(week)
+    season_str = str(state.get("season") or SEASON)
+
+    players = load_players()
+    weekly = season_mod.weekly_points(
+        load_weekly_projections(season_str, week), settings.scoring)
+
+    owner: str | None = None
+    if league.platform == "sleeper":
+        rosters_failed = False
+        try:
+            rosters = load_league_rosters(league.league_id)
+        except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+            # `fetch_json`'s stale_ok=True only saves you if a cache file
+            # already exists -- first run on a new machine, a cleared
+            # `.cache/`, or a brand-new league all raise here instead. Bare,
+            # that is an unhandled traceback printing nothing: no roster, no
+            # notes, no partial lineup. Same defect class as the bare
+            # get_picks() a few lines below.
+            rosters = []
+            rosters_failed = True
+            notes.append(f"could not reach Sleeper's league rosters endpoint "
+                         f"({exc}) -- showing an empty roster")
+        # `fetch_json` defaults to stale_ok=True, so a FAILED fetch silently
+        # serves whatever cached copy exists and the roster looks healthy while
+        # being out of date. That is the shape of two defects this project has
+        # already shipped -- the STALE banner that could never fire, and the
+        # dead feed that rebuilt the board from no picks. The Yahoo file reports
+        # its age; the Sleeper roster must too, and the cache file's mtime is
+        # that age. A waiver claim you made this morning not showing up is the
+        # symptom, and it must not be silent.
+        age_min = cache_age_minutes(rosters_cache_key(league.league_id))
+        if age_min is not None and age_min > 30:
+            notes.append(f"roster data is {age_min} minutes old -- a fetch may have "
+                         f"failed and a cached copy was served; recent waiver moves "
+                         f"may be missing")
+        used_override = league.roster_id is not None
+        if used_override:
+            # The hand-set override wins outright. The note naming WHOSE
+            # roster this is is appended below once `owner` is resolved --
+            # a wrong-but-VALID override renders a completely coherent lineup
+            # for a teammate's team, and the owner name is the only tell.
+            rid = league.roster_id
+        else:
+            rid = None
+            feed_failed = False
+            if league.draft_slot is not None:
+                # feeds.Pick already carries roster_id AND draft_slot, so no
+                # re-fetch and no reshaping: the draft is the only thing that
+                # knows which roster is yours, and it is cached like everything
+                # else. (When draft_slot is None derivation cannot succeed, so
+                # the network call is skipped entirely rather than fetching
+                # picks that can't answer the question.)
+                #
+                # get_picks() is built with stale_ok=False, so a failed poll
+                # RAISES by design -- every other call site (`_preflight`,
+                # `_run`) catches it. Bare here it would print NOTHING on a
+                # network blip: no roster, no notes, no partial lineup.
+                # Degrade, never fabricate.
+                try:
+                    picks = SleeperFeed(settings.draft_id).get_picks() if settings.draft_id else []
+                    rid = season_mod.roster_id_for_slot(picks, league.draft_slot)
+                except Exception as exc:                  # noqa: BLE001 - never fatal
+                    notes.append(f"could not reach the Sleeper draft feed to derive your "
+                                 f"roster_id ({exc}) -- showing an empty roster")
+                    feed_failed = True
+            if rid is None and not feed_failed:
+                # Reached either with no draft_slot configured at all, or with
+                # a feed that answered but could not resolve one roster_id for
+                # the slot -- a genuine feed failure already left its own note.
+                notes.append("could not derive your roster_id from the draft -- "
+                             "set `roster_id` in config.toml for this league")
+
+        if rid is None or rosters_failed:
+            # rosters_failed already left its own note above; the "orphaned
+            # roster_id" note below is about a SPECIFIC id the payload doesn't
+            # contain and would be misleading here, where nothing was fetched
+            # at all.
+            if used_override:
+                # The owner-naming note lives in the success branch, so without
+                # this a hand-set roster_id goes completely unmentioned in
+                # exactly the run that read nothing. Both facts have to show:
+                # an override is active, and nothing came back to check it
+                # against.
+                notes.append(f"using roster_id {rid} from config.toml (override) -- "
+                             f"could not be checked against any owner, nothing was read")
+            roster = []
+        else:
+            ids = season_mod.roster_player_ids(rosters, rid)
+            if not ids and not any(r.get("roster_id") == rid for r in rosters):
+                # rid is not None, so this is NOT "derivation failed" -- it is a
+                # roster_id (derived or hand-set) that the rosters payload
+                # (cached up to 300s) simply does not contain. Without this note
+                # the screen renders as an empty, fully-EMPTY lineup with no
+                # explanation at all.
+                notes.append(f"roster_id {rid} is not in this league's rosters -- "
+                             f"the roster data may be stale or the id may be wrong")
+            roster = [players[i] for i in ids if i in players]
+            missing = [i for i in ids if i not in players]
+            if missing:
+                notes.append(f"{len(missing)} rostered players are not in the player pool: "
+                             f"{', '.join(missing)}")
+            try:
+                users = {u["user_id"]: u.get("display_name")
+                         for u in load_league_users(league.league_id)}
+            except Exception as exc:                      # noqa: BLE001 - degrade, never fabricate
+                # The last unguarded fetch in this function, and the cheapest
+                # one to lose: `owner` is a display name. Rounds 1 and 2
+                # guarded /state/nfl, the draft feed and the rosters endpoint
+                # -- this sits on the same happy path behind the same
+                # stale_ok=True, which only helps once a cache file exists.
+                # Crashing a fully-computed lineup over a name is the worst
+                # trade available here.
+                users = {}
+                notes.append(f"could not reach Sleeper's league users endpoint "
+                             f"({exc}) -- the roster owner's name is unavailable")
+            owner = next((users.get(r.get("owner_id")) for r in rosters
+                          if r.get("roster_id") == rid), None)
+            if used_override:
+                # Names WHOSE roster is being read, not just that an override
+                # happened -- `owner` was already resolved above for exactly
+                # this, so this is reuse, not a second network call.
+                notes.append(f"using roster_id {rid} from config.toml (override) -- "
+                             f"reading {owner or 'an unrecognised owner'}'s roster, "
+                             f"not derived from the draft")
+    else:
+        roster_path = ROSTER_DIR / f"{league.name}.txt"
+        roster, problems = read_roster_file(roster_path, players)
+        notes += problems
+        age = roster_file_age_days(roster_path)
+        if age is not None and age >= 3:
+            notes.append(f"hand-entered roster is {age} days old -- check it against "
+                         f"{league.platform} before trusting this lineup")
+        if not roster:
+            notes.append(f"no roster: write one name per line into "
+                         f"{ROSTER_DIR / f'{league.name}.txt'}")
+
+    # Players with no projection are NOT a "!!" note: see render_lineup. They get
+    # their own quiet section, because a stash can carry no number for months.
+    scored = season_mod.with_weekly_points(roster, weekly)
+    state_ss = season_mod.start_sit(scored, settings.roster_slots,
+                                    tunables.close_call_points,
+                                    projected_ids=set(weekly))
+    print(render_lineup(state_ss, week, league.name, owner, notes))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
     ap = argparse.ArgumentParser(prog="ffhelper")
-    ap.add_argument("command", choices=["run", "preflight"])
+    ap.add_argument("command", choices=["run", "preflight", "lineup"])
     ap.add_argument("--league", required=True)
     ap.add_argument("--config", type=Path, default=ROOT / "config.toml")
     ap.add_argument("--limit", type=int, default=20)
+    ap.add_argument("--week", type=int, default=None,
+                    help="NFL week; defaults to the current one from Sleeper")
     args = ap.parse_args(argv)
 
     leagues, tunables = load_config(args.config)
@@ -915,6 +1310,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.command == "preflight":
         return _preflight(league, tunables)
+    if args.command == "lineup":
+        return _lineup(league, tunables, args.week)
     try:
         return _run(league, tunables, args.limit)
     except KeyboardInterrupt:

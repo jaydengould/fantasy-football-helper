@@ -31,6 +31,7 @@ league_id = "12345"
     assert tun.divergence_flag_slots == 10
     assert tun.flex_share == {"RB": 0.5, "WR": 0.5, "TE": 0.0}
     assert tun.poll_seconds == {"sleeper": 5, "yahoo": 12}
+    assert tun.close_call_points == 3.0
 
 
 def test_unknown_league_raises(tmp_path: Path):
@@ -80,3 +81,11 @@ def test_no_tunables_section_yields_all_defaults(tmp_path: Path):
     assert tun.divergence_flag_slots == 10
     assert tun.flex_share == {"RB": 0.5, "WR": 0.5, "TE": 0.0}
     assert tun.poll_seconds == {"sleeper": 5, "yahoo": 12}
+    assert tun.close_call_points == 3.0
+
+
+def test_close_call_points_override(tmp_path: Path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[tunables]\nclose_call_points = 5.0\n")
+    _, tun = load_config(cfg)
+    assert tun.close_call_points == 5.0
