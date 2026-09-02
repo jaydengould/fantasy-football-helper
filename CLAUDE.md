@@ -517,6 +517,69 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
 
 ## Session log
 
+### 2026-09-02 (fifth block) — 4c unblocked and specced; a documented league rule turned out to be wrong
+
+**State:** branch `phase-4c-waivers` off `main` (4b merged as PR #7), two
+commits, **no code touched**, 419 tests still green. Spec and 8-task plan
+written; **implementation deferred to the next session by the user.**
+
+**Start next session at Task 1** of
+`docs/superpowers/plans/2026-09-02-phase-4c-waivers.md` — the
+`_resolve_week` / `_resolve_my_roster` extraction from `_lineup`.
+
+#### The league is NOT FAAB, and the claim came from an API default
+
+`CLAUDE.md`, `TODO.md` and both specs said "Waivers are FAAB
+(`waiver_budget: 100`)". **It is rolling waiver priority**, confirmed by the
+user against Sleeper's own UI. The live settings say `waiver_type: 0`, and all
+twelve rosters carry a distinct `waiver_position` (1-12) with
+`waiver_budget_used: 0`.
+
+**The entire provenance of the wrong claim was `waiver_budget: 100` in the
+settings payload — a field Sleeper returns by default whether or not bidding is
+on.** Identical shape to the Yahoo one-RB-slot error: a league rule inferred
+from an API payload instead of read off the platform's own screen, then written
+down as fact and inherited by three documents. **So 4c's stated deliverable, a
+derived FAAB bid, does not exist.** The notify-bot cut is unaffected — it rests
+on batch processing (`waiver_clear_days: 2`), which is still true.
+
+#### The measurement says the feature should usually print nothing
+
+Probed against the real roster and pool before designing anything:
+
+| best available upgrade, week 1 | +1.2 pts |
+| best available ROS upgrade | **+8.3 over 18 weeks = 0.46/wk** |
+| base lineup | 2399.0 pts |
+| measured TE weekly MAE | **3.23** |
+
+The best thing on the wire is inside the noise by a factor of seven. What the
+wire IS worth is positional depth: **losing Ferguson (the only TE) is +163.9
+ROS; losing Josh Allen is only +37.7**, because Murray backs him up.
+
+So the command carries a significance floor and **an empty board is the
+shipped, correct week-1 output.** The user's instruction, recorded because it
+generalises: *"Never force things just to have something when it is wrong."*
+
+#### My own floor rule was wrong, and spec self-review caught it
+
+First version was a flat `close_call_points` (3.0) per week on both horizons.
+**That is calibrated to a SINGLE week's error**; independent weekly errors
+partially cancel, so the standard error of a season total grows as sqrt(n), not
+n — a flat bar is ~4x too strict and would have silenced real upgrades. It also
+contradicted the mockup the user had approved. Corrected to
+`close_call_points * sqrt(weeks)`, and since sqrt(1) = 1 the two sections
+collapse to **one code path with no second threshold**.
+
+#### Two things cut during planning
+
+`load_league_transactions` has **no consumer** once the FAAB bid is gone, so it
+was cut rather than built unused. And a bye is an **ABSENT ROW, not a zero**
+(verified: Gibbs has no week-6 row, Allen no week-7, Nacua no week-11) — so is
+an injured or unprojected player, which means every ROS total must print the
+count of weeks that actually contributed, or the 4a distinction between a
+measured 0.0 and no number at all is lost across fourteen weeks.
+
+
 ### 2026-09-02 (fourth block) — 4b FINISHED, and its headline feature was killed by its own gate
 
 **State:** branch `phase-4b-snapshot`, **419 tests** (from 395), **175 mutations,

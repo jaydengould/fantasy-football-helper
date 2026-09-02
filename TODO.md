@@ -162,6 +162,22 @@ item. The project is now a season-mode project.
      Preseason weekly projections are flat (Nacua 20.4-21.0 across all 18), so
      ROS today is season value x weeks left; the feature only becomes measurable
      once week 1 is played.
+     **SPEC AND PLAN WRITTEN 2026-09-02, IMPLEMENTATION DEFERRED to the next
+     session** (the user's call). Branch `phase-4c-waivers` off `main`, two
+     commits, no code touched — `docs/superpowers/specs/2026-09-02-phase-4c-waivers-design.md`
+     and `docs/superpowers/plans/2026-09-02-phase-4c-waivers.md` (8 tasks).
+     **Start at Task 1**, the `_resolve_week` / `_resolve_my_roster` extraction
+     from `_lineup`, which Tasks 6-7 depend on.
+     Two things the plan settled that are easy to lose:
+     - **`load_league_transactions` was cut** — it has no consumer once the FAAB
+       bid is gone. Position comes from the `rosters` payload, and the
+       cost-of-spending line is arithmetic on two already-computed targets.
+     - **The floor is `close_call_points * sqrt(weeks)`, and sqrt(1) = 1**, so
+       the THIS WEEK section is the rest-of-season function called with a
+       one-week horizon. One code path, no second threshold. The first version
+       of this rule was a flat 3.0/week bar and was wrong — it is calibrated to
+       a SINGLE week's error, and weekly errors partially cancel, so a flat bar
+       is ~4x too strict. Caught in spec self-review, before any code.
 5. ~~**The Yahoo roster must be hand-entered.**~~ **DONE 2026-09-01.**
    `.roster/yahoo-main.txt`, 14 players, all resolving unambiguously, gitignored.
    It must be UPDATED after every add/drop — `lineup` and `preflight` both print
