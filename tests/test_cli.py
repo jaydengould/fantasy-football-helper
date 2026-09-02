@@ -1971,3 +1971,214 @@ def test_roster_file_age_is_reported_so_a_stale_roster_is_visible(tmp_path):
 
     assert cli.roster_file_age_days(path) == 9
     assert cli.roster_file_age_days(tmp_path / "missing.txt") is None
+
+
+def test_cache_age_minutes_is_reported_so_a_stale_serve_is_visible(tmp_path, monkeypatch):
+    """`fetch_json` silently serves a stale cache on a failed fetch (stale_ok=True
+    by default) and says nothing. Same job as `roster_file_age_days` does for the
+    hand-maintained roster file: an age on screen, so "healthy but wrong" is
+    visible rather than inferred.
+
+    Specified in the Task 6 brief but never landed in that task's diff --
+    `_lineup` (this task) is its first real caller."""
+    import os, time
+    import ffhelper.cli as cli
+    monkeypatch.setattr(cli, "CACHE_DIR", tmp_path)
+    path = tmp_path / "rosters_123.json"
+    path.write_text("{}")
+    old = time.time() - 40 * 60
+    os.utime(path, (old, old))
+
+    assert cli.cache_age_minutes("rosters_123") == 40
+    assert cli.cache_age_minutes("missing") is None
+
+
+def test_render_lineup_shows_slots_bench_close_calls_and_every_degradation():
+    """One frame of the lineup screen. Pure, so it tests without a network.
+
+    Everything degraded must be VISIBLE: an unfilled slot, a player with no
+    projection this week, an injury, and the notes the caller passes in."""
+    import ffhelper.cli as cli
+    from ffhelper import season
+    starter = Player("1", "Jaxon Smith-Njigba", "WR", "SEA", proj_pts=16.2)
+    hurt = Player("2", "Chris Olave", "WR", "NO", proj_pts=11.0,
+                  injury_status="Questionable", practice_participation="Limited")
+    bench = Player("3", "Jordan Addison", "WR", "MIN", proj_pts=9.5)
+    state = season.StartSit(
+        lineup=[("WR", starter), ("WR", hurt), ("RB", None)],
+        bench=[bench],
+        close_calls=[season.CloseCall("WR", hurt, bench, 1.5)],
+        # The brief's fixture omitted `unprojected` -- StartSit has no default
+        # for it (nor should it: a caller that forgets it should get a
+        # TypeError, not a silently-empty list it never chose). Fixed here
+        # rather than weakening StartSit with a default.
+        unprojected=[],
+    )
+    out = cli.render_lineup(state, week=3, league_name="sleeper-main",
+                            owner="jaydenpg", notes=["projections unavailable for 2 players"])
+
+    assert "week 3" in out and "sleeper-main" in out and "jaydenpg" in out
+    assert "Jaxon Smith-Njigba" in out and "16.2" in out
+    assert "Questionable" in out and "Limited" in out
+    assert "EMPTY" in out                      # the unfilled RB slot
+    assert "Jordan Addison" in out             # the bench
+    assert "CLOSE" in out and "1.5" in out     # the close call
+    assert "projections unavailable for 2 players" in out
+
+
+def test_render_lineup_prints_dashes_not_zero_for_a_starter_with_no_projection():
+    """The 0.0 `with_weekly_points` invents for sorting must never reach the
+    screen as if it were a real projection -- that is the exact fabrication
+    this design exists to prevent, landing in the place the user trusts most."""
+    import ffhelper.cli as cli
+    from ffhelper import season
+    starter = Player("1", "Bench Stash", "TE", "KC", proj_pts=0.0)
+    state = season.StartSit(
+        lineup=[("TE", starter)], bench=[], close_calls=[], unprojected=[starter],
+    )
+    out = cli.render_lineup(state, week=1, league_name="l", owner=None, notes=[])
+
+    # The invented 0.0 legitimately appears once, in the "projected total" row
+    # (documented as a FLOOR when any starter has no projection) -- what must
+    # never happen is the PLAYER'S OWN row showing it as if it were his number.
+    player_line = next(line for line in out.splitlines() if "Bench Stash" in line)
+    assert "0.0" not in player_line
+    assert "--" in player_line
+    assert "NO PROJECTION" in out
+
+
+def _lineup_settings(**overrides):
+    from ffhelper.data import LeagueSettings
+    base = dict(num_teams=12, scoring={"pass_td": 6.0}, roster_slots={"QB": 1},
+                rounds=1, draft_id="D1")
+    base.update(overrides)
+    return LeagueSettings(**base)
+
+
+def test_lineup_derives_roster_by_roster_id_not_draft_slot(monkeypatch, capsys):
+    """THE MEASURED FACT this task must not lose: draft_slot is NOT roster_id.
+    In the real league slot 5 maps to roster_id 3, and roster_id 5 is a
+    DIFFERENT manager's team. If `_lineup` ever conflated the two -- by falling
+    back to the slot number, say -- it would silently print someone else's
+    roster as the user's own."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+    from ffhelper.feeds import Pick
+
+    league = League(name="sleeper-main", platform="sleeper", league_id="L1", draft_slot=5)
+    settings = _lineup_settings()
+    players = {
+        "10": Player("10", "Correct Owners QB", "QB", "BUF"),
+        "99": Player("99", "Wrong Roster QB", "QB", "KC"),
+    }
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections",
+                        lambda season, week: [{"player_id": "10", "stats": {"pass_td": 2}}])
+    # roster_id 3 (mapped from draft_slot 5 via the pick below) is the correct
+    # roster; roster_id 5 -- what a naive "slot == roster_id" bug would grab
+    # instead -- belongs to a different manager entirely.
+    monkeypatch.setattr(cli, "load_league_rosters", lambda league_id: [
+        {"roster_id": 3, "owner_id": "u1", "players": ["10"]},
+        {"roster_id": 5, "owner_id": "u2", "players": ["99"]},
+    ])
+    monkeypatch.setattr(cli, "load_league_users", lambda league_id: [
+        {"user_id": "u1", "display_name": "jaydenpg"},
+        {"user_id": "u2", "display_name": "someone-else"},
+    ])
+    monkeypatch.setattr(cli, "SleeperFeed", lambda draft_id: _FakeFeed(
+        picks=[Pick(pick_no=5, sleeper_id="whatever", roster_id=3, draft_slot=5)]))
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+
+    result = cli._lineup(league, Tunables(), week=3)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "jaydenpg" in out
+    assert "Correct Owners QB" in out
+    assert "Wrong Roster QB" not in out
+
+
+def test_lineup_reports_stale_roster_cache_visibly(monkeypatch, capsys):
+    """A failed roster fetch silently serves a stale cached copy -- degrade,
+    never fabricate means the age must show on screen."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+    from ffhelper.feeds import Pick
+
+    league = League(name="sleeper-main", platform="sleeper", league_id="L1", draft_slot=5)
+    settings = _lineup_settings()
+    players = {"10": Player("10", "A", "QB", "BUF")}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    monkeypatch.setattr(cli, "load_league_rosters",
+                        lambda league_id: [{"roster_id": 3, "owner_id": "u1", "players": ["10"]}])
+    monkeypatch.setattr(cli, "load_league_users",
+                        lambda league_id: [{"user_id": "u1", "display_name": "jaydenpg"}])
+    monkeypatch.setattr(cli, "SleeperFeed", lambda draft_id: _FakeFeed(
+        picks=[Pick(pick_no=5, sleeper_id="x", roster_id=3, draft_slot=5)]))
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: 45)
+
+    cli._lineup(league, Tunables(), week=3)
+    out = capsys.readouterr().out
+
+    assert "45 minutes old" in out
+
+
+def test_lineup_reads_hand_maintained_roster_for_a_platform_with_no_api(monkeypatch, tmp_path, capsys):
+    """Yahoo has no feed, so the roster file IS the roster -- this is the path
+    that must work for the Yahoo run in Step 5."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="L2")
+    settings = _lineup_settings(num_teams=10, roster_slots={"QB": 1}, draft_id=None)
+    players = {"20": Player("20", "Justin Herbert", "QB", "LAC")}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 1, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections",
+                        lambda season, week: [{"player_id": "20", "stats": {"pass_td": 3}}])
+    monkeypatch.setattr(cli, "ROSTER_DIR", tmp_path)
+    (tmp_path / "yahoo-main.txt").write_text("Justin Herbert\n")
+
+    result = cli._lineup(league, Tunables(), week=1)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "Justin Herbert" in out
+    assert "no roster:" not in out
+
+
+def test_lineup_reports_missing_roster_file_visibly(monkeypatch, tmp_path, capsys):
+    """No file at all must not render a quiet, empty-looking lineup -- it must
+    say why."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="L2")
+    settings = _lineup_settings(num_teams=10, roster_slots={"QB": 1}, draft_id=None)
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: {})
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 1, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    monkeypatch.setattr(cli, "ROSTER_DIR", tmp_path)
+
+    result = cli._lineup(league, Tunables(), week=1)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "no roster:" in out
+
+
+def test_main_dispatches_lineup_and_returns_its_exit_code(monkeypatch):
+    league = _loop_league()
+    monkeypatch.setattr("ffhelper.cli.load_config", lambda path: ([league], Tunables()))
+    monkeypatch.setattr("ffhelper.cli._lineup", lambda lg, tun, week: 3)
+
+    result = main(["lineup", "--league", "loop-league", "--week", "2"])
+
+    assert result == 3

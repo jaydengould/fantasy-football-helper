@@ -197,6 +197,11 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "        if matches:\n            players.append(matches[0])"),
         ("unresolved roster lines dropped silently",
          'problems.append(f"no player matches {name!r}")', "pass"),
+        ("empty lineup slots hidden, so a hole in the roster is invisible",
+         '            out.append(f"  {slot:<5} -- EMPTY --   no eligible player on this roster")',
+         "            pass"),
+        ("degradation notes dropped from the screen",
+         '        out += [""] + [f"!! {n}" for n in notes]', "        pass"),
     ],
     "feeds.py": [
         ("picks poll drops the cache-buster, so Cloudflare serves a stale board",

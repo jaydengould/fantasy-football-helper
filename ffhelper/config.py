@@ -58,6 +58,11 @@ class Tunables:
     poll_seconds: dict[str, int] = field(
         default_factory=lambda: {"sleeper": 5, "yahoo": 12}
     )
+    # How close two players must be for a start/sit call to be worth printing.
+    # A 30-point gap is not a decision and printing it buries the 1.5-point one
+    # that is. 3.0 is a starting value, NOT a measured one -- it is expected to
+    # move once backtest_weekly.py measures the real weekly projection error.
+    close_call_points: float = 3.0
 
 
 def load_config(path: Path) -> tuple[list[League], Tunables]:
@@ -76,6 +81,7 @@ def load_config(path: Path) -> tuple[list[League], Tunables]:
         divergence_flag_slots=tun_raw.get("divergence_flag_slots", defaults.divergence_flag_slots),
         flex_share=flex_share_merged,
         poll_seconds=poll_seconds_merged,
+        close_call_points=tun_raw.get("close_call_points", defaults.close_call_points),
     )
     return leagues, tun
 
