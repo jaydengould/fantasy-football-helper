@@ -1229,15 +1229,28 @@ def _record_snapshot(
         return f"snapshot        : NOT RECORDED -- {exc}"
 
 
-def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
-    """Print this week's optimal lineup. One shot -- no loop, no polling."""
-    settings = resolve_settings(league)
+def _resolve_week(week: int | None) -> tuple[int | None, str, list[str], int | None]:
+    """The NFL week and season to work in, plus any degradation notes.
+
+    Returns week=None when neither /state/nfl nor --week supplied one. The
+    caller prints and stops: guessing a week (the old `or 1`) is exactly the
+    fabrication this design forbids.
+
+    `not week` rather than `week is None` is deliberate -- Sleeper serves
+    "week": 0 in the offseason, and the two guards disagreeing is a defect this
+    project already shipped once.
+
+    The fourth element is the RAW state week, which `_lineup` needs for the
+    snapshot's is-this-the-current-week check. Re-reading it with a second
+    load_nfl_state() would be two fetches that can disagree.
+
+    /state/nfl is one more Sleeper endpoint that "can change or vanish" -- the
+    spec's own risk register says every such endpoint must degrade to an absent
+    column. `season_str` used to come straight from it unguarded, so even
+    `lineup --week 4` -- the obvious thing to try when the week on screen looks
+    wrong -- could not run without it.
+    """
     notes: list[str] = []
-    # /state/nfl is one more Sleeper endpoint that "can change or vanish" --
-    # the spec's own risk register says every such endpoint must degrade to an
-    # absent column. `season_str` used to come straight from it unguarded, so
-    # even `lineup --week 4` -- the obvious thing to try when the week on
-    # screen looks wrong -- could not run without it.
     try:
         state = load_nfl_state()
     except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
@@ -1245,25 +1258,32 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
         notes.append(f"could not reach Sleeper's /state/nfl ({exc}) -- season defaults "
                      f"to {SEASON}")
 
-    if week is None:
-        week = state.get("week")
-        if not week:
-            # Neither the endpoint nor --week can supply a week -- guessing
-            # one (the old `or 1` fallback) is exactly the fabrication this
-            # whole design forbids, so say so and stop instead.
-            print("no NFL week available: /state/nfl is unreachable and --week "
-                  "was not given -- pass e.g. '--week 1' to run without it")
-            return 1
-    week = int(week)
     season_str = str(state.get("season") or SEASON)
+    state_week = state.get("week")
+    if week is None:
+        week = state_week
+        if not week:
+            return None, season_str, notes, state_week
+    return int(week), season_str, notes, state_week
 
-    players = load_players()
-    # Kept, not discarded after scoring: the same rows carry `opponent`, which
-    # is the whole schedule this command needs -- no schedule endpoint, no
-    # second fetch.
-    weekly_rows = load_weekly_projections(season_str, week)
-    weekly = season_mod.weekly_points(weekly_rows, settings.scoring)
 
+def _resolve_my_roster(
+    league: League, settings: LeagueSettings, players: dict[str, Player],
+) -> tuple[list[Player], str | None, list[str], list[dict], int | None]:
+    """Whose roster this is, on either platform, with every degradation note.
+
+    Extracted from `_lineup` so `waivers` cannot grow a second answer to the
+    question. Two commands disagreeing about which team they advise is the
+    `FLEX_ELIGIBLE` mistake with higher stakes.
+
+    Returns the raw Sleeper `rosters` payload and the resolved `roster_id` as
+    well: `waivers` needs both, and re-deriving either would be a second source
+    of truth for one fact -- which is how this project's own conventions say two
+    views start disagreeing.
+    """
+    notes: list[str] = []
+    rosters: list[dict] = []
+    rid: int | None = None
     owner: str | None = None
     if league.platform == "sleeper":
         rosters_failed = False
@@ -1393,6 +1413,29 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
         if not roster:
             notes.append(f"no roster: write one name per line into "
                          f"{ROSTER_DIR / f'{league.name}.txt'}")
+    return roster, owner, notes, rosters, rid
+
+
+def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
+    """Print this week's optimal lineup. One shot -- no loop, no polling."""
+    settings = resolve_settings(league)
+    week, season_str, notes, state_week = _resolve_week(week)
+    if week is None:
+        # Neither the endpoint nor --week can supply a week -- guessing one (the
+        # old `or 1` fallback) is exactly the fabrication this design forbids.
+        print("no NFL week available: /state/nfl is unreachable and --week "
+              "was not given -- pass e.g. '--week 1' to run without it")
+        return 1
+
+    players = load_players()
+    # Kept, not discarded after scoring: the same rows carry `opponent`, which
+    # is the whole schedule this command needs -- no schedule endpoint, no
+    # second fetch.
+    weekly_rows = load_weekly_projections(season_str, week)
+    weekly = season_mod.weekly_points(weekly_rows, settings.scoring)
+
+    roster, owner, notes_r, rosters, rid = _resolve_my_roster(league, settings, players)
+    notes += notes_r
 
     # Practice status is the one thing Sleeper's player DB does not carry (zero
     # of 3231 players), so it comes from nflverse and joins on gsis_id through
@@ -1416,7 +1459,7 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
     # After the lineup, not inside `notes`: notes render as "!!" alarms, and a
     # snapshot that worked is not an alarm. Same reason the unprojected players
     # got their own quiet section in 4a rather than crying wolf every week.
-    print(_record_snapshot(league, season_str, week, state.get("week"),
+    print(_record_snapshot(league, season_str, week, state_week,
                            state_ss, set(weekly)))
     return 0
 

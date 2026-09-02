@@ -3020,3 +3020,92 @@ def test_lineup_says_there_is_no_matchup_context_in_week_one(monkeypatch,
     cli._lineup(league, Tunables(), week=1)
 
     assert "matchup context : none -- no completed weeks yet" in capsys.readouterr().out
+
+
+# --- Phase 4c: the seams `waivers` shares with `lineup` -----------------------
+
+
+def test_resolve_week_prefers_the_explicit_week_over_state(monkeypatch):
+    import ffhelper.cli as cli
+
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    week, season_str, notes, state_week = cli._resolve_week(7)
+    assert (week, season_str) == (7, "2026")
+    assert notes == []
+    # The RAW state week survives alongside the resolved one: `_lineup`'s
+    # snapshot needs to know whether the week asked for is the current one, and
+    # a second load_nfl_state() call is two fetches that can disagree.
+    assert state_week == 3
+
+
+def test_resolve_week_returns_none_when_state_is_dead_and_no_week_given(monkeypatch):
+    import ffhelper.cli as cli
+
+    def dead():
+        raise RuntimeError("connection refused")
+    monkeypatch.setattr(cli, "load_nfl_state", dead)
+    week, season_str, notes, state_week = cli._resolve_week(None)
+    # None, not a guessed 1 -- guessing a week is the fabrication the design forbids.
+    assert week is None
+    assert season_str == cli.SEASON
+    assert state_week is None
+    assert any("state/nfl" in n for n in notes)
+
+
+def test_resolve_week_treats_sleepers_offseason_zero_as_no_week(monkeypatch):
+    # Sleeper serves "week": 0 in the offseason. `_lineup` guards on `not week`
+    # and `_preflight` used to guard on `week is None`; the two disagreed and one
+    # of them fetched projections for week 0.
+    import ffhelper.cli as cli
+
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 0, "season": "2026"})
+    week, _, _, _ = cli._resolve_week(None)
+    assert week is None
+
+
+def _fake_players():
+    # Real ids and real names: a fixture of round numbers and "Player 1" is the
+    # documented cause of seven defects in this project.
+    return {
+        "4034": Player(sleeper_id="4034", name="Josh Allen", position="QB", team="BUF"),
+        "8151": Player(sleeper_id="8151", name="Jahmyr Gibbs", position="RB", team="DET"),
+    }
+
+
+def test_resolve_my_roster_prefers_the_config_override_and_names_the_owner(monkeypatch):
+    import ffhelper.cli as cli
+
+    rosters = [
+        {"roster_id": 3, "owner_id": "u1", "players": ["4034", "8151"],
+         "settings": {"waiver_position": 8}},
+        {"roster_id": 5, "owner_id": "u2", "players": [], "settings": {"waiver_position": 1}},
+    ]
+    monkeypatch.setattr(cli, "load_league_rosters", lambda lid: rosters)
+    monkeypatch.setattr(cli, "load_league_users",
+                        lambda lid: [{"user_id": "u1", "display_name": "jaydenpg"}])
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: 0)
+    league = League(name="t", platform="sleeper", league_id="1", roster_id=3)
+    roster, owner, notes, raw, rid = cli._resolve_my_roster(
+        league, _lineup_settings(), _fake_players())
+    assert sorted(p.sleeper_id for p in roster) == ["4034", "8151"]
+    assert owner == "jaydenpg"
+    assert any("override" in n for n in notes)
+    # The raw payload must survive: `waivers` reads waiver_position out of it,
+    # and the roster_id it was read under comes back rather than being
+    # re-derived from the player ids by a second, disagreeable rule.
+    assert raw is rosters
+    assert rid == 3
+
+
+def test_resolve_my_roster_degrades_to_empty_when_rosters_are_unreachable(monkeypatch):
+    import ffhelper.cli as cli
+
+    def dead(lid):
+        raise RuntimeError("connection refused")
+    monkeypatch.setattr(cli, "load_league_rosters", dead)
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+    league = League(name="t", platform="sleeper", league_id="1", roster_id=3)
+    roster, owner, notes, raw, _rid = cli._resolve_my_roster(
+        league, _lineup_settings(), _fake_players())
+    assert roster == [] and raw == []
+    assert any("rosters endpoint" in n for n in notes)
