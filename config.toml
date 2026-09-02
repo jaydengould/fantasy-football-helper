@@ -46,8 +46,10 @@ adp_source = "sleeper"
 # wrong next-pick number for every pick of the draft. Cross-checked against the
 # live draft_order, which independently maps this user to slot 5 and still has
 # slot 8 unassigned. RE-CHECKED 2026-08-31 after the draft moved to Sept 1 -- a
-# rescheduled draft is exactly when a league might re-roll the order. It did not:
-# still slot 5, still 11 of 12 with slot 8 open.
+# rescheduled draft is exactly when a league might re-roll the order. It did not.
+# RE-CHECKED AGAIN 2026-09-01 pre-draft: draft_order is now COMPLETE, 12 of 12,
+# and slot 5 maps to display_name `jaydenpg` -- so this value is confirmed
+# against the API rather than resting on the user's word.
 draft_slot = 5
 
 # Task 13 rehearsal. Borrows sleeper-main's synced scoring and roster and points
@@ -82,7 +84,14 @@ adp_source = "sleeper"
 # do not spend clock on it.
 #
 # Afterwards:  .venv/bin/python scripts/calibrate.py .draft/yahoo-mock-<date>.jsonl <slot>
-# Delete this block once the mock is done.
+#
+# KEPT after the 2026 drafts, deliberately (TODO.md's "delete the mock blocks"
+# item is answered here, do not re-raise). `calibrate.py` reads `num_teams` from
+# the NAMED league, so this block at 12 teams is what lets the three transcribed
+# 12-team mocks in .draft/ be re-scored -- and those 540 picks are the only
+# non-circular calibration data the project has. Deleting it does not free
+# anything; it destroys the ability to reproduce the result that set
+# `adp_source` for both leagues.
 [[league]]
 name = "yahoo-mock"
 platform = "yahoo"
@@ -184,7 +193,7 @@ bench = 5
 
 [league.settings.roster_slots]
 QB = 1
-RB = 2
+RB = 1
 WR = 2
 TE = 1
 FLEX = 2
@@ -235,7 +244,9 @@ pts_allow_21_27 = 0
 pts_allow_28_34 = -1
 pts_allow_35p = -4
 
-# SCRATCH -- delete after the mock, same as the yahoo-mock block.
+# SCRATCH, but KEPT: a Sleeper mock or fill-in draft can be pointed at this
+# block by changing one `draft_id`, which is the whole reason it exists. The
+# draft_id below is a finished mock -- reset it before a live run.
 # A Sleeper mock has a draft_id but no league of its own, so its scoring and
 # roster cannot be fetched. This borrows sleeper-main's league_id for exactly
 # that (synced 12-team full PPR, 6-pt passing TDs) and overrides only where the

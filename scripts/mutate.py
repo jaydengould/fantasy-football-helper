@@ -69,8 +69,25 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("board sort vbd tiebreak",
          "            -r.vbd,\n", ""),
         ("lineup flex eligibility",
-         "if p.position in FLEX_ELIGIBLE and p.sleeper_id not in used:",
-         "if p.sleeper_id not in used:"),
+         "if p.position in FLEX_ELIGIBLE and p.sleeper_id not in used), None)",
+         "if p.sleeper_id not in used), None)"),
+        ("one player fills two fixed slots",
+         "if p.position == row[0] and p.sleeper_id not in used), None)",
+         "if p.position == row[0]), None)"),
+        ("leftovers spill into fixed slots, not just FLEX",
+         '        if row[0] != "FLEX":\n            continue',
+         '        if row[0] != "FLEX" and row[1] is None:\n            continue'),
+        ("optimal lineup fills slots worst-first",
+         "remaining = sorted(roster, key=lambda p: -p.proj_pts)",
+         "remaining = sorted(roster, key=lambda p: p.proj_pts)"),
+        ("FLEX filled BEFORE the fixed slots, so it steals the best RB",
+         '        if row[0] == "FLEX":\n            continue\n'
+         '        match = next((p for p in remaining\n'
+         '                      if p.position == row[0] and p.sleeper_id not in used), None)',
+         '        match = next((p for p in remaining\n'
+         '                      if (p.position == row[0] or row[0] == "FLEX"\n'
+         '                          and p.position in FLEX_ELIGIBLE)\n'
+         '                      and p.sleeper_id not in used), None)'),
         ("static replacement baseline",
          "    repl = replacement_points(pool, ranks)",
          "    repl = replacement_points(available, ranks)"),
@@ -300,12 +317,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("search matches on prefix only, not substring",
          'out = [r for r in out if q in r["player"].lower()]',
          'out = [r for r in out if r["player"].lower().startswith(q)]'),
-        ("panel starts a QB at FLEX (disagrees with MARG)",
-         'match = next((p for p in remaining if p.position in FLEX_ELIGIBLE), None)',
-         'match = next((p for p in remaining), None)'),
-        ("panel fills slots worst-first",
-         "remaining = sorted(my_roster, key=lambda p: -p.proj_pts)",
-         "remaining = sorted(my_roster, key=lambda p: p.proj_pts)"),
+        ("panel counts a starter on the bench as well",
+         "if p.sleeper_id not in started]", "]"),
         ("panel hides empty slots instead of showing them",
          "    return out", "    return [r for r in out if r[1] is not None]"),
         ("override shown on a feed league, where it is a dead control",
@@ -341,9 +354,6 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "        pass"),
         ("bench picks hidden -- you cannot see your own bench",
          '    out += [("BN", p.name) for p in remaining]', "    pass"),
-        ("leftovers spill into fixed slots, not just FLEX",
-         '        if row[0] != "FLEX":\n            continue',
-         '        if row[0] != "FLEX" and row[1] is None:\n            continue'),
     ],
 }
 

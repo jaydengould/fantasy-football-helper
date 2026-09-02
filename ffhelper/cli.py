@@ -609,7 +609,7 @@ def _manual_mine(log_path, typed_mine: set[str], draft_slot: int | None,
 
     A league WITH a feed is untouched: there, `draft_slot` on the feed's own
     picks is authoritative, and deriving from journal order could contradict it.
-    So the Sept 6 Sleeper path does not change.
+    So a league with a feed does not change.
 
     Explicit statements win over the derived guess in BOTH directions, which is
     why `explicit_not_mine` is subtracted every call rather than once: `auto_mine`

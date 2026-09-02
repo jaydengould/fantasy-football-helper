@@ -1045,3 +1045,46 @@ def test_conditioning_reaches_the_board_not_just_the_column():
     assert row.survival != pytest.approx(survival_prob(a, at_pick))   # not the old form
     assert row.vona == pytest.approx(vona(pool, a, at_pick, current))
     assert row.vona != pytest.approx(vona(pool, a, at_pick))
+
+
+def test_optimal_lineup_names_the_slot_each_starter_fills():
+    """`lineup_value` returns a float and cannot say WHO started WHERE.
+
+    That is the whole question season mode's start/sit output asks, and it is
+    why `app.roster_slots_view` had to hand-copy the greedy assignment -- a
+    second copy of a rule that, per the Phase 3 session, lets two views
+    disagree about one roster.
+
+    FLEX is filled LAST (it takes what the fixed slots leave) but appears where
+    the roster defines it, which is how both platforms draw a lineup.
+    """
+    from ffhelper.value import optimal_lineup
+
+    slots = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1}
+    roster = [
+        mk("q", "QB", 300.0),
+        mk("r1", "RB", 250.0), mk("r2", "RB", 200.0), mk("r3", "RB", 150.0),
+        mk("w1", "WR", 240.0), mk("w2", "WR", 190.0),
+        mk("t", "TE", 120.0),
+    ]
+    view = optimal_lineup(roster, slots)
+
+    assert [slot for slot, _ in view] == ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX"]
+    assert [p.sleeper_id for _, p in view] == ["q", "r1", "r2", "w1", "w2", "t", "r3"]
+    # The property that makes app.py's copy deletable: the named assignment
+    # scores exactly what the float does.
+    assert sum(p.proj_pts for _, p in view if p) == lineup_value(roster, slots)
+
+
+def test_optimal_lineup_leaves_a_slot_empty_rather_than_filling_it_illegally():
+    """An unfillable slot reports empty. Degrade, never fabricate -- and FLEX
+    stays legal, the guard mutation testing already caught once in
+    `lineup_value`'s own FLEX loop.
+    """
+    from ffhelper.value import optimal_lineup
+
+    slots = {"QB": 1, "RB": 1, "FLEX": 1}
+    roster = [mk("q1", "QB", 400.0), mk("q2", "QB", 390.0)]
+    view = optimal_lineup(roster, slots)
+
+    assert view == [("QB", roster[0]), ("RB", None), ("FLEX", None)]

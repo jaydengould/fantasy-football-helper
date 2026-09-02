@@ -1,7 +1,9 @@
 """ffhelper.board.board_state must agree with cli._render_tick, exactly.
 
-board.py holds a COPY of the derivation in _render_tick (cli.py:623-641),
-because cli.py is the live draft path and is frozen until after Sept 6 2026.
+board.py holds a COPY of the derivation in _render_tick. It was written as a
+copy because cli.py was frozen for the 2026 drafts; the freeze lifted
+2026-09-01 and the fold was deliberately deferred anyway -- board.py's docstring
+carries the current reasoning and the trigger for taking it.
 A copy that drifts from its original is this project's signature failure --
 Task 13 defects #1, #3 and #6 were all one component disagreeing with another
 about who had been drafted. This test is what makes the copy safe.

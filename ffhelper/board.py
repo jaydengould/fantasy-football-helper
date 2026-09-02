@@ -1,13 +1,26 @@
-"""Board derivation, shared by the web UI and (after Sept 6) the terminal.
+"""Board derivation, shared by the web UI and (one day) the terminal.
 
 ponytail: `board_state` is a COPY of the derivation block in
-`cli._render_tick` (cli.py:623-641), not an extraction. cli.py is the live
-draft path and is frozen until both 2026 drafts are done, and editing it six
-days out buys nothing before October. `tests/test_board_agreement.py` proves
-the two agree, and is also the proof that the extraction is a no-op when it
-happens. UPGRADE PATH, after 2026-09-06: delete that block from `_render_tick`,
-call `board_state` there, and move the three `_`-prefixed helpers imported
-below into this module.
+`cli._render_tick`, not an extraction. `tests/test_board_agreement.py` proves
+the two agree, and is also the proof that the extraction is a no-op.
+
+The 2026 draft freeze that originally justified the copy lifted 2026-09-01, and
+the fold was then deliberately NOT taken. Two reasons, both current:
+
+  1. It buys nothing functional. Season mode adds new commands and never touches
+     this derivation, so the fold is pure debt repayment on the live draft path
+     -- which may be exercised again at short notice by a mock or a fill-in
+     draft.
+  2. The import cycle is the real cost, not the duplication. This module imports
+     four `_`-prefixed helpers from `cli`, and `_restore_marks` builds a
+     `MarkDrafted`, so a clean one-way fold means moving the journal layer into
+     its own module rather than moving three functions.
+
+UPGRADE PATH, when something actually needs it: extract `MarkDrafted` and the
+journal helpers into `ffhelper/marks.py`, let both `cli` and `board` import from
+there, then delete the derivation block from `_render_tick` and call
+`board_state`. Do it when a board change would otherwise have to be written
+twice -- Phase 3.7 is the likely trigger.
 """
 import json
 from dataclasses import dataclass

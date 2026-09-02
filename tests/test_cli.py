@@ -1873,7 +1873,7 @@ def test_a_feedless_cli_derives_my_roster_from_the_seat(tmp_path):
 def test_a_league_with_a_feed_is_left_alone(tmp_path):
     # Sleeper attributes picks by draft_slot from the FEED, which is
     # authoritative. Deriving from journal order there would double-count and
-    # could contradict the feed. The Sept 6 path must not change at all.
+    # could contradict the feed. A league with a feed must not change at all.
     from ffhelper.cli import _manual_mine
     log = tmp_path / "log.jsonl"
     # Long enough that derivation WOULD add players (seat 2 owns 2, 23, 26), or

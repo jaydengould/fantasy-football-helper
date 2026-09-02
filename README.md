@@ -424,7 +424,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 320 tests, no network, runs in ~0.4s
+.venv/bin/pytest          # 322 tests, no network, runs in ~0.4s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

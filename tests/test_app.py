@@ -681,9 +681,10 @@ def test_slot_order_follows_the_configured_roster():
 
 
 def test_the_panel_starts_exactly_the_lineup_lineup_value_scores():
-    # roster_slots_view COPIES lineup_value's greedy assignment because value.py
-    # is frozen until Sept 6. This is the agreement test that makes the copy
-    # safe -- and the proof that folding the two together later is a no-op.
+    # roster_slots_view USED to copy lineup_value's greedy assignment, because
+    # value.py was frozen for the 2026 drafts. This test guarded that copy; the
+    # freeze lifted 2026-09-01 and the fold happened, so it now guards the real
+    # thing -- the panel and MARG cannot disagree about one roster.
     from ffhelper.value import lineup_value
     slots = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1}
     roster = [
