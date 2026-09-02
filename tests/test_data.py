@@ -439,3 +439,23 @@ def test_ffc_ambiguous_def_team_matches_neither():
     assert players["SEA"].adp_stdev == 5.0
     assert players["SEA_ALT"].adp == 50.0
     assert players["SEA_ALT"].adp_stdev == 6.0
+
+
+def test_load_weekly_projections_asks_for_the_week_and_caches_per_week(tmp_path):
+    """The season endpoint is frozen preseason; only the weekly one is revised
+    in-season. The cache key must carry the week, or week 2 is served week 1's
+    numbers for the rest of the season while looking healthy."""
+    from ffhelper.data import load_weekly_projections
+    seen = []
+
+    def fake(url):
+        seen.append(url)
+        return '[{"player_id": "4034", "stats": {"pts_ppr": 21.5, "rush_yd": 88.0}}]'
+
+    rows = load_weekly_projections("2026", 3, cache_dir=tmp_path, fetcher=fake)
+
+    assert all("/2026/3?" in u for u in seen), seen
+    assert len(rows) == 6          # one call per position
+    assert rows[0]["stats"]["rush_yd"] == 88.0
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert any("wk3" in n for n in names), names

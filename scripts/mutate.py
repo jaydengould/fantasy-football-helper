@@ -254,6 +254,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if set_adp and row.get(\"adp\") is not None:", "if row.get(\"adp\") is not None:"),
         ("ffc bye is taken regardless of adp_source",
          "if row.get(\"bye\"):", "if set_adp and row.get(\"bye\"):"),
+        ("weekly projection cache key drops the week -- every week serves week 1",
+         'f"proj_{season}_wk{week}_{pos}"', 'f"proj_{season}_{pos}"'),
     ],
     "ffhelper/board.py": [
         ("pick count ignores manual marks",

@@ -222,6 +222,10 @@ SLEEPER_PROJ_URL = (
     "https://api.sleeper.com/projections/nfl/{season}"
     "?season_type=regular&position[]={pos}&order_by=pts_ppr"
 )
+SLEEPER_WEEKLY_PROJ_URL = (
+    "https://api.sleeper.com/projections/nfl/{season}/{week}"
+    "?season_type=regular&position[]={pos}&order_by=pts_ppr"
+)
 
 
 @dataclass(frozen=True)
@@ -291,6 +295,34 @@ def load_projections(
             fetch_json(
                 SLEEPER_PROJ_URL.format(season=season, pos=pos),
                 f"proj_{season}_{pos}",
+                cache_dir=cache_dir,
+                fetcher=fetcher,
+            )
+        )
+    return rows
+
+
+def load_weekly_projections(
+    season: str, week: int, cache_dir: Path = CACHE_DIR,
+    fetcher: Callable[[str], str] | None = None,
+) -> list[dict]:
+    """One week's projections, same row shape as `load_projections`.
+
+    The SEASON endpoint is frozen preseason -- `backtest.py` proves it, every
+    player carries gp=18 regardless of what happened -- so it is useless once
+    anyone is hurt. The weekly endpoint IS revised: verified on 2025, where
+    Ekeler reads 12.1, 10.4, then 0.0 for every week after his week-3 injury.
+
+    The cache key carries the week. Without it, week 2 would be served week 1's
+    numbers for the rest of the season and the board would look healthy.
+    """
+    rows: list[dict] = []
+    for pos in ("QB", "RB", "WR", "TE", "K", "DEF"):
+        rows.extend(
+            fetch_json(
+                SLEEPER_WEEKLY_PROJ_URL.format(season=season, week=week, pos=pos),
+                f"proj_{season}_wk{week}_{pos}",
+                ttl_seconds=3600,
                 cache_dir=cache_dir,
                 fetcher=fetcher,
             )
