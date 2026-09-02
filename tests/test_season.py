@@ -1,6 +1,5 @@
 """ffhelper.season is PURE -- these tests never touch the network."""
 import pytest
-from dataclasses import dataclass
 
 from ffhelper.data import Player
 from ffhelper import season
@@ -92,3 +91,65 @@ def test_start_sit_reports_an_unfillable_slot_rather_than_hiding_it():
     most important message and it must not be silently dropped."""
     got = season.start_sit([mk("q", "QB", 20.0)], {"QB": 1, "RB": 1})
     assert got.lineup == [("QB", got.lineup[0][1]), ("RB", None)]
+
+
+def test_start_sit_unprojected_excluded_from_close_calls():
+    """A player absent from projected_ids (e.g. on exempt list) lands in unprojected,
+    is NOT offered as a close-call challenger to any filled slot."""
+    roster_raw = [mk("w1", "WR", 14.0), mk("w2", "WR", 11.0),
+                  mk("w3", "WR", 9.0), mk("stash", "WR", 15.0)]  # stash has high season score
+    # Only w1, w2, w3 have projections this week; stash is unprojected
+    weekly = {"w1": 14.0, "w2": 11.0, "w3": 9.0}  # stash absent
+    roster = season.with_weekly_points(roster_raw, weekly)
+
+    got = season.start_sit(roster, {"WR": 2}, close_call_points=3.0,
+                           projected_ids=set(weekly))
+
+    assert [p.sleeper_id for p in got.unprojected] == ["stash"]
+    # stash is benched (0.0 proj_pts), so only w3 is on bench
+    # w3 is the challenger (not offered from unprojected)
+    assert [c.challenger.sleeper_id for c in got.close_calls] == ["w3"]
+    assert got.close_calls[0].gap == pytest.approx(2.0)
+
+
+def test_start_sit_projected_ids_none_is_backward_compatible():
+    """`projected_ids=None` assumes everyone was projected, leaving unprojected
+    empty and preserving all existing behaviour."""
+    roster = [mk("q", "QB", 20.0),
+              mk("w1", "WR", 14.0), mk("w2", "WR", 11.0), mk("w3", "WR", 10.5)]
+    # With projected_ids=None, all players treated as projected
+    got = season.start_sit(roster, {"QB": 1, "WR": 2}, close_call_points=3.0,
+                           projected_ids=None)
+
+    assert got.unprojected == []
+    # Close call still reported
+    assert len(got.close_calls) == 1
+    assert got.close_calls[0].challenger.sleeper_id == "w3"
+
+
+def test_start_sit_distinguishes_zero_projection_from_missing():
+    """A player with a genuine 0.0 projection who IS in projected_ids is NOT
+    reported as unprojected -- this is the critical distinction."""
+    roster = [mk("q", "QB", 20.0), mk("w1", "WR", 3.0), mk("w2", "WR", 0.0),
+              mk("stash", "RB", 1.0)]
+    # w2 has a genuine 0.0 projection; stash is unprojected (on exempt list)
+    got = season.start_sit(roster, {"QB": 1, "WR": 1}, close_call_points=3.0,
+                           projected_ids={"q", "w1", "w2"})
+
+    assert [p.sleeper_id for p in got.unprojected] == ["stash"]
+    # w2 can still challenge (has a projection, even if zero); stash cannot
+    assert len(got.close_calls) == 1
+    assert got.close_calls[0].challenger.sleeper_id == "w2"
+    assert got.close_calls[0].gap == pytest.approx(3.0)
+
+
+def test_start_sit_same_bench_player_can_challenge_multiple_slots():
+    """The same bench player can be offered as a challenger for different slots
+    (a player positioned between two filled starters might challenge both). This
+    behaviour is deliberately accepted and tested here."""
+    roster = [mk("rb1", "RB", 12.0), mk("rb2", "RB", 11.0), mk("rb3", "RB", 9.0)]
+    got = season.start_sit(roster, {"RB": 2}, close_call_points=3.0)
+
+    # rb3 can challenge both rb1 (gap 3.0) and rb2 (gap 2.0) -- both within threshold
+    challenger_ids = [c.challenger.sleeper_id for c in got.close_calls]
+    assert challenger_ids.count("rb3") == 2

@@ -34,6 +34,11 @@ def with_weekly_points(roster: list[Player], weekly: dict[str, float]) -> list[P
     Copies, never mutation: the season-scored pool is shared with the draft
     board in the same process, and silently rewriting it is how two views start
     disagreeing about one roster.
+
+    Players absent from `weekly` are assigned proj_pts=0.0 for sorting (correctly
+    benches them), but this 0.0 is a sort value, not a projection. Caller must
+    track which players actually received a projection via `set(weekly)` and pass
+    that to start_sit's `projected_ids` to distinguish genuine 0.0 from absent.
     """
     return [replace(p, proj_pts=weekly.get(p.sleeper_id, 0.0)) for p in roster]
 
@@ -52,6 +57,7 @@ class StartSit:
     lineup: list[tuple[str, Player | None]]
     bench: list[Player]
     close_calls: list[CloseCall]
+    unprojected: list[Player]
 
 
 def _eligible(player: Player, slot: str) -> bool:
@@ -62,7 +68,8 @@ def _eligible(player: Player, slot: str) -> bool:
 
 
 def start_sit(
-    roster: list[Player], roster_slots: dict[str, int], close_call_points: float = 3.0
+    roster: list[Player], roster_slots: dict[str, int], close_call_points: float = 3.0,
+    projected_ids: set[str] | None = None
 ) -> StartSit:
     """The week's lineup, the bench, and the decisions worth a second look.
 
@@ -75,20 +82,28 @@ def start_sit(
     30-point gap is not a decision, and printing it buries the 1.5-point one
     that is. It defaults to 3.0 and is expected to move once the weekly
     backtest measures the real weekly error.
+
+    `projected_ids` is the set of sleeper_ids that received a projection this week.
+    Pass `set(weekly)` from weekly_points. Players absent from this set (e.g. on
+    exempt list, bye, injured) land in `unprojected` and are excluded from close_calls.
+    None means "assume everyone was projected" for backward compatibility.
     """
     lineup = optimal_lineup(roster, roster_slots)
     starting = {p.sleeper_id for _, p in lineup if p is not None}
     bench = sorted((p for p in roster if p.sleeper_id not in starting),
                    key=lambda p: -p.proj_pts)
 
+    unprojected_ids = set() if projected_ids is None else {p.sleeper_id for p in roster if p.sleeper_id not in projected_ids}
+    unprojected = [p for p in roster if p.sleeper_id in unprojected_ids]
+
     calls: list[CloseCall] = []
     for slot, starter in lineup:
         if starter is None:
             continue
-        challenger = next((b for b in bench if _eligible(b, slot)), None)
+        challenger = next((b for b in bench if _eligible(b, slot) and b.sleeper_id not in unprojected_ids), None)
         if challenger is None:
             continue
         gap = starter.proj_pts - challenger.proj_pts
         if gap <= close_call_points:
             calls.append(CloseCall(slot, starter, challenger, gap))
-    return StartSit(lineup=lineup, bench=bench, close_calls=calls)
+    return StartSit(lineup=lineup, bench=bench, close_calls=calls, unprojected=unprojected)

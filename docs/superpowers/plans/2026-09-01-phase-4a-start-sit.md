@@ -926,11 +926,23 @@ def render_lineup(
                        f"{p.proj_pts:6.1f}{_status_note(p)}")
     out.append(f"  {'':<5} {'projected total':<24} {'':<3} {'':<3} {total:6.1f}")
 
-    if state.bench:
+    projected_bench = [p for p in state.bench if p not in state.unprojected]
+    if projected_bench:
         out += ["", "BENCH"]
-        for p in state.bench:
+        for p in projected_bench:
             out.append(f"  {'':<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
                        f"{p.proj_pts:6.1f}{_status_note(p)}")
+
+    # NOT a "!!" note. A player can carry no projection for MONTHS -- a deliberate
+    # last-round stash on the exempt list is the real case -- and an alert that
+    # fires every week for the whole season is how a user learns to ignore alerts.
+    # It is also the only honest rendering: the source gave no number, so we print
+    # no number. "0.0" would be a projection we invented.
+    if state.unprojected:
+        out += ["", "NO PROJECTION THIS WEEK -- not started, and not a zero"]
+        for p in state.unprojected:
+            out.append(f"  {'':<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
+                       f"{'   --':>6}{_status_note(p)}")
 
     if state.close_calls:
         out += ["", "CLOSE CALLS -- worth your own read"]
@@ -992,13 +1004,12 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
             notes.append(f"no roster: write one name per line into "
                          f"{ROSTER_DIR / f'{league.name}.txt'}")
 
-    unprojected = [p.name for p in roster if p.sleeper_id not in weekly]
-    if unprojected:
-        notes.append(f"no week {week} projection for: {', '.join(unprojected)}")
-
+    # Players with no projection are NOT a "!!" note: see render_lineup. They get
+    # their own quiet section, because a stash can carry no number for months.
     scored = season_mod.with_weekly_points(roster, weekly)
     state_ss = season_mod.start_sit(scored, settings.roster_slots,
-                                    tunables.close_call_points)
+                                    tunables.close_call_points,
+                                    projected_ids=set(weekly))
     print(render_lineup(state_ss, week, league.name, owner, notes))
     return 0
 ```

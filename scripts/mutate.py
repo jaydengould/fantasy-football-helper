@@ -369,12 +369,15 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "return [replace(p, proj_pts=weekly.get(p.sleeper_id, 0.0)) for p in roster]",
          "for p in roster:\n        p.proj_pts = weekly.get(p.sleeper_id, 0.0)\n    return roster"),
         ("close-call challenger ignores slot eligibility (a kicker challenges a WR)",
-         "challenger = next((b for b in bench if _eligible(b, slot)), None)",
-         "challenger = next((b for b in bench), None)"),
+         "challenger = next((b for b in bench if _eligible(b, slot) and b.sleeper_id not in unprojected_ids), None)",
+         "challenger = next((b for b in bench if b.sleeper_id not in unprojected_ids), None)"),
         ("every gap reported, so the real decision is buried",
          "if gap <= close_call_points:", "if gap >= 0:"),
         ("bench ordered worst-first",
          "key=lambda p: -p.proj_pts)", "key=lambda p: p.proj_pts)"),
+        ("projected_ids distinction lost -- unprojected treated as projected",
+         "unprojected_ids = set() if projected_ids is None else {p.sleeper_id for p in roster if p.sleeper_id not in projected_ids}",
+         "unprojected_ids = set()"),
     ],
 
 }
