@@ -7,6 +7,7 @@ fetch, the design is wrong -- put the loader in `data.py`.
 from dataclasses import dataclass, replace
 
 from ffhelper.data import Player, score_stats
+from ffhelper.value import FLEX_ELIGIBLE, optimal_lineup
 
 
 def weekly_points(projections: list[dict], scoring: dict[str, float]) -> dict[str, float]:
@@ -35,3 +36,59 @@ def with_weekly_points(roster: list[Player], weekly: dict[str, float]) -> list[P
     disagreeing about one roster.
     """
     return [replace(p, proj_pts=weekly.get(p.sleeper_id, 0.0)) for p in roster]
+
+
+@dataclass(frozen=True)
+class CloseCall:
+    """A start/sit decision close enough that a human should look at it."""
+    slot: str
+    starter: Player
+    challenger: Player
+    gap: float
+
+
+@dataclass(frozen=True)
+class StartSit:
+    lineup: list[tuple[str, Player | None]]
+    bench: list[Player]
+    close_calls: list[CloseCall]
+
+
+def _eligible(player: Player, slot: str) -> bool:
+    """Whether `player` may legally fill `slot`. FLEX is value.py's rule."""
+    if slot == "FLEX":
+        return player.position in FLEX_ELIGIBLE
+    return player.position == slot
+
+
+def start_sit(
+    roster: list[Player], roster_slots: dict[str, int], close_call_points: float = 3.0
+) -> StartSit:
+    """The week's lineup, the bench, and the decisions worth a second look.
+
+    The lineup is `value.optimal_lineup`'s, imported rather than re-derived --
+    a second copy of that rule would let this command and the web board start
+    different players from one roster.
+
+    A close call is a bench player who is ELIGIBLE for a filled slot and within
+    `close_call_points` of the man in it. The threshold exists because a
+    30-point gap is not a decision, and printing it buries the 1.5-point one
+    that is. It defaults to 3.0 and is expected to move once the weekly
+    backtest measures the real weekly error.
+    """
+    lineup = optimal_lineup(roster, roster_slots)
+    starting = {p.sleeper_id for _, p in lineup if p is not None}
+    bench = sorted((p for p in roster if p.sleeper_id not in starting),
+                   key=lambda p: -p.proj_pts)
+
+    calls: list[CloseCall] = []
+    for slot, starter in lineup:
+        if starter is None:
+            continue
+        challenger = next((b for b in bench if _eligible(b, slot)), None)
+        if challenger is None:
+            continue
+        gap = starter.proj_pts - challenger.proj_pts
+        if gap <= close_call_points:
+            calls.append(CloseCall(slot, starter, challenger, gap))
+    return StartSit(lineup=lineup, bench=bench, close_calls=calls)

@@ -368,7 +368,15 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("weekly scoring mutates the shared season pool",
          "return [replace(p, proj_pts=weekly.get(p.sleeper_id, 0.0)) for p in roster]",
          "for p in roster:\n        p.proj_pts = weekly.get(p.sleeper_id, 0.0)\n    return roster"),
+        ("close-call challenger ignores slot eligibility (a kicker challenges a WR)",
+         "challenger = next((b for b in bench if _eligible(b, slot)), None)",
+         "challenger = next((b for b in bench), None)"),
+        ("every gap reported, so the real decision is buried",
+         "if gap <= close_call_points:", "if gap >= 0:"),
+        ("bench ordered worst-first",
+         "key=lambda p: -p.proj_pts)", "key=lambda p: p.proj_pts)"),
     ],
+
 }
 
 
