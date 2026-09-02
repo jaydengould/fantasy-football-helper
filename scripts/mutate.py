@@ -121,6 +121,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "return False"),
     ],
     "cli.py": [
+        ("waivers builds the pool from my roster only",
+         "pool = season_mod.free_agent_pool(players, rosters, projected)",
+         "pool = season_mod.free_agent_pool(players, rosters[:1], projected)"),
         ("empty waiver board renders as a blank",
          'lines.append("  nothing on the wire beats what you already have.")',
          "pass"),
