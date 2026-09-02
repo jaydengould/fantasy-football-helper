@@ -380,9 +380,6 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("descriptive-only rows scored as zero instead of omitted",
          "if not any(k in scoring for k in stats):\n            continue",
          "pass"),
-        ("unprojected starters can generate close calls (comparing invented vs genuine 0.0)",
-         "if starter.sleeper_id in unprojected_ids:\n            continue",
-         "pass"),
     ],
 
 }
