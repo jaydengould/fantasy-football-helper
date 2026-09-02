@@ -216,6 +216,16 @@ says so; do not agonise over which name inside it.
   — a callback sealed inside a registration function, a branch with no seam —
   that is the finding: untestable code is untested code, and the fix is to give
   it a seam, not to skip the mutation.
+- **A mutation run must start from a GREEN suite, and `mutate.py` must be the
+  only thing running.** Against a red suite every mutation "kills" trivially and
+  the run means nothing — that happened again on 2026-09-02, when a test helper
+  appended to `tests/test_season.py` shadowed an existing one and two survivors
+  were reported as killed. The same day the tool was found leaving MUTATED
+  BYTECODE behind: Python validates a `.pyc` on the source's mtime-in-seconds
+  plus its size, so a same-length mutation written and restored inside one
+  second leaves cached bytecode that looks valid and is not. Fixed at the root
+  (`mutate.py` unlinks the `.pyc` on every write); the symptom was a clean `git
+  status`, a tree identical to HEAD, and a failing test that `touch` repaired.
 - **`scripts/mutate.py` rewrites source files in place. Run it in the
   FOREGROUND, alone**, never backgrounded and polled: anything else touching the
   tree at the same time collides, and a frozen file can show as modified until
@@ -435,7 +445,7 @@ fresh opinion.
 | 3.7 | Web board — the `DataTable` replacement and what it unlocks | offseason | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope. Also the trigger for the deferred `board.py` fold |
 | 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4a-start-sit`, 377 tests / 153 mutations. Runs against both leagues. Awaiting the user's merge |
 | 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | **COMPLETE 2026-09-02** (branch `phase-4b-snapshot`). Snapshot table shipped; `backtest_weekly.py` shipped and it **closed the matchup ADJUSTMENT** — measured on 2024 and 2025, it loses — so what ships is a descriptive opponent RANK that nothing consumes (see Decisions). nflverse practice report shipped and joins 14/15; `injuries_2026.csv` is a 404 until ~Sept 10, so it prints its degraded line today |
-| 4c | Waivers — free-agent pool, ROS horizon, trending as the price signal | in-season | not started. **Unblocked 2026-09-02**: every endpoint answers, weekly projections exist for all 18 weeks, byes read as an ABSENT ROW not a zero. **No FAAB bid** — see the correction in Decisions |
+| 4c | Waivers — free-agent pool, ROS horizon, trending as the price signal | in-season | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4c-waivers`, 454 tests / 184 mutations. `waivers` prints an EMPTY board in week 1, which is the correct output, and the pipeline was proved separately by turning the floor off. Sleeper-only, labelled. **No FAAB bid** — see the correction in Decisions |
 | 5 | Trade finder (own spec) | in-season | not started — unblocked earlier than expected: Sleeper serves every team's roster with no auth |
 
 Phase 1 builds against the Sleeper feed because it needs no auth and Sleeper
@@ -516,6 +526,93 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   may be committed to this public repo.
 
 ## Session log
+
+### 2026-09-02 (sixth block) — PHASE 4c SHIPPED, and its correct output is nothing
+
+**State:** branch `phase-4c-waivers`, 8 commits, **454 tests** (from 419),
+**184 mutations, 1 needing a look** (the documented `value.py` equivalent
+mutant), tree byte-identical before and after. New: `tests/test_mutate.py`.
+
+`.venv/bin/python -m ffhelper.cli waivers --league sleeper-main` ranks the
+free-agent pool by add-and-drop marginal value over two horizons, and on the
+real roster in week 1 it prints:
+
+```
+WAIVERS -- sleeper-main (jaydenpg) -- week 1
+  waiver priority 8 of 12 -- a successful claim sends you to 12th
+
+  nothing on the wire beats what you already have.
+```
+
+**That empty board is the acceptance criterion, not a failure** — rows on a
+healthy 15-man roster in week 1 would have meant the floor was wrong or the pool
+polluted. 4.8s warm, ~46s cold (108 files). Yahoo refuses, labelled, exit 1,
+because the pool is every player minus the union of EVERY roster and Yahoo
+serves none.
+
+**An empty board and a broken pipeline look identical on screen**, so the
+pipeline was made to prove itself: with `close_call_points=0.0` in a scratch
+script the board fills with tight ends, best +8.3 over 18 weeks — the number the
+spec measured before any code existed. The floor (3.0 × √18 = 12.7) silences
+all of them, which is the design working.
+
+#### `mutate.py` was leaving mutated bytecode behind, and the tree looked clean
+
+The full mutation run ended with `184 mutations, 1 needing a look`, a `git
+status` diff of nothing, a tree identical to HEAD — **and one failing test**.
+`inspect.getsource` showed the guard the test wanted, present and correct.
+`touch ffhelper/cli.py` fixed it with no source change at all.
+
+Python validates a `.pyc` on the source's mtime-in-SECONDS plus its size. A
+mutation the same length as the original, written and restored inside one
+second, leaves cached bytecode that looks valid and is not. **The direction that
+bit here was harmless (a false failure); the dangerous one is the reverse — a
+restored file running mutant bytecode reports `killed` for a check that never
+ran.** Fixed at the root: every write unlinks the `.pyc`, with a red-checked
+test.
+
+**This is the third time this tool has reported success while checking something
+else** — the duplicate dict key that silently dropped 26 mutations
+(2026-08-27), the ambiguous target string that mutated a different function
+(2026-09-02), and now this. The pattern is worth naming: each fix was a GUARD in
+the tool, not a correction of the instance, which is why none of them recurred.
+
+#### Two mutations "killed" against a RED suite, and the cause was my own test
+
+Tasks 4 and 5 reported killed. Re-run later they SURVIVED. Between the two runs
+the suite went green: a `_slots()` helper I appended to `tests/test_season.py`
+had **shadowed an existing one of the same name**, breaking the snapshot test —
+and a mutation run against a red suite kills everything trivially. The recorded
+rule ("check the suite is green before believing a mutation run") was written in
+August and would have caught it; I did not apply it until the numbers disagreed.
+
+Both survivors were vacuous tests, fixed in the direction the rule says:
+- **`weeks_started`**: the lineup check ALONE cannot see a bye. A candidate who
+  is the only player at his position fills the slot on the 0.0 sort value, so
+  the absent-row guard needed a fixture where that actually happens.
+- **The √weeks floor**: the old fixture only proved the bar was not too HIGH.
+  It now also proves a 4.5-point gain over nine weeks is silenced.
+
+#### The plan's own instruction caught the plan's own error
+
+Task 4 said to run every fixture number by hand before implementing. Its
+expected drop was Gainwell; **the tie also contains the DEFENSE being replaced**,
+whose own points are lower, so the rule names the Broncos — which is also the
+move a human would make (you stream a defense by dropping the old one). Fixture
+corrected, assertion not loosened.
+
+Two other plan calls taken at the better end: `_resolve_my_roster` returns the
+`roster_id` it already resolved, so `_waivers` re-derives nothing (the plan
+flagged its own re-derivation as a smell); and the pool mutation SURVIVED the
+plan's fixture, because the other team's roster in it was empty — the fixture
+now puts the league's best quarterback on another team, where offering him is
+the most attractive row on the board and the one thing that cannot be done.
+
+#### What is deliberately absent
+
+`load_league_transactions` was never built — with the FAAB bid gone it has no
+consumer. There is no snapshot of waiver advice and no Dash page; both are out
+of scope in the plan and remain so.
 
 ### 2026-09-02 (fifth block) — 4c unblocked and specced; a documented league rule turned out to be wrong
 

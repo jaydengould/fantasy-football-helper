@@ -12,7 +12,7 @@ running backs score higher.
 
 Draft mode is complete and has been exercised end to end against a full 180-pick
 live draft, which is where most of its bugs came from. Season mode's weekly
-lineup command works end to end; waivers and the trade finder are not built yet.
+lineup and waiver commands work end to end; the trade finder is not built yet.
 
 | Capability | State |
 | --- | --- |
@@ -28,7 +28,8 @@ lineup command works end to end; waivers and the trade finder are not built yet.
 | Weekly start/sit lineup (`lineup`) | working |
 | Official practice report (nflverse) | working — the file appears once week 1 is played |
 | Opponent matchup context | working — a rank, not an adjustment: adjusting lost to plain projections on 2024 and 2025 |
-| Waivers, trade finder | planned |
+| Waivers (`waivers`) | working — Sleeper only: the pool needs every team's roster |
+| Trade finder | planned |
 
 ## Requirements
 
@@ -318,6 +319,38 @@ For a league with no API (Yahoo, ESPN, ...), write one player name per line
 into `.roster/<league>.txt` and the lineup is built from that file instead of
 a live roster. `preflight` reports the file's path, player count, and age.
 
+### Waivers (season mode)
+
+```bash
+.venv/bin/python -m ffhelper.cli waivers --league my-sleeper-league
+```
+
+Ranks the free-agent pool by what adding a player is actually worth: your roster
+is full, so an add is an add-and-drop, and the number is the gain to your
+*starting lineup* over a horizon — this week, and the rest of the season — after
+paying for it with the best available cut.
+
+Most weeks it prints nothing, and that is the point (real output, week 1):
+
+```
+WAIVERS -- sleeper-main (jaydenpg) -- week 1
+  waiver priority 8 of 12 -- a successful claim sends you to 12th
+
+  nothing on the wire beats what you already have.
+  (a target must gain more than the weekly projection error to be listed.)
+```
+
+A target has to clear `close_call_points * sqrt(weeks)` to be listed. The bar
+grows with the horizon because a longer total carries more error, but only as
+its square root, because independent weekly errors partly cancel. On a healthy
+roster the best thing available is inside that noise, so an empty board is the
+honest answer rather than a failure.
+
+Sleeper only: the pool is every player minus the union of *every* roster, and a
+platform with no API cannot say who is owned. Trending adds are printed beside a
+target when Sleeper has a count, labelled as national — they say nothing about
+what your own leaguemates want.
+
 ## Reading the board
 
 A real board, 12-team full PPR, on the clock at pick 45, holding
@@ -496,7 +529,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 419 tests, no network, runs in ~0.7s
+.venv/bin/pytest          # 454 tests, no network, runs in ~0.7s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

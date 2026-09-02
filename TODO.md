@@ -139,8 +139,44 @@ item. The project is now a season-mode project.
      once week-1 games are reported, ~Sept 10 — so the degraded line is what
      both leagues print today, and the join is proved against the 2025 file
      instead (real roster, real report, week 11).
-   - **4c — waivers**: free-agent pool, rest-of-season horizon, trending
-     add/drop as the price signal. **Nothing blocks it as of 2026-09-02** —
+   - ~~**4c — waivers**~~ **BUILT AND MERGE-CHECKED 2026-09-02**, branch
+     `phase-4c-waivers`, 8 commits, **454 tests**, **184 mutations, 1 needing a
+     look** (the documented `value.py` equivalent mutant), tree byte-identical
+     before and after. `waivers --league sleeper-main` prints **an empty board
+     in week 1**, which is the acceptance criterion the plan named, and it was
+     PROVED to be empty for the right reason: with the floor turned off in a
+     scratch script the pipeline produces rows (ten tight ends, best +8.3 ROS —
+     the number the spec measured). 4.8s warm, ~46s on a cold cache (108 files).
+     Yahoo refuses, labelled, exit 1. Three things the build turned up:
+     - **`scripts/mutate.py` was leaving MUTATED BYTECODE behind.** Python
+       validates a `.pyc` on the source's mtime-in-seconds plus its size, so a
+       mutation the same length as the original, written and restored inside one
+       second, leaves cached bytecode that looks valid and is not. The full run
+       ended with a clean `git status`, a tree identical to HEAD, and one FAILING
+       test; `touch ffhelper/cli.py` fixed it with no source change. The
+       dangerous direction is the reverse — a restored file running mutant
+       bytecode reports `killed` for a check that never ran. Fixed at the root:
+       `mutate.py` now unlinks the `.pyc` on every write, with a test.
+       **Third time this tool has reported success while checking something
+       else** (duplicate dict key 2026-08-27, ambiguous target 2026-09-02).
+     - **Two mutations SURVIVED against a green suite** after an earlier "killed"
+       had been read off a RED one — a test helper I appended to
+       `tests/test_season.py` shadowed an existing `_slots()` and quietly broke
+       the snapshot test. Both survivors were vacuous tests and both were fixed
+       in the direction the rule says. The lesson is the recorded one, arriving
+       again: check the suite is green before believing a mutation run.
+     - **The plan's tie fixture was wrong** and the plan's own instruction caught
+       it: run the numbers by hand first. Its expected drop was Gainwell; the tie
+       includes the DEFENSE being replaced, whose own points are lower, so the
+       answer is the Broncos — which is also the move a human would make.
+     Two things the plan flagged and the build took the better half of: the
+     `roster_id` re-derivation in `_waivers` is gone (`_resolve_my_roster`
+     returns the id it already resolved), and `mutate.py` gained an optional
+     label filter so one new mutation can be checked in seconds.
+     What it looked like before it was built, kept because the probe is the
+     record of why the shape is what it is:
+     free-agent pool, rest-of-season horizon, trending
+     add/drop as the price signal. **Nothing blocked it as of 2026-09-02** —
      probed live: `state/nfl` reads week 1 `in_season`, weekly projections exist
      for **all 18 weeks** (so the ROS horizon is buildable), trending and
      transactions both answer, and 12 rosters give a 3051-player free-agent pool.
@@ -162,12 +198,9 @@ item. The project is now a season-mode project.
      Preseason weekly projections are flat (Nacua 20.4-21.0 across all 18), so
      ROS today is season value x weeks left; the feature only becomes measurable
      once week 1 is played.
-     **SPEC AND PLAN WRITTEN 2026-09-02, IMPLEMENTATION DEFERRED to the next
-     session** (the user's call). Branch `phase-4c-waivers` off `main`, two
-     commits, no code touched — `docs/superpowers/specs/2026-09-02-phase-4c-waivers-design.md`
-     and `docs/superpowers/plans/2026-09-02-phase-4c-waivers.md` (8 tasks).
-     **Start at Task 1**, the `_resolve_week` / `_resolve_my_roster` extraction
-     from `_lineup`, which Tasks 6-7 depend on.
+     Spec and plan: `docs/superpowers/specs/2026-09-02-phase-4c-waivers-design.md`
+     and `docs/superpowers/plans/2026-09-02-phase-4c-waivers.md` (8 tasks, all
+     executed).
      Two things the plan settled that are easy to lose:
      - **`load_league_transactions` was cut** — it has no consumer once the FAAB
        bid is gone. Position comes from the `rosters` payload, and the
