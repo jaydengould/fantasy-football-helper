@@ -46,6 +46,13 @@ def weekly_points(projections: list[dict], scoring: dict[str, float]) -> dict[st
     Real Sleeper rows for unprojected players carry only descriptive fields
     (adp_dd_ppr, etc). A row counts as projected only if stats contains at least
     one key that the league scores.
+
+    That guard rests on an assumption worth naming: it is safe only because
+    Sleeper's `scoring_settings` contains no DESCRIPTIVE keys (adp_dd_ppr and
+    friends), just scored stat keys. A league whose scoring ever added a
+    descriptive key would silently reclassify every row as projected, and this
+    function's whole reason for existing -- keeping a genuine "no projection"
+    distinct from a projection of zero -- would go quiet with it.
     """
     out: dict[str, float] = {}
     for row in projections:

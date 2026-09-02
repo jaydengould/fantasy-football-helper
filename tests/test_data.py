@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ffhelper.data import fetch_json, load_crosswalk, load_league_rosters
+from ffhelper.data import fetch_json, load_crosswalk, load_league_rosters, rosters_cache_key
 
 
 def test_fetches_and_caches(tmp_path: Path):
@@ -495,4 +495,8 @@ def test_league_loaders_hit_the_right_urls_and_cache_per_league(tmp_path):
     got = load_league_rosters("123", cache_dir=tmp_path, fetcher=fake)
     assert seen == ["https://api.sleeper.app/v1/league/123/rosters"]
     assert got[0]["roster_id"] == 3
-    assert any("rosters_123" in p.name for p in tmp_path.iterdir())
+    # EXACT filename, not a substring -- a substring check still passes if the
+    # key format grows to "rosters_123_v2", which would silently break
+    # cli.cache_age_minutes's matching call (it would look for a file that no
+    # longer exists and always report "no age data").
+    assert (tmp_path / f"{rosters_cache_key('123')}.json").exists()

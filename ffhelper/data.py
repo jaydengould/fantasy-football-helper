@@ -298,12 +298,22 @@ def load_sleeper_settings(
     )
 
 
+def rosters_cache_key(league_id: str) -> str:
+    """The `.cache/<key>.json` key `load_league_rosters` writes under.
+
+    Exported so `cli.cache_age_minutes` can name the exact same key instead of
+    composing the literal by hand a second time -- a rename here would
+    otherwise silently stop the CLI's stale-roster warning from ever firing.
+    """
+    return f"rosters_{league_id}"
+
+
 def load_league_rosters(
     league_id: str, cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
 ) -> list[dict]:
     """Every team's roster. Public: Sleeper needs no auth for this."""
     return fetch_json(
-        SLEEPER_ROSTERS_URL.format(league_id=league_id), f"rosters_{league_id}",
+        SLEEPER_ROSTERS_URL.format(league_id=league_id), rosters_cache_key(league_id),
         ttl_seconds=300, cache_dir=cache_dir, fetcher=fetcher,
     )
 

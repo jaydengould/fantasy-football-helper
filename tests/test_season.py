@@ -8,9 +8,13 @@ from ffhelper import season
 
 @dataclass
 class FakePick:
-    """Duck-types feeds.Pick. season.py must not import feeds -- that would drag
-    `requests` into a module whose whole point is testing without a network.
-    tests/test_board_agreement.py uses the same shape for the same reason."""
+    """Duck-types feeds.Pick. season.py must not import feeds or gain any
+    dependency on the feed layer's shape -- it is pure, tested with synthetic
+    data, and stays that way regardless of what feeds.py happens to import.
+    (`requests` is already present via data.py by the time season.py is
+    imported, so the old "keeps requests out" reasoning was false -- the rule
+    was right, the reason was not.) tests/test_board_agreement.py uses the
+    same shape for the same reason."""
     draft_slot: int | None
     roster_id: int | None
 

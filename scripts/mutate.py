@@ -209,8 +209,13 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          '                    feed_failed = True',
          "                except Exception:\n                    raise"),
         ("roster_id override silently used with no note",
-         '            notes.append(f"using roster_id {rid} from config.toml (override) "\n'
-         '                         f"rather than deriving it from the draft")',
+         '            if used_override:\n'
+         '                # Names WHOSE roster is being read, not just that an override\n'
+         '                # happened -- `owner` was already resolved above for exactly\n'
+         '                # this, so this is reuse, not a second network call.\n'
+         '                notes.append(f"using roster_id {rid} from config.toml (override) -- "\n'
+         '                             f"reading {owner or \'an unrecognised owner\'}\'s roster, "\n'
+         '                             f"not derived from the draft")',
          "            pass"),
         ("an orphaned roster_id renders a blank screen with no explanation",
          '                notes.append(f"roster_id {rid} is not in this league\'s rosters -- "\n'
@@ -220,6 +225,55 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          '                notes.append(f"{len(missing)} rostered players are not in the player pool: "\n'
          '                             f"{\', \'.join(missing)}")',
          "                pass"),
+        ("lineup's nfl-state guard removed -- a dead endpoint crashes 'lineup --week 4' too",
+         '    try:\n'
+         '        state = load_nfl_state()\n'
+         '    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate\n'
+         '        state = {}\n'
+         '        notes.append(f"could not reach Sleeper\'s /state/nfl ({exc}) -- season defaults "\n'
+         '                     f"to {SEASON}")',
+         '    state = load_nfl_state()'),
+        ("preflight's nfl-state guard removed -- a dead endpoint aborts the report early again",
+         '    try:\n'
+         '        state = load_nfl_state()\n'
+         '        week = state.get("week")\n'
+         '        season_str = str(state.get("season") or SEASON)\n'
+         '        print(f"nfl week        : {week} ({state.get(\'season\')} {state.get(\'season_type\')})")\n'
+         '    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate\n'
+         '        print(f"nfl week        : NO -- {exc}")\n'
+         '        ok = False',
+         '    state = load_nfl_state()\n'
+         '    week = state.get("week")\n'
+         '    season_str = str(state.get("season") or SEASON)\n'
+         '    print(f"nfl week        : {week} ({state.get(\'season\')} {state.get(\'season_type\')})")'),
+        ("preflight's rosters guard removed -- a dead endpoint aborts before the feed check again",
+         '        try:\n'
+         '            rosters = load_league_rosters(league.league_id)\n'
+         '            print(f"rosters         : {len(rosters)} teams")\n'
+         '            rostered_ids = sorted({pid for r in rosters for pid in (r.get("players") or [])})\n'
+         '        except Exception as exc:                      # noqa: BLE001 - degrade, never fabricate\n'
+         '            print(f"rosters         : NO -- {exc}")\n'
+         '            ok = False',
+         '        rosters = load_league_rosters(league.league_id)\n'
+         '        print(f"rosters         : {len(rosters)} teams")\n'
+         '        rostered_ids = sorted({pid for r in rosters for pid in (r.get("players") or [])})'),
+        ("preflight projections join reports everyone rostered as projected",
+         "projected = sum(1 for pid in rostered_ids if pid in weekly)",
+         "projected = len(rostered_ids)"),
+        ("lineup total's floor caveat dropped when a starter is unprojected",
+         '    caveat = (f"  (floor -- {unprojected_starters} starter"\n'
+         '              f"{\'s\' if unprojected_starters != 1 else \'\'} unprojected)"\n'
+         '              if unprojected_starters else "")',
+         '    caveat = ""'),
+        ("roster_id override note drops the owner's name",
+         'notes.append(f"using roster_id {rid} from config.toml (override) -- "\n'
+         '                             f"reading {owner or \'an unrecognised owner\'}\'s roster, "\n'
+         '                             f"not derived from the draft")',
+         'notes.append(f"using roster_id {rid} from config.toml (override) -- '
+         'not derived from the draft")'),
+        ("misleading injury codes rendered raw instead of through the display map",
+         "injury = INJURY_STATUS_DISPLAY.get(p.injury_status, p.injury_status)",
+         "injury = p.injury_status"),
     ],
     "feeds.py": [
         ("picks poll drops the cache-buster, so Cloudflare serves a stale board",
