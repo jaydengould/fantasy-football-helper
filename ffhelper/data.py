@@ -235,6 +235,9 @@ SLEEPER_WEEKLY_PROJ_URL = (
     "https://api.sleeper.com/projections/nfl/{season}/{week}"
     "?season_type=regular&position[]={pos}&order_by=pts_ppr"
 )
+SLEEPER_ROSTERS_URL = "https://api.sleeper.app/v1/league/{league_id}/rosters"
+SLEEPER_USERS_URL = "https://api.sleeper.app/v1/league/{league_id}/users"
+SLEEPER_STATE_URL = "https://api.sleeper.app/v1/state/nfl"
 
 
 @dataclass(frozen=True)
@@ -292,6 +295,37 @@ def load_sleeper_settings(
         roster_slots=slots,
         rounds=len(positions),
         draft_id=raw.get("draft_id"),
+    )
+
+
+def load_league_rosters(
+    league_id: str, cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
+) -> list[dict]:
+    """Every team's roster. Public: Sleeper needs no auth for this."""
+    return fetch_json(
+        SLEEPER_ROSTERS_URL.format(league_id=league_id), f"rosters_{league_id}",
+        ttl_seconds=300, cache_dir=cache_dir, fetcher=fetcher,
+    )
+
+
+def load_league_users(
+    league_id: str, cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
+) -> list[dict]:
+    """Managers, so a derived roster can be shown with its owner's name."""
+    return fetch_json(
+        SLEEPER_USERS_URL.format(league_id=league_id), f"users_{league_id}",
+        ttl_seconds=3600, cache_dir=cache_dir, fetcher=fetcher,
+    )
+
+
+def load_nfl_state(
+    cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
+) -> dict:
+    """Current week and season. Short TTL: this is what makes a Tuesday run
+    ask about the right week without the user typing one."""
+    return fetch_json(
+        SLEEPER_STATE_URL, "nfl_state", ttl_seconds=600,
+        cache_dir=cache_dir, fetcher=fetcher,
     )
 
 

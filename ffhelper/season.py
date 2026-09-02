@@ -10,6 +10,32 @@ from ffhelper.data import Player, score_stats
 from ffhelper.value import FLEX_ELIGIBLE, optimal_lineup
 
 
+def roster_id_for_slot(picks, draft_slot: int) -> int | None:
+    """Which `roster_id` belongs to the manager who drafted from `draft_slot`.
+
+    THE TWO NUMBERS ARE NOT THE SAME. Measured on the real 2026 league:
+    draft_slot 5 is roster_id 3, and roster_id 5 is another manager's team.
+    Assuming they match hands the user someone else's roster, and every number
+    downstream is then confidently wrong about the wrong team.
+
+    Returns None rather than guessing when the draft cannot answer -- Sleeper
+    mock drafts set `roster_id` to None on every pick -- or when one slot maps
+    to more than one roster, which means the feed is malformed. The caller says
+    so on screen; it never falls back to the slot number.
+    """
+    found = {p.roster_id for p in picks
+             if p.draft_slot == draft_slot and p.roster_id is not None}
+    return found.pop() if len(found) == 1 else None
+
+
+def roster_player_ids(rosters: list[dict], roster_id: int) -> list[str]:
+    """The player ids on one roster, or [] if that roster is not in the payload."""
+    for r in rosters:
+        if r.get("roster_id") == roster_id:
+            return list(r.get("players") or [])
+    return []
+
+
 def weekly_points(projections: list[dict], scoring: dict[str, float]) -> dict[str, float]:
     """Score one week's projection rows under this league's rules.
 

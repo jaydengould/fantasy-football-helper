@@ -1,8 +1,18 @@
 """ffhelper.season is PURE -- these tests never touch the network."""
 import pytest
+from dataclasses import dataclass
 
 from ffhelper.data import Player
 from ffhelper import season
+
+
+@dataclass
+class FakePick:
+    """Duck-types feeds.Pick. season.py must not import feeds -- that would drag
+    `requests` into a module whose whole point is testing without a network.
+    tests/test_board_agreement.py uses the same shape for the same reason."""
+    draft_slot: int | None
+    roster_id: int | None
 
 
 def mk(pid: str, pos: str, pts: float = 0.0) -> Player:
@@ -221,12 +231,43 @@ def test_start_sit_no_close_call_when_starter_is_unprojected():
     scoring = {"rec": 1.0}
     weekly = season.weekly_points(rows, scoring)  # unprojected absent from weekly
     roster = season.with_weekly_points(roster_raw, weekly)  # unprojected gets 0.0, zero_proj stays 0.0
-    
+
     st = season.start_sit(roster, {"RB": 1}, close_call_points=3.0,
                           projected_ids=set(weekly))
-    
+
     # unprojected is in the unprojected list (never projected)
     assert [p.sleeper_id for p in st.unprojected] == ["unprojected"]
     # No close call for the RB slot, even though unprojected was started and zero_proj is on bench
     # (the guard prevents close calls when starter is unprojected)
     assert len(st.close_calls) == 0
+
+
+def test_roster_id_is_derived_from_the_draft_not_assumed_equal_to_the_slot():
+    """MEASURED on the real 2026 league: draft_slot 5 is roster_id 3, and
+    roster_id 5 belongs to another manager. Assuming slot == roster_id hands the
+    user someone else's team and every downstream number is silently wrong."""
+    picks = [FakePick(5, 3), FakePick(1, 10), FakePick(5, 3)]
+    assert season.roster_id_for_slot(picks, 5) == 3
+
+
+def test_roster_id_is_none_when_the_draft_cannot_answer():
+    """Sleeper MOCK drafts set roster_id to None on every pick. Returning a
+    number anyway -- or defaulting to the slot -- is the fabrication this whole
+    function exists to prevent."""
+    assert season.roster_id_for_slot([FakePick(5, None)], 5) is None
+    assert season.roster_id_for_slot([FakePick(1, 9)], 5) is None
+    assert season.roster_id_for_slot([], 5) is None
+
+
+def test_roster_id_refuses_to_choose_when_the_draft_disagrees_with_itself():
+    """One slot mapping to two roster ids means the feed is malformed. Picking
+    the first is a coin flip on which team you manage."""
+    picks = [FakePick(5, 3), FakePick(5, 7)]
+    assert season.roster_id_for_slot(picks, 5) is None
+
+
+def test_roster_player_ids_returns_the_named_roster_only():
+    rosters = [{"roster_id": 3, "players": ["a", "b"]},
+               {"roster_id": 5, "players": ["c"]}]
+    assert season.roster_player_ids(rosters, 3) == ["a", "b"]
+    assert season.roster_player_ids(rosters, 99) == []

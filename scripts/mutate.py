@@ -383,6 +383,14 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("close call built on an unprojected starter's fabricated 0.0",
          "        if starter.sleeper_id in unprojected_ids:\n            continue",
          "        pass"),
+        ("roster_id assumed equal to draft_slot -- you manage someone else's team",
+         "    found = {p.roster_id for p in picks\n"
+         "             if p.draft_slot == draft_slot and p.roster_id is not None}\n"
+         "    return found.pop() if len(found) == 1 else None",
+         "    return draft_slot"),
+        ("a contradictory draft picks the first roster_id instead of refusing",
+         "return found.pop() if len(found) == 1 else None",
+         "return found.pop() if found else None"),
     ],
 
 }

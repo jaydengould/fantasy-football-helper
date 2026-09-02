@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ffhelper.data import fetch_json, load_crosswalk
+from ffhelper.data import fetch_json, load_crosswalk, load_league_rosters
 
 
 def test_fetches_and_caches(tmp_path: Path):
@@ -483,3 +483,16 @@ def test_build_players_carries_status_fields_and_tolerates_their_absence():
     assert players["1"].depth_chart_order == 1
     assert players["2"].practice_participation is None
     assert players["2"].depth_chart_order is None
+
+
+def test_league_loaders_hit_the_right_urls_and_cache_per_league(tmp_path):
+    seen = []
+
+    def fake(url):
+        seen.append(url)
+        return '[{"roster_id": 3, "players": ["a"]}]'
+
+    got = load_league_rosters("123", cache_dir=tmp_path, fetcher=fake)
+    assert seen == ["https://api.sleeper.app/v1/league/123/rosters"]
+    assert got[0]["roster_id"] == 3
+    assert any("rosters_123" in p.name for p in tmp_path.iterdir())
