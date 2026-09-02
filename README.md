@@ -281,7 +281,16 @@ STARTERS
 BENCH
         Kyler Murray             QB  MIN   20.1
         ...
+snapshot        : 15 players recorded for week 1
 ```
+
+That last line is the run recording what every source claimed at the moment
+you decided, into `season.db` (gitignored, created on first use). The APIs
+serve current state only, so a week not recorded before it is played can never
+be scored afterwards. Re-running in the current week replaces that week — the
+record is your last look before kickoff. A run for a PAST week prints normally
+and deliberately writes nothing, rather than overwriting real inputs with
+today's projections.
 
 For a league with no API (Yahoo, ESPN, ...), write one player name per line
 into `.roster/<league>.txt` and the lineup is built from that file instead of
@@ -456,7 +465,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 377 tests, no network, runs in ~0.5s
+.venv/bin/pytest          # 395 tests, no network, runs in ~0.6s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

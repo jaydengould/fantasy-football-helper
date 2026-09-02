@@ -180,7 +180,14 @@ says so; do not agonise over which name inside it.
   lines of stdlib cannot cover.
 - **`value.py` is pure.** No I/O, no network, no globals. All logic lives there
   so it tests without a network. If something in `value.py` wants to fetch, the
-  design is wrong.
+  design is wrong. **`season.py` obeys the same rule** — including for the
+  snapshot, where deciding what a row SAYS is logic and lives there, while
+  `store.py` only knows how to write one.
+- **`store.py` is the ONLY stateful module** (`season.db` at ROOT, gitignored).
+  It takes an open connection and holds no globals. **No test may reach the real
+  database** — `tests/conftest.py` redirects `store.DB_PATH` autouse and
+  suite-wide, after a green suite was found writing rows into production under
+  real league names, one of which would have replaced a real week-1 record.
 - **No module-level league state.** Every function takes league context. Two
   leagues on two platforms is a requirement, and a "current league" global is a
   rewrite to undo.
@@ -359,7 +366,7 @@ fresh opinion.
 | 3.6 | Web board appearance — CSS/layout half (`assets/*.css`, no new dependency) | Aug 28 | **COMPLETE** — built early on the user's call |
 | 3.7 | Web board — the `DataTable` replacement and what it unlocks | offseason | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope. Also the trigger for the deferred `board.py` fold |
 | 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4a-start-sit`, 377 tests / 153 mutations. Runs against both leagues. Awaiting the user's merge |
-| 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | not started — `TODO.md`, spec §5b and the matchup section |
+| 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | **snapshot table DONE 2026-09-02** (branch `phase-4b-snapshot`) — pulled forward because week 1's inputs are unrecoverable once played. Matchup, `backtest_weekly.py` and nflverse injuries not started |
 | 4c | Waivers — free-agent pool, ROS horizon, trending as the FAAB signal | in-season | not started |
 | 5 | Trade finder (own spec) | in-season | not started — unblocked earlier than expected: Sleeper serves every team's roster with no auth |
 
@@ -441,6 +448,81 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   may be committed to this public repo.
 
 ## Session log
+
+### 2026-09-02 (third block) — the snapshot table ships. A green suite was writing to the production database.
+
+**State:** branch `phase-4b-snapshot` (off `main` after the user merged 4a as
+PR #6), **395 tests**, **161 mutations, 1 needing a look**, exit 0. New:
+`ffhelper/store.py`, `tests/conftest.py`, `tests/test_store.py`.
+
+**Week 1 is now recorded for both leagues** — 15 rows / 10 starters on Sleeper,
+14 / 9 on Yahoo, one NULL projection, zero 0.0s. That is the point: the APIs
+serve only current state, so a week not recorded before it is played can never
+be scored. It was built before the rest of 4b for that reason alone.
+
+#### A fully green suite was writing rows into the real `season.db`
+
+**Found by running `lineup` for real and reading the rows back — the printed
+count said 15 and the table held 17.** Not by any test.
+
+Several `_lineup` tests stub `/state/nfl` to the same week they request, which
+is exactly the condition the snapshot writes on, and nothing redirected the
+path. One of the two stray rows was **`yahoo-main` week 1**, which shares a
+primary key with the real week-1 record: `INSERT OR REPLACE` would have
+overwritten a genuine decision with a test fixture. **Invisibly** — the row
+stays present and well-formed, merely fabricated — in the one table whose
+entire value is being trustworthy in December.
+
+Fixed at the root: `tests/conftest.py` redirects `store.DB_PATH` for every
+test, autouse and suite-wide. The per-test version is a rule the next
+`_lineup` test forgets, and it fails silently in the only direction that
+matters. Proved by deleting `season.db`, running the suite, and confirming it
+does not come back; a test guards the fixture.
+
+**The generalisable part is the discrepancy, not the bug.** Printing the count
+and then querying the table is what surfaced it — two independent views of one
+write. Neither alone would have said anything.
+
+#### A default argument made the write path untestable
+
+`connect(path=DB_PATH)` binds `DB_PATH` once at import, so monkeypatching the
+module global afterwards does nothing and every test of the write path would
+have hit the real file. Changed to `path=None` resolved at call time. This is
+the conventions' own "untestable code is untested code" arriving in a new
+disguise — and had it not been changed, the conftest fix above would have
+silently failed too.
+
+#### A survivor that was the TEST's fault, fixed in the direction the rule says
+
+The `no current week` guard mutation survived: with it removed, the *past-week*
+check catches `None` by accident (`1 != None`) and still refuses, so a loose
+`"not recorded" in out` assertion passed. But it refuses **for a reason that is
+not true**, naming a week the user never mentioned. The test now asserts the
+specific message. **Mutation weakened: none. Test tightened: one.**
+
+#### Design calls worth keeping
+
+**`proj_pts` is NULL for an unprojected player, never 0.0.**
+`with_weekly_points` assigns 0.0 as a *sort value* and `projected_ids` exists
+solely to keep that distinct. Writing the sort value into the table built for
+scoring would make an invented number indistinguishable from a measured one
+months later — the exact fabrication the 4a review spent a round removing.
+`matchup` is NULL for the same reason: 0.0 would read as "computed, and it came
+to nothing".
+
+**The snapshot line prints after the lineup, not inside `notes`.** Notes render
+as `!!` alarms and a snapshot that worked is not an alarm — the same call 4a
+made when unprojected players got a quiet section instead of a warning. But it
+always prints something, because a silent record is one you never notice has
+stopped working.
+
+**A write failure costs the line, never the lineup.** The lineup is the
+product; the snapshot is a side effect.
+
+**Overwrite semantics, chosen by the user:** re-running in the current week
+replaces that week, so the record is the last look before kickoff — late injury
+news is exactly what moves a lineup. A past week is never overwritten, because
+its inputs are not re-served.
 
 ### 2026-09-02 (second block) — 4a merge-checked and FINISHED. The verification tool was wrong twice.
 

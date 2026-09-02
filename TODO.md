@@ -90,6 +90,12 @@ item. The project is now a season-mode project.
    a scoped re-review of the fix wave: sound, merge recommended, no Criticals.
    **Merging is the user's call — agents never touch `main`.**
    What is left of Phase 4:
+   - ~~**the snapshot table**~~ **DONE 2026-09-02**, branch `phase-4b-snapshot`,
+     `ffhelper/store.py`. Pulled ahead of the matchup work because it is the
+     only outstanding item with an unrecoverable deadline: the APIs serve
+     current state only, so a week not recorded before it is played can never
+     be scored. **Week 1 is recorded for both leagues.** It must keep running
+     weekly — nothing schedules it, a `lineup` run is what writes it.
    - **4b — the matchup adjustment**, which is the measured gap: 2026 preseason
      projections vary **1.4%** week to week for a top-40 RB/WR, so the schedule
      is essentially not priced in. Plus `backtest_weekly.py` to validate it
