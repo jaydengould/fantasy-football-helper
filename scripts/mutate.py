@@ -256,6 +256,10 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if row.get(\"bye\"):", "if set_adp and row.get(\"bye\"):"),
         ("weekly projection cache key drops the week -- every week serves week 1",
          'f"proj_{season}_wk{week}_{pos}"', 'f"proj_{season}_{pos}"'),
+        ("missing depth chart reads as first string",
+         'depth_chart_order=(int(p["depth_chart_order"])\n'
+         '                               if p.get("depth_chart_order") is not None else None),',
+         'depth_chart_order=int(p.get("depth_chart_order") or 0),'),
     ],
     "ffhelper/board.py": [
         ("pick count ignores manual marks",

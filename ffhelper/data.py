@@ -125,6 +125,9 @@ class Player:
     team: str | None
     yahoo_id: str | None = None
     injury_status: str | None = None
+    injury_body_part: str | None = None
+    practice_participation: str | None = None
+    depth_chart_order: int | None = None
     proj_pts: float = 0.0
     adp: float = ADP_UNKNOWN
     adp_stdev: float | None = None
@@ -180,6 +183,12 @@ def build_players(raw: dict, crosswalk: dict[str, str]) -> dict[str, Player]:
             team=p.get("team"),
             yahoo_id=crosswalk.get(pid),
             injury_status=p.get("injury_status"),
+            injury_body_part=p.get("injury_body_part"),
+            practice_participation=p.get("practice_participation"),
+            # int() not `or 0`: a missing depth chart must stay None, because 0
+            # would read as "first string" for everyone Sleeper has no data on.
+            depth_chart_order=(int(p["depth_chart_order"])
+                               if p.get("depth_chart_order") is not None else None),
         )
     return out
 

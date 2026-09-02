@@ -459,3 +459,27 @@ def test_load_weekly_projections_asks_for_the_week_and_caches_per_week(tmp_path)
     assert rows[0]["stats"]["rush_yd"] == 88.0
     names = sorted(p.name for p in tmp_path.iterdir())
     assert any("wk3" in n for n in names), names
+
+
+def test_build_players_carries_status_fields_and_tolerates_their_absence():
+    """Sleeper's player DB has 52 fields and we keep six. These four are the
+    structured form of the injury news start/sit needs, and depth_chart_order is
+    the waiver signal: the backup who becomes the starter on Wednesday.
+
+    Absent fields must be None, never 0 -- depth_chart_order 0 would read as
+    'first on the depth chart' for every player Sleeper has no data for."""
+    raw = {
+        "1": {"player_id": "1", "full_name": "Hurt Guy", "position": "RB", "team": "SEA",
+              "active": True, "injury_status": "Questionable", "injury_body_part": "Ankle",
+              "practice_participation": "Limited", "depth_chart_order": 1},
+        "2": {"player_id": "2", "full_name": "Fine Guy", "position": "RB", "team": "SEA",
+              "active": True},
+    }
+    players = build_players(raw, crosswalk={})
+
+    assert players["1"].injury_status == "Questionable"
+    assert players["1"].injury_body_part == "Ankle"
+    assert players["1"].practice_participation == "Limited"
+    assert players["1"].depth_chart_order == 1
+    assert players["2"].practice_participation is None
+    assert players["2"].depth_chart_order is None
