@@ -30,25 +30,65 @@ item. The project is now a season-mode project.
    callback timings to a dated file under `.draft/` or `.cache/`, the same
    append-and-close shape as the mark journal, so the next "I think it died" is
    answerable. Cheap, and it is the difference between a diagnosis and a shrug.
-3. **FINISH THE 4a MERGE CHECK — two small things, session ended before them.**
-   Branch `phase-4a-start-sit`, 18 commits, **373 tests green**, `lineup` and
-   `preflight` verified working on both leagues. Outstanding:
-   - **Run `.venv/bin/python scripts/mutate.py` in the FOREGROUND** and confirm
-     it still reports exactly **"1 needing a look"** (the documented `value.py`
-     tier-threshold equivalent mutant) and **exits 0**. Baseline before the last
-     commit was 151 mutations. **A mutation for the new rosters guard in
-     `_lineup` was never added** — add one that deletes its `notes.append(...)`,
-     under the existing `"cli.py"` key, and confirm the existing test kills it.
-   - **One scoped re-review** of `12e57b9..HEAD` (the final fix wave plus the
-     rosters guard). Everything before that range is already reviewed clean.
-   **HAZARD THAT ALREADY BIT ONCE:** `mutate.py` rewrites source files in place.
-   The 2026-09-02 session killed an agent mid-run and left `ffhelper/value.py`
+3. ~~**FINISH THE 4a MERGE CHECK.**~~ **DONE 2026-09-02.** Branch
+   `phase-4a-start-sit`, 20 commits, **377 tests**, **153 mutations, 1 needing a
+   look** (the documented `value.py` tier-threshold equivalent mutant), exit 0,
+   run in the foreground alone and verified byte-identical before and after.
+   `lineup` and `preflight` re-run clean on both leagues. **PHASE 4a IS
+   FINISHED; the branch is ready for the user to merge.**
+   Two corrections to what this item claimed:
+   - **The rosters-guard mutation HAD been added** (in `fc47a73`, after this
+     item was written) and is killed. Nothing was missing.
+   - **The first two mutation runs were contaminated and thrown away.** The
+     re-review agent ran its own `mutate.py` concurrently with mine — the exact
+     hazard below, arriving from a second process rather than an interrupted
+     one. The tree recovered via the in-flight run's `finally`, but the results
+     were untrustworthy and the run was repeated alone. **The hazard is not
+     just "don't interrupt it" — it is "nothing else may run it at the same
+     time", and a subagent counts.**
+   **HAZARD, now hit twice:** `mutate.py` rewrites source files in place. The
+   2026-09-02 session killed an agent mid-run and left `ffhelper/value.py`
    holding a live mutation (`prob_all_gone *= surv` instead of `1.0 - surv`).
    Caught by `git diff` and restored. **Always check `git status` is clean before
    trusting a suite after an interrupted mutation run.**
-4. ~~**Phase 4 — season mode: start/sit.**~~ **4a COMPLETE 2026-09-02**, branch
-   `phase-4a-start-sit`, 16 commits, 362 tests. `lineup` runs against both
-   leagues. Final whole-branch review: sound, merge recommended, no Criticals.
+3a. **What the scoped re-review found — eight defects, none Critical, all
+   fixed** (`c45a8cd`, `1a23576`). Recorded because six of the eight are the
+   same shape as defects this project has already had:
+   - **`load_league_users` was the last unguarded fetch in `_lineup`**, on the
+     happy path, and it threw away a lineup whose roster and projections had
+     both already succeeded — over a display name. Rounds 1 and 2 guarded
+     `/state/nfl`, the feed and the rosters endpoint and missed the sibling.
+     **Found by grepping the other callers of the endpoints the fix wave
+     touched, not by re-reading the paths it had changed.**
+   - **`preflight` printed `PREFLIGHT OK` and exited 0 with the projections
+     endpoint down** — the only failure branch that never set `ok = False`,
+     in the one check that exists to prove season mode can run.
+   - **`preflight` and `_lineup` disagreed about what "no week" means**
+     (`week is None` vs `not week`); Sleeper serves `"week": 0` in the
+     offseason, so preflight fetched projections for week 0.
+   - **One `projections` label covered two different populations** — 177 of 180
+     league-wide on Sleeper, 13 of 14 on your own Yahoo roster.
+   - **The `roster_id` override note vanished when the rosters fetch failed**,
+     leaving a hand-set override unmentioned in exactly the run that read
+     nothing. TODO item 6 calls that note "the passive check made active".
+   - **`mutate.py` was checking the wrong thing, again.** The
+     `"panel hides empty slots"` mutation used a bare `"    return out"`, which
+     matches TWO places in `app.py`; `replace(old, new, 1)` took the first, so
+     it broke `board_rows`'s filter and reported **killed** for a function it
+     does not name. **Root cause fixed rather than the instance**: an
+     old-string matching more than one place is now refused as `AMBIGUOUS`.
+     Identical failure shape to the 2026-08-27 duplicate-key bug — the check
+     reporting success while checking something else. That is now twice, from
+     the same tool.
+   - **A test asserted a filename by deriving it from the function under
+     test**, so it passed for any key format — including the exact
+     `"rosters_123_v2"` case its own comment claimed to catch. Now the literal,
+     verified red by actually changing the key format.
+4. ~~**Phase 4 — season mode: start/sit.**~~ **4a COMPLETE AND MERGE-CHECKED
+   2026-09-02**, branch `phase-4a-start-sit`, 20 commits, 377 tests, 153
+   mutations. `lineup` runs against both leagues. Final whole-branch review plus
+   a scoped re-review of the fix wave: sound, merge recommended, no Criticals.
+   **Merging is the user's call — agents never touch `main`.**
    What is left of Phase 4:
    - **4b — the matchup adjustment**, which is the measured gap: 2026 preseason
      projections vary **1.4%** week to week for a top-40 RB/WR, so the schedule
@@ -107,7 +147,7 @@ serving a fill-in draft. The reasoning now lives in `config.toml` beside them.
 | --- | --- | --- |
 | Sleeper draft | ~~Sept 1~~ | **DONE** — 180 picks, seat 5 |
 | Yahoo draft | ~~Sept 1~~ | **DONE** — hand-entered, no feed |
-| **NFL week 1** | **Sept 9 2026** | first live use of season mode; start/sit is the deadline-bearing feature |
+| **NFL week 1** | **Sept 9 2026** | first live use of season mode. **start/sit is BUILT and checked**; 4b (matchup) is what remains and is not a blocker for week 1 |
 | Yahoo API approval (applied Aug 24, quoted 1–2 weeks) | overdue | no reply as of Sept 1 |
 
 ---

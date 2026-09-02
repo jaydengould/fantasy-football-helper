@@ -203,9 +203,14 @@ says so; do not agonise over which name inside it.
   that is the finding: untestable code is untested code, and the fix is to give
   it a seam, not to skip the mutation.
 - **`scripts/mutate.py` rewrites source files in place. Run it in the
-  FOREGROUND**, never backgrounded and polled: anything else touching the tree
-  at the same time collides, and a frozen file can show as modified until it
-  restores.
+  FOREGROUND, alone**, never backgrounded and polled: anything else touching the
+  tree at the same time collides, and a frozen file can show as modified until
+  it restores. **"Alone" includes subagents** — a reviewer running its own
+  mutation check concurrently corrupted two runs on 2026-09-02, and the results
+  looked entirely normal. Capture `git status` before and after and diff them.
+  The tool now refuses a mutation whose target string matches more than one
+  place, because `replace(old, new, 1)` silently takes the first and then
+  reports "killed" for breaking a function the label does not name.
 
 ## Non-negotiables
 
@@ -353,7 +358,7 @@ fresh opinion.
 | 3.5 | Opponent needs, bye clustering, notifications, manual overrides | Sept 5 | not started — but the bye CLASH flag landed 2026-08-28 in `board_rows`, presentation only, sort untouched |
 | 3.6 | Web board appearance — CSS/layout half (`assets/*.css`, no new dependency) | Aug 28 | **COMPLETE** — built early on the user's call |
 | 3.7 | Web board — the `DataTable` replacement and what it unlocks | offseason | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope. Also the trigger for the deferred `board.py` fold |
-| 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE 2026-09-02**, branch `phase-4a-start-sit`. Runs against both leagues |
+| 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4a-start-sit`, 377 tests / 153 mutations. Runs against both leagues. Awaiting the user's merge |
 | 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | not started — `TODO.md`, spec §5b and the matchup section |
 | 4c | Waivers — free-agent pool, ROS horizon, trending as the FAAB signal | in-season | not started |
 | 5 | Trade finder (own spec) | in-season | not started — unblocked earlier than expected: Sleeper serves every team's roster with no auth |
@@ -436,6 +441,78 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   may be committed to this public repo.
 
 ## Session log
+
+### 2026-09-02 (second block) — 4a merge-checked and FINISHED. The verification tool was wrong twice.
+
+**State:** branch `phase-4a-start-sit`, 20 commits, **377 tests** (from 373),
+**153 mutations, 1 needing a look** (the documented `value.py` equivalent
+mutant), exit 0. `lineup` and `preflight` re-run clean on both leagues.
+**Phase 4a is finished. Merging is the user's.**
+
+`TODO.md` item 3 (the merge check) is closed, and item 3a records the eight
+defects the scoped re-review of `12e57b9..HEAD` turned up. Two of them are
+worth carrying forward.
+
+#### The mutation runner reported success while checking the wrong thing — AGAIN
+
+`"panel hides empty slots instead of showing them"` used a bare
+`"    return out"` as its target. That string matches **two** places in
+`app.py`, and `replace(old, new, 1)` takes the FIRST — which is `board_rows`'s
+filter, thirty lines above the roster panel the label names. The mutation
+broke an unrelated function, that function's tests failed, and the run printed
+**killed**. It has been reporting a pass for a check it never performed.
+
+**This is the second time this tool has done this**, after the 2026-08-27
+duplicate-key bug that silently dropped 26 mutations and printed a smaller
+total. Same shape both times: the check reports success while checking
+something else. So the fix is the guard, not the instance — an old-string
+matching more than one place is now refused as `AMBIGUOUS` with the advice to
+anchor on an adjacent line. Applying it immediately found nothing else wrong
+(153/153 match exactly once), which is the point: it is cheap and it is now
+impossible to reintroduce silently.
+
+**Corollary the project already knew and had not applied here:** two sources of
+truth disagree eventually. A mutation's LABEL and its TARGET STRING are two
+descriptions of one line, and nothing was checking they agreed.
+
+#### The first two mutation runs were contaminated by a subagent
+
+The re-review agent ran its own `mutate.py` concurrently with mine. `mutate.py`
+rewrites source in place, so for a window `ffhelper/cli.py` held a live
+mutation while the other run's pytest was reading it. Both runs' `cli.py`
+results were untrustworthy and were thrown away; the run was repeated alone,
+with `git status` captured before and after and diffed to prove the tree came
+back byte-identical.
+
+**The recorded hazard said "run it in the foreground, never backgrounded and
+polled." That was too narrow.** The real rule is that **nothing else may run it
+at the same time, and a subagent counts as something else.** The conventions
+now say so.
+
+#### `load_league_users` — the sibling the fix wave missed
+
+Rounds 1 and 2 guarded `/state/nfl`, the draft feed and the rosters endpoint.
+`load_league_users` sat on the same happy path, behind the same `fetch_json`
+whose `stale_ok=True` only helps once a cache file exists — so a first run on a
+new machine with that endpoint down threw away a lineup whose roster AND
+projections had both already been fetched successfully. Over a display name.
+
+**Found by grepping the other callers of the endpoints the fix wave touched,
+rather than by re-reading the paths it had already changed.** The fix wave had
+been looking where the last defect was.
+
+#### `preflight` said OK while the thing it exists to check was down
+
+A failed weekly-projections join was the only failure branch that never set
+`ok = False` — every sibling does — so a dead projections endpoint printed
+`PREFLIGHT OK` and exited 0. Also found: `preflight` guarded on `week is None`
+where `_lineup` guards on `not week`, and Sleeper serves `"week": 0` in the
+offseason, so the two functions disagreed about what counts as "no week" and
+one of them fetched projections for week 0.
+
+And the `projections` line covered two different populations under one label —
+**177 of 180 league-wide on Sleeper, 13 of 14 on your own roster on Yahoo.**
+Both now say which.
 
 ### 2026-09-02 — PHASE 4a SHIPPED. `lineup` works on both leagues. The plan carried the defects, not the code.
 
