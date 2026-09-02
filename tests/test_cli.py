@@ -2175,10 +2175,177 @@ def test_lineup_reports_missing_roster_file_visibly(monkeypatch, tmp_path, capsy
 
 
 def test_main_dispatches_lineup_and_returns_its_exit_code(monkeypatch):
+    """Asserting only the exit code would pass unchanged if `--week` were wired
+    to the wrong argparse attribute (`args.limit`, say) or hardcoded to None --
+    so the arguments `_lineup` is actually called with are captured too."""
     league = _loop_league()
     monkeypatch.setattr("ffhelper.cli.load_config", lambda path: ([league], Tunables()))
-    monkeypatch.setattr("ffhelper.cli._lineup", lambda lg, tun, week: 3)
+    seen = {}
 
-    result = main(["lineup", "--league", "loop-league", "--week", "2"])
+    def fake_lineup(lg, tun, week):
+        seen["league"] = lg
+        seen["week"] = week
+        return 3
+
+    monkeypatch.setattr("ffhelper.cli._lineup", fake_lineup)
+
+    result = main(["lineup", "--league", "loop-league", "--week", "5"])
 
     assert result == 3
+    assert seen["league"] is league
+    assert seen["week"] == 5
+
+
+def test_lineup_survives_a_dead_draft_feed_and_says_so(monkeypatch, capsys):
+    """CRITICAL: `SleeperFeed.get_picks()` is built with stale_ok=False, so a
+    failed poll RAISES by design -- every other call site (_preflight, _run)
+    catches it. Bare in `_lineup`, a network blip, a Sleeper outage, or a
+    rate-limit would produce an unhandled traceback and print NOTHING: no
+    roster, no notes, no partial lineup. Degrade, never fabricate."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="sleeper-main", platform="sleeper", league_id="L1", draft_slot=5)
+    settings = _lineup_settings()
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: {})
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    monkeypatch.setattr(cli, "load_league_rosters", lambda league_id: [])
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+    monkeypatch.setattr(cli, "SleeperFeed",
+                        lambda draft_id: _FakeFeed(fail=True))
+
+    result = cli._lineup(league, Tunables(), week=3)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "feed unreachable" in out          # _FakeFeed's failure reason, named
+    assert "roster_id" in out
+
+
+def test_lineup_skips_the_feed_entirely_with_no_draft_slot_configured(monkeypatch, capsys):
+    """No draft_slot means derivation cannot possibly succeed -- the network
+    call must not even be attempted."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="sleeper-main", platform="sleeper", league_id="L1", draft_slot=None)
+    settings = _lineup_settings()
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: {})
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    monkeypatch.setattr(cli, "load_league_rosters", lambda league_id: [])
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+
+    def boom(draft_id):
+        raise AssertionError("SleeperFeed must not be constructed with no draft_slot")
+
+    monkeypatch.setattr(cli, "SleeperFeed", boom)
+
+    result = cli._lineup(league, Tunables(), week=3)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "could not derive your roster_id" in out
+
+
+def test_lineup_roster_id_override_wins_over_derivation(monkeypatch, capsys):
+    """IMPORTANT 1: `league.roster_id` is a manual override -- when set, it is
+    used outright (no feed call at all) and the override is announced, since a
+    wrong hand-set id must not be silent either."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="sleeper-main", platform="sleeper", league_id="L1",
+                    draft_slot=5, roster_id=7)
+    settings = _lineup_settings()
+    players = {"10": Player("10", "Overridden Roster QB", "QB", "BUF")}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections",
+                        lambda season, week: [{"player_id": "10", "stats": {"pass_td": 2}}])
+    monkeypatch.setattr(cli, "load_league_rosters",
+                        lambda league_id: [{"roster_id": 7, "owner_id": "u1", "players": ["10"]}])
+    monkeypatch.setattr(cli, "load_league_users",
+                        lambda league_id: [{"user_id": "u1", "display_name": "jaydenpg"}])
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+
+    def boom(draft_id):
+        raise AssertionError("the override must skip the draft feed entirely")
+
+    monkeypatch.setattr(cli, "SleeperFeed", boom)
+
+    result = cli._lineup(league, Tunables(), week=3)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "Overridden Roster QB" in out
+    assert "using roster_id 7 from config.toml (override)" in out
+
+
+def test_lineup_reports_rostered_players_missing_from_the_player_pool(monkeypatch, capsys):
+    """IMPORTANT 2: `missing = [i for i in ids if i not in players]` was
+    reachable but undriven -- deleting the note would pass the suite and the
+    mutation gate unnoticed."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+    from ffhelper.feeds import Pick
+
+    league = League(name="sleeper-main", platform="sleeper", league_id="L1", draft_slot=5)
+    settings = _lineup_settings()
+    players = {"10": Player("10", "A", "QB", "BUF")}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    # roster carries "10" (known) and "999" (retired/unknown -- not in the pool)
+    monkeypatch.setattr(cli, "load_league_rosters", lambda league_id: [
+        {"roster_id": 3, "owner_id": "u1", "players": ["10", "999"]},
+    ])
+    monkeypatch.setattr(cli, "load_league_users",
+                        lambda league_id: [{"user_id": "u1", "display_name": "jaydenpg"}])
+    monkeypatch.setattr(cli, "SleeperFeed", lambda draft_id: _FakeFeed(
+        picks=[Pick(pick_no=5, sleeper_id="x", roster_id=3, draft_slot=5)]))
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+
+    cli._lineup(league, Tunables(), week=3)
+    out = capsys.readouterr().out
+
+    assert "1 rostered players are not in the player pool" in out
+    assert "999" in out
+
+
+def test_lineup_notes_an_orphaned_roster_id(monkeypatch, capsys):
+    """MINOR (promoted): a `roster_id` the live picks feed reports that the
+    rosters payload (cached up to 300s) does not contain must not render as a
+    silent, unexplained EMPTY lineup -- `rid` is not None here, only absent
+    from the rosters list, so the generic derivation-failed note never fires
+    without an explicit check for this case."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+    from ffhelper.feeds import Pick
+
+    league = League(name="sleeper-main", platform="sleeper", league_id="L1", draft_slot=5)
+    settings = _lineup_settings()
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: {})
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    # The rosters payload knows nothing about roster_id 3 -- stale cache, most
+    # plausibly, since a real league always has every roster_id.
+    monkeypatch.setattr(cli, "load_league_rosters", lambda league_id: [
+        {"roster_id": 99, "owner_id": "u2", "players": []},
+    ])
+    monkeypatch.setattr(cli, "load_league_users", lambda league_id: [])
+    monkeypatch.setattr(cli, "SleeperFeed", lambda draft_id: _FakeFeed(
+        picks=[Pick(pick_no=5, sleeper_id="x", roster_id=3, draft_slot=5)]))
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+
+    result = cli._lineup(league, Tunables(), week=3)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "roster_id 3 is not in this league's rosters" in out

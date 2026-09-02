@@ -13,6 +13,14 @@ class League:
     adp_format: str | None = None    # None means derive from league scoring
     adp_teams: int | None = None     # None means derive from league size
     settings: dict | None = None     # hand-entered [league.settings]; first-class, not a fallback
+    # Manual override for the Sleeper roster_id the `lineup` command reads.
+    # Mirrors draft_slot -- "must be a config override, never trusted from the
+    # API" -- for the same reason: derivation (roster_id_for_slot, keyed off
+    # draft_slot) depends on a draft that may be a mock, may have aged out of
+    # the feed, or may not exist at all for a league joined mid-season. When
+    # set, `_lineup` prefers it over derivation and says so on screen, because
+    # a hand-set roster id that is wrong must not be silent.
+    roster_id: int | None = None
     # Point the pick feed at a different draft than the one the league reports,
     # keeping that league's synced scoring and roster. This is what makes a
     # Sleeper MOCK draft usable as a rehearsal: a mock has a draft_id but no

@@ -1054,18 +1054,54 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
             notes.append(f"roster data is {age_min} minutes old -- a fetch may have "
                          f"failed and a cached copy was served; recent waiver moves "
                          f"may be missing")
-        # feeds.Pick already carries roster_id AND draft_slot, so no re-fetch and
-        # no reshaping: the draft is the only thing that knows which roster is
-        # yours, and it is cached like everything else.
-        picks = SleeperFeed(settings.draft_id).get_picks() if settings.draft_id else []
-        rid = (season_mod.roster_id_for_slot(picks, league.draft_slot)
-               if league.draft_slot else None)
+        if league.roster_id is not None:
+            # The hand-set override wins outright -- and is announced, because a
+            # wrong hand-set id must not be silent either.
+            rid = league.roster_id
+            notes.append(f"using roster_id {rid} from config.toml (override) "
+                         f"rather than deriving it from the draft")
+        else:
+            rid = None
+            feed_failed = False
+            if league.draft_slot is not None:
+                # feeds.Pick already carries roster_id AND draft_slot, so no
+                # re-fetch and no reshaping: the draft is the only thing that
+                # knows which roster is yours, and it is cached like everything
+                # else. (When draft_slot is None derivation cannot succeed, so
+                # the network call is skipped entirely rather than fetching
+                # picks that can't answer the question.)
+                #
+                # get_picks() is built with stale_ok=False, so a failed poll
+                # RAISES by design -- every other call site (`_preflight`,
+                # `_run`) catches it. Bare here it would print NOTHING on a
+                # network blip: no roster, no notes, no partial lineup.
+                # Degrade, never fabricate.
+                try:
+                    picks = SleeperFeed(settings.draft_id).get_picks() if settings.draft_id else []
+                    rid = season_mod.roster_id_for_slot(picks, league.draft_slot)
+                except Exception as exc:                  # noqa: BLE001 - never fatal
+                    notes.append(f"could not reach the Sleeper draft feed to derive your "
+                                 f"roster_id ({exc}) -- showing an empty roster")
+                    feed_failed = True
+            if rid is None and not feed_failed:
+                # Reached either with no draft_slot configured at all, or with
+                # a feed that answered but could not resolve one roster_id for
+                # the slot -- a genuine feed failure already left its own note.
+                notes.append("could not derive your roster_id from the draft -- "
+                             "set `roster_id` in config.toml for this league")
+
         if rid is None:
-            notes.append("could not derive your roster_id from the draft -- "
-                         "set `roster_id` in config.toml for this league")
             roster = []
         else:
             ids = season_mod.roster_player_ids(rosters, rid)
+            if not ids and not any(r.get("roster_id") == rid for r in rosters):
+                # rid is not None, so this is NOT "derivation failed" -- it is a
+                # roster_id (derived or hand-set) that the rosters payload
+                # (cached up to 300s) simply does not contain. Without this note
+                # the screen renders as an empty, fully-EMPTY lineup with no
+                # explanation at all.
+                notes.append(f"roster_id {rid} is not in this league's rosters -- "
+                             f"the roster data may be stale or the id may be wrong")
             roster = [players[i] for i in ids if i in players]
             missing = [i for i in ids if i not in players]
             if missing:

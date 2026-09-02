@@ -202,6 +202,24 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "            pass"),
         ("degradation notes dropped from the screen",
          '        out += [""] + [f"!! {n}" for n in notes]', "        pass"),
+        ("a dead draft feed crashes _lineup instead of degrading",
+         '                except Exception as exc:                  # noqa: BLE001 - never fatal\n'
+         '                    notes.append(f"could not reach the Sleeper draft feed to derive your "\n'
+         '                                 f"roster_id ({exc}) -- showing an empty roster")\n'
+         '                    feed_failed = True',
+         "                except Exception:\n                    raise"),
+        ("roster_id override silently used with no note",
+         '            notes.append(f"using roster_id {rid} from config.toml (override) "\n'
+         '                         f"rather than deriving it from the draft")',
+         "            pass"),
+        ("an orphaned roster_id renders a blank screen with no explanation",
+         '                notes.append(f"roster_id {rid} is not in this league\'s rosters -- "\n'
+         '                             f"the roster data may be stale or the id may be wrong")',
+         "                pass"),
+        ("rostered players missing from the pool go unreported",
+         '                notes.append(f"{len(missing)} rostered players are not in the player pool: "\n'
+         '                             f"{\', \'.join(missing)}")',
+         "                pass"),
     ],
     "feeds.py": [
         ("picks poll drops the cache-buster, so Cloudflare serves a stale board",
