@@ -6,10 +6,11 @@ fetch, the design is wrong -- put the loader in `data.py`.
 """
 from collections import defaultdict
 from dataclasses import dataclass, replace
+from math import sqrt
 from statistics import fmean
 
 from ffhelper.data import Player, score_stats
-from ffhelper.value import FLEX_ELIGIBLE, optimal_lineup
+from ffhelper.value import FLEX_ELIGIBLE, lineup_value, optimal_lineup
 
 
 def roster_id_for_slot(picks, draft_slot: int) -> int | None:
@@ -36,6 +37,43 @@ def roster_player_ids(rosters: list[dict], roster_id: int) -> list[str]:
         if r.get("roster_id") == roster_id:
             return list(r.get("players") or [])
     return []
+
+
+# The 2026 regular season. Week 18 is the last one a fantasy roster can score
+# in; playoffs are league-configured and this tool does not model them.
+LAST_REGULAR_WEEK = 18
+
+
+def free_agent_pool(
+    players: dict[str, Player], rosters: list[dict], projected_ids: set[str],
+) -> list[Player]:
+    """Everyone not on ANY roster who carries a projection in the horizon.
+
+    Both halves are load-bearing. Subtracting only YOUR roster offers you
+    players another team owns. Skipping the projection filter leaves 3051 of
+    the 3231-player pool, nearly all retired or on a practice squad.
+    """
+    rostered: set[str] = set()
+    for r in rosters:
+        rostered |= set(r.get("players") or [])
+    return [p for pid, p in players.items()
+            if pid not in rostered and pid in projected_ids]
+
+
+def waiver_position(rosters: list[dict], roster_id: int) -> tuple[int | None, int]:
+    """(your rolling-waiver position, number of teams).
+
+    The league is NOT FAAB -- that claim's entire provenance was `waiver_budget:
+    100`, a field Sleeper returns by default whether or not bidding is on. It is
+    rolling priority, so there is no bid to derive: position is a consumable
+    ordering, not a currency.
+
+    Position is None when the payload does not carry one; the caller drops the
+    line rather than printing a 1.
+    """
+    mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
+    pos = (mine or {}).get("settings", {}).get("waiver_position")
+    return pos, len(rosters)
 
 
 def weekly_points(projections: list[dict], scoring: dict[str, float]) -> dict[str, float]:
@@ -82,6 +120,102 @@ def with_weekly_points(roster: list[Player], weekly: dict[str, float]) -> list[P
     that to start_sit's `projected_ids` to distinguish genuine 0.0 from absent.
     """
     return [replace(p, proj_pts=weekly.get(p.sleeper_id, 0.0)) for p in roster]
+
+
+def horizon_total(
+    roster: list[Player], roster_slots: dict[str, int],
+    weekly_by_week: dict[int, dict[str, float]],
+) -> float:
+    """Points the optimal lineup scores across every week in the horizon."""
+    return sum(lineup_value(with_weekly_points(roster, wk), roster_slots)
+               for wk in weekly_by_week.values())
+
+
+def roster_upgrade(
+    roster: list[Player], candidate: Player, roster_slots: dict[str, int],
+    weekly_by_week: dict[int, dict[str, float]], drop_tie_points: float = 0.5,
+) -> tuple[float, Player, int]:
+    """(gain, drop, weeks_started) for adding `candidate` at the cost of one cut.
+
+    The roster is full, so an add IS an add-and-drop. An add-only number
+    overstates every candidate by the value of whoever you would have cut, and
+    then no two candidates are comparable.
+
+    THE DROP IS CHOSEN ON THE WHOLE HORIZON, never one week. A one-week horizon
+    happily offers to cut your backup quarterback for 1.2 points of streaming
+    defense -- right arithmetic, ruinous advice.
+
+    Ties are real and must not be broken by list order: in the real week-1 run
+    five drops tied EXACTLY, and naming an arbitrary one of them is fabrication.
+    Among drops within `drop_tie_points` of the best, the one with the fewest
+    projected points of his own is taken, and the caller prints that rule.
+    """
+    base = horizon_total(roster, roster_slots, weekly_by_week)
+    own = {p.sleeper_id: sum(wk.get(p.sleeper_id, 0.0) for wk in weekly_by_week.values())
+           for p in roster}
+
+    scored: list[tuple[float, Player]] = []
+    for i, dropped in enumerate(roster):
+        trial = [*roster[:i], *roster[i + 1:], candidate]
+        scored.append((horizon_total(trial, roster_slots, weekly_by_week) - base, dropped))
+
+    best_gain = max(g for g, _ in scored)
+    tied = [(own[p.sleeper_id], g, p) for g, p in scored
+            if g >= best_gain - drop_tie_points]
+    # The id is the final tie-break so the answer is deterministic across runs:
+    # a drop name that changes when nothing changed is a board nobody can trust.
+    _, gain, drop = min(tied, key=lambda t: (t[0], t[2].sleeper_id))
+
+    kept = [p for p in roster if p.sleeper_id != drop.sleeper_id] + [candidate]
+    weeks_started = sum(
+        1 for wk in weekly_by_week.values()
+        if candidate.sleeper_id in wk
+        and any(p is not None and p.sleeper_id == candidate.sleeper_id
+                for _, p in optimal_lineup(with_weekly_points(kept, wk), roster_slots))
+    )
+    return gain, drop, weeks_started
+
+
+@dataclass(frozen=True)
+class WaiverTarget:
+    """One free agent worth taking, and what he costs."""
+    player: Player
+    gain: float
+    drop: Player
+    weeks_started: int
+
+
+def waiver_targets(
+    roster: list[Player], pool: list[Player], roster_slots: dict[str, int],
+    weekly_by_week: dict[int, dict[str, float]], close_call_points: float,
+    limit: int = 10,
+) -> list[WaiverTarget]:
+    """Free agents whose upgrade clears the noise on this horizon, best first.
+
+    THE FLOOR IS `close_call_points * sqrt(weeks)`, and the sqrt is the whole
+    point. `close_call_points` is calibrated to a SINGLE week's projection error
+    (TE weekly MAE 3.23, measured on 2025). The error on a fourteen-week total
+    is not fourteen times that -- independent weekly errors partially cancel, so
+    the standard error of a sum grows as sqrt(n). A flat per-week bar is roughly
+    four times too strict and silences real upgrades.
+
+    On a one-week horizon sqrt(1) = 1, so this same function serves the "this
+    week" section with no branch and no second threshold.
+
+    AN EMPTY LIST IS A RESULT, NOT A FAILURE. On a healthy 15-man roster the
+    best thing on the wire is 0.46 points a week; ranking that would be the
+    over-reaction the matchup adjustment already died on. The caller says so in
+    a sentence.
+    """
+    floor = close_call_points * sqrt(len(weekly_by_week))
+    out: list[WaiverTarget] = []
+    for candidate in pool:
+        gain, drop, weeks_started = roster_upgrade(
+            roster, candidate, roster_slots, weekly_by_week)
+        if gain > floor:
+            out.append(WaiverTarget(candidate, gain, drop, weeks_started))
+    out.sort(key=lambda t: (-t.gain, t.player.sleeper_id))
+    return out[:limit]
 
 
 def opponents(projections: list[dict]) -> dict[str, str]:

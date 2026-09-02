@@ -139,8 +139,78 @@ item. The project is now a season-mode project.
      once week-1 games are reported, ~Sept 10 — so the degraded line is what
      both leagues print today, and the join is proved against the 2025 file
      instead (real roster, real report, week 11).
-   - **4c — waivers**: free-agent pool, rest-of-season horizon, trending
-     add/drop as the FAAB price signal.
+   - ~~**4c — waivers**~~ **BUILT AND MERGE-CHECKED 2026-09-02**, branch
+     `phase-4c-waivers`, 8 commits, **454 tests**, **184 mutations, 1 needing a
+     look** (the documented `value.py` equivalent mutant), tree byte-identical
+     before and after. `waivers --league sleeper-main` prints **an empty board
+     in week 1**, which is the acceptance criterion the plan named, and it was
+     PROVED to be empty for the right reason: with the floor turned off in a
+     scratch script the pipeline produces rows (ten tight ends, best +8.3 ROS —
+     the number the spec measured). 4.8s warm, ~46s on a cold cache (108 files).
+     Yahoo refuses, labelled, exit 1. Three things the build turned up:
+     - **`scripts/mutate.py` was leaving MUTATED BYTECODE behind.** Python
+       validates a `.pyc` on the source's mtime-in-seconds plus its size, so a
+       mutation the same length as the original, written and restored inside one
+       second, leaves cached bytecode that looks valid and is not. The full run
+       ended with a clean `git status`, a tree identical to HEAD, and one FAILING
+       test; `touch ffhelper/cli.py` fixed it with no source change. The
+       dangerous direction is the reverse — a restored file running mutant
+       bytecode reports `killed` for a check that never ran. Fixed at the root:
+       `mutate.py` now unlinks the `.pyc` on every write, with a test.
+       **Third time this tool has reported success while checking something
+       else** (duplicate dict key 2026-08-27, ambiguous target 2026-09-02).
+     - **Two mutations SURVIVED against a green suite** after an earlier "killed"
+       had been read off a RED one — a test helper I appended to
+       `tests/test_season.py` shadowed an existing `_slots()` and quietly broke
+       the snapshot test. Both survivors were vacuous tests and both were fixed
+       in the direction the rule says. The lesson is the recorded one, arriving
+       again: check the suite is green before believing a mutation run.
+     - **The plan's tie fixture was wrong** and the plan's own instruction caught
+       it: run the numbers by hand first. Its expected drop was Gainwell; the tie
+       includes the DEFENSE being replaced, whose own points are lower, so the
+       answer is the Broncos — which is also the move a human would make.
+     Two things the plan flagged and the build took the better half of: the
+     `roster_id` re-derivation in `_waivers` is gone (`_resolve_my_roster`
+     returns the id it already resolved), and `mutate.py` gained an optional
+     label filter so one new mutation can be checked in seconds.
+     What it looked like before it was built, kept because the probe is the
+     record of why the shape is what it is:
+     free-agent pool, rest-of-season horizon, trending
+     add/drop as the price signal. **Nothing blocked it as of 2026-09-02** —
+     probed live: `state/nfl` reads week 1 `in_season`, weekly projections exist
+     for **all 18 weeks** (so the ROS horizon is buildable), trending and
+     transactions both answer, and 12 rosters give a 3051-player free-agent pool.
+     Three things the probe changed:
+     - **THE LEAGUE IS NOT FAAB. It is rolling waiver priority** (user-confirmed
+       against Sleeper's UI). The FAAB claim in `CLAUDE.md` and both specs came
+       from `waiver_budget: 100`, which Sleeper returns by default; the live
+       settings say `waiver_type: 0` with distinct `waiver_position` 1-12.
+       **The "derived FAAB bid" deliverable is dead** — priority is an ordering
+       you spend, not a currency, so the output is your position and the cost of
+       burning it. The notify-bot cut is unaffected: it rests on batch
+       processing, which is still true.
+     - **A bye is an ABSENT ROW, not a zero** (Gibbs wk6, Allen wk7, Nacua wk11).
+       So is an unprojected player. Summing an ROS horizon over "weeks that
+       answered" silently loses the 4a distinction between a measured 0.0 and no
+       number at all — print the count of projected weeks beside the total.
+     - **The raw pool is 3051 of 3231 players**, i.e. mostly retired and
+       practice-squad. It needs a filter before it is a list anyone reads.
+     Preseason weekly projections are flat (Nacua 20.4-21.0 across all 18), so
+     ROS today is season value x weeks left; the feature only becomes measurable
+     once week 1 is played.
+     Spec and plan: `docs/superpowers/specs/2026-09-02-phase-4c-waivers-design.md`
+     and `docs/superpowers/plans/2026-09-02-phase-4c-waivers.md` (8 tasks, all
+     executed).
+     Two things the plan settled that are easy to lose:
+     - **`load_league_transactions` was cut** — it has no consumer once the FAAB
+       bid is gone. Position comes from the `rosters` payload, and the
+       cost-of-spending line is arithmetic on two already-computed targets.
+     - **The floor is `close_call_points * sqrt(weeks)`, and sqrt(1) = 1**, so
+       the THIS WEEK section is the rest-of-season function called with a
+       one-week horizon. One code path, no second threshold. The first version
+       of this rule was a flat 3.0/week bar and was wrong — it is calibrated to
+       a SINGLE week's error, and weekly errors partially cancel, so a flat bar
+       is ~4x too strict. Caught in spec self-review, before any code.
 5. ~~**The Yahoo roster must be hand-entered.**~~ **DONE 2026-09-01.**
    `.roster/yahoo-main.txt`, 14 players, all resolving unambiguously, gitignored.
    It must be UPDATED after every add/drop — `lineup` and `preflight` both print

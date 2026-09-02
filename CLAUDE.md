@@ -216,6 +216,16 @@ says so; do not agonise over which name inside it.
   — a callback sealed inside a registration function, a branch with no seam —
   that is the finding: untestable code is untested code, and the fix is to give
   it a seam, not to skip the mutation.
+- **A mutation run must start from a GREEN suite, and `mutate.py` must be the
+  only thing running.** Against a red suite every mutation "kills" trivially and
+  the run means nothing — that happened again on 2026-09-02, when a test helper
+  appended to `tests/test_season.py` shadowed an existing one and two survivors
+  were reported as killed. The same day the tool was found leaving MUTATED
+  BYTECODE behind: Python validates a `.pyc` on the source's mtime-in-seconds
+  plus its size, so a same-length mutation written and restored inside one
+  second leaves cached bytecode that looks valid and is not. Fixed at the root
+  (`mutate.py` unlinks the `.pyc` on every write); the symptom was a clean `git
+  status`, a tree identical to HEAD, and a failing test that `touch` repaired.
 - **`scripts/mutate.py` rewrites source files in place. Run it in the
   FOREGROUND, alone**, never backgrounded and polled: anything else touching the
   tree at the same time collides, and a frozen file can show as modified until
@@ -295,9 +305,21 @@ fresh opinion.
 - **`lineup_value()` is a standalone pure function.** Phase 1 needs it for
   starter-slot awareness; Phase 5's trade finder needs the identical function.
   Never inline it into the board.
-- **Waiver notify-bot is cut.** The league is FAAB with scheduled batch
-  processing (`waiver_clear_days: 2`), so claims resolve simultaneously and a
-  same-day alert gives no timing edge.
+- **Waiver notify-bot is cut, and the reason survives a corrected premise.**
+  Claims resolve in a scheduled batch (`waiver_clear_days: 2`,
+  `waiver_day_of_week: 2`), so submission time buys nothing. That is what the
+  cut rests on, and it is unaffected by the correction below.
+- **CORRECTED 2026-09-02: the Sleeper league is NOT FAAB. It is ROLLING WAIVER
+  PRIORITY.** Confirmed by the user against Sleeper's own UI. This file and both
+  specs said FAAB, and the claim's entire provenance was `waiver_budget: 100` in
+  the settings payload — **a field Sleeper returns by default whether or not
+  bidding is on.** The live evidence points the other way: `waiver_type: 0`, and
+  all 12 rosters carry a distinct `waiver_position` 1-12 with
+  `waiver_budget_used: 0`. Same shape as the Yahoo one-RB-slot error — a league
+  setting inferred from an API default instead of read off the platform's own
+  screen. **Consequence for 4c: there is no bid to derive.** Priority is a
+  consumable ordering, not a currency, so the honest output is your position and
+  what a claim costs you, never a manufactured dollar figure.
 - **Yahoo risk is confined to draft day.** The risk is unrepeatability, not
   difficulty. In-season Yahoo is *lower* risk than Sleeper draft mode. Phase 0
   OAuth is never wasted — season mode needs it regardless.
@@ -423,7 +445,7 @@ fresh opinion.
 | 3.7 | Web board — the `DataTable` replacement and what it unlocks | offseason | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope. Also the trigger for the deferred `board.py` fold |
 | 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4a-start-sit`, 377 tests / 153 mutations. Runs against both leagues. Awaiting the user's merge |
 | 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | **COMPLETE 2026-09-02** (branch `phase-4b-snapshot`). Snapshot table shipped; `backtest_weekly.py` shipped and it **closed the matchup ADJUSTMENT** — measured on 2024 and 2025, it loses — so what ships is a descriptive opponent RANK that nothing consumes (see Decisions). nflverse practice report shipped and joins 14/15; `injuries_2026.csv` is a 404 until ~Sept 10, so it prints its degraded line today |
-| 4c | Waivers — free-agent pool, ROS horizon, trending as the FAAB signal | in-season | not started |
+| 4c | Waivers — free-agent pool, ROS horizon, trending as the price signal | in-season | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4c-waivers`, 454 tests / 184 mutations. `waivers` prints an EMPTY board in week 1, which is the correct output, and the pipeline was proved separately by turning the floor off. Sleeper-only, labelled. **No FAAB bid** — see the correction in Decisions |
 | 5 | Trade finder (own spec) | in-season | not started — unblocked earlier than expected: Sleeper serves every team's roster with no auth |
 
 Phase 1 builds against the Sleeper feed because it needs no auth and Sleeper
@@ -504,6 +526,156 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   may be committed to this public repo.
 
 ## Session log
+
+### 2026-09-02 (sixth block) — PHASE 4c SHIPPED, and its correct output is nothing
+
+**State:** branch `phase-4c-waivers`, 8 commits, **454 tests** (from 419),
+**184 mutations, 1 needing a look** (the documented `value.py` equivalent
+mutant), tree byte-identical before and after. New: `tests/test_mutate.py`.
+
+`.venv/bin/python -m ffhelper.cli waivers --league sleeper-main` ranks the
+free-agent pool by add-and-drop marginal value over two horizons, and on the
+real roster in week 1 it prints:
+
+```
+WAIVERS -- sleeper-main (jaydenpg) -- week 1
+  waiver priority 8 of 12 -- a successful claim sends you to 12th
+
+  nothing on the wire beats what you already have.
+```
+
+**That empty board is the acceptance criterion, not a failure** — rows on a
+healthy 15-man roster in week 1 would have meant the floor was wrong or the pool
+polluted. 4.8s warm, ~46s cold (108 files). Yahoo refuses, labelled, exit 1,
+because the pool is every player minus the union of EVERY roster and Yahoo
+serves none.
+
+**An empty board and a broken pipeline look identical on screen**, so the
+pipeline was made to prove itself: with `close_call_points=0.0` in a scratch
+script the board fills with tight ends, best +8.3 over 18 weeks — the number the
+spec measured before any code existed. The floor (3.0 × √18 = 12.7) silences
+all of them, which is the design working.
+
+#### `mutate.py` was leaving mutated bytecode behind, and the tree looked clean
+
+The full mutation run ended with `184 mutations, 1 needing a look`, a `git
+status` diff of nothing, a tree identical to HEAD — **and one failing test**.
+`inspect.getsource` showed the guard the test wanted, present and correct.
+`touch ffhelper/cli.py` fixed it with no source change at all.
+
+Python validates a `.pyc` on the source's mtime-in-SECONDS plus its size. A
+mutation the same length as the original, written and restored inside one
+second, leaves cached bytecode that looks valid and is not. **The direction that
+bit here was harmless (a false failure); the dangerous one is the reverse — a
+restored file running mutant bytecode reports `killed` for a check that never
+ran.** Fixed at the root: every write unlinks the `.pyc`, with a red-checked
+test.
+
+**This is the third time this tool has reported success while checking something
+else** — the duplicate dict key that silently dropped 26 mutations
+(2026-08-27), the ambiguous target string that mutated a different function
+(2026-09-02), and now this. The pattern is worth naming: each fix was a GUARD in
+the tool, not a correction of the instance, which is why none of them recurred.
+
+#### Two mutations "killed" against a RED suite, and the cause was my own test
+
+Tasks 4 and 5 reported killed. Re-run later they SURVIVED. Between the two runs
+the suite went green: a `_slots()` helper I appended to `tests/test_season.py`
+had **shadowed an existing one of the same name**, breaking the snapshot test —
+and a mutation run against a red suite kills everything trivially. The recorded
+rule ("check the suite is green before believing a mutation run") was written in
+August and would have caught it; I did not apply it until the numbers disagreed.
+
+Both survivors were vacuous tests, fixed in the direction the rule says:
+- **`weeks_started`**: the lineup check ALONE cannot see a bye. A candidate who
+  is the only player at his position fills the slot on the 0.0 sort value, so
+  the absent-row guard needed a fixture where that actually happens.
+- **The √weeks floor**: the old fixture only proved the bar was not too HIGH.
+  It now also proves a 4.5-point gain over nine weeks is silenced.
+
+#### The plan's own instruction caught the plan's own error
+
+Task 4 said to run every fixture number by hand before implementing. Its
+expected drop was Gainwell; **the tie also contains the DEFENSE being replaced**,
+whose own points are lower, so the rule names the Broncos — which is also the
+move a human would make (you stream a defense by dropping the old one). Fixture
+corrected, assertion not loosened.
+
+Two other plan calls taken at the better end: `_resolve_my_roster` returns the
+`roster_id` it already resolved, so `_waivers` re-derives nothing (the plan
+flagged its own re-derivation as a smell); and the pool mutation SURVIVED the
+plan's fixture, because the other team's roster in it was empty — the fixture
+now puts the league's best quarterback on another team, where offering him is
+the most attractive row on the board and the one thing that cannot be done.
+
+#### What is deliberately absent
+
+`load_league_transactions` was never built — with the FAAB bid gone it has no
+consumer. There is no snapshot of waiver advice and no Dash page; both are out
+of scope in the plan and remain so.
+
+### 2026-09-02 (fifth block) — 4c unblocked and specced; a documented league rule turned out to be wrong
+
+**State:** branch `phase-4c-waivers` off `main` (4b merged as PR #7), two
+commits, **no code touched**, 419 tests still green. Spec and 8-task plan
+written; **implementation deferred to the next session by the user.**
+
+**Start next session at Task 1** of
+`docs/superpowers/plans/2026-09-02-phase-4c-waivers.md` — the
+`_resolve_week` / `_resolve_my_roster` extraction from `_lineup`.
+
+#### The league is NOT FAAB, and the claim came from an API default
+
+`CLAUDE.md`, `TODO.md` and both specs said "Waivers are FAAB
+(`waiver_budget: 100`)". **It is rolling waiver priority**, confirmed by the
+user against Sleeper's own UI. The live settings say `waiver_type: 0`, and all
+twelve rosters carry a distinct `waiver_position` (1-12) with
+`waiver_budget_used: 0`.
+
+**The entire provenance of the wrong claim was `waiver_budget: 100` in the
+settings payload — a field Sleeper returns by default whether or not bidding is
+on.** Identical shape to the Yahoo one-RB-slot error: a league rule inferred
+from an API payload instead of read off the platform's own screen, then written
+down as fact and inherited by three documents. **So 4c's stated deliverable, a
+derived FAAB bid, does not exist.** The notify-bot cut is unaffected — it rests
+on batch processing (`waiver_clear_days: 2`), which is still true.
+
+#### The measurement says the feature should usually print nothing
+
+Probed against the real roster and pool before designing anything:
+
+| best available upgrade, week 1 | +1.2 pts |
+| best available ROS upgrade | **+8.3 over 18 weeks = 0.46/wk** |
+| base lineup | 2399.0 pts |
+| measured TE weekly MAE | **3.23** |
+
+The best thing on the wire is inside the noise by a factor of seven. What the
+wire IS worth is positional depth: **losing Ferguson (the only TE) is +163.9
+ROS; losing Josh Allen is only +37.7**, because Murray backs him up.
+
+So the command carries a significance floor and **an empty board is the
+shipped, correct week-1 output.** The user's instruction, recorded because it
+generalises: *"Never force things just to have something when it is wrong."*
+
+#### My own floor rule was wrong, and spec self-review caught it
+
+First version was a flat `close_call_points` (3.0) per week on both horizons.
+**That is calibrated to a SINGLE week's error**; independent weekly errors
+partially cancel, so the standard error of a season total grows as sqrt(n), not
+n — a flat bar is ~4x too strict and would have silenced real upgrades. It also
+contradicted the mockup the user had approved. Corrected to
+`close_call_points * sqrt(weeks)`, and since sqrt(1) = 1 the two sections
+collapse to **one code path with no second threshold**.
+
+#### Two things cut during planning
+
+`load_league_transactions` has **no consumer** once the FAAB bid is gone, so it
+was cut rather than built unused. And a bye is an **ABSENT ROW, not a zero**
+(verified: Gibbs has no week-6 row, Allen no week-7, Nacua no week-11) — so is
+an injured or unprojected player, which means every ROS total must print the
+count of weeks that actually contributed, or the 4a distinction between a
+measured 0.0 and no number at all is lost across fourteen weeks.
+
 
 ### 2026-09-02 (fourth block) — 4b FINISHED, and its headline feature was killed by its own gate
 

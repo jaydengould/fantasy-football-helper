@@ -25,10 +25,18 @@ Roster: `QB / RB / RB / WR / WR / TE / FLEX / FLEX / K / DEF` + 5 bench (15 tota
 Scoring is full PPR (`rec: 1.0`), 0.1/yd rush and receive, 0.04/yd passing, and
 **6-point passing TDs** — not Sleeper's default of 4.
 
-Waivers are FAAB (`waiver_budget: 100`) with scheduled batch processing
-(`waiver_clear_days: 2`). Claims resolve simultaneously regardless of submission
-time, so a same-day waiver alert provides **no timing edge**. The waiver
-notify-bot is cut from season mode.
+Waivers run in scheduled batches (`waiver_clear_days: 2`). Claims resolve
+simultaneously regardless of submission time, so a same-day waiver alert provides
+**no timing edge**. The waiver notify-bot is cut from season mode.
+
+**CORRECTED 2026-09-02:** this paragraph said "Waivers are FAAB
+(`waiver_budget: 100`)". They are not — the league runs **rolling waiver
+priority**, confirmed by the user against Sleeper's UI (`waiver_type: 0`, twelve
+distinct `waiver_position` values). `waiver_budget` is a field Sleeper returns by
+default whether or not bidding is on, so the whole claim rested on an API
+default. The notify-bot cut is unaffected: it turns on batch processing, not on
+the payment mechanism. See the correction appended to the Phase 4 season-mode
+spec.
 
 `draft_order` currently holds 11 of 12 slots, so the user's draft position is not
 final. Draft slot must be a config override, not trusted from the API.

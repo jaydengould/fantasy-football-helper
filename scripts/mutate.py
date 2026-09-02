@@ -24,6 +24,7 @@ KNOWN EQUIVALENT MUTANT (expected to survive, do not chase):
   "tier threshold strictness" -- `>` vs `>=` on float gaps. Two gaps are never
   exactly equal on real data, so no test can distinguish the two forms.
 """
+import importlib.util
 import re
 import subprocess
 import sys
@@ -121,6 +122,12 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "return False"),
     ],
     "cli.py": [
+        ("waivers builds the pool from my roster only",
+         "pool = season_mod.free_agent_pool(players, rosters, projected)",
+         "pool = season_mod.free_agent_pool(players, rosters[:1], projected)"),
+        ("empty waiver board renders as a blank",
+         'lines.append("  nothing on the wire beats what you already have.")',
+         "pass"),
         ("matchup context ranked in week 1, off no completed weeks at all",
          "    if week <= 1:", "    if week <= 0:"),
         ("restore banner reports typed marks, not the roster you will see",
@@ -364,6 +371,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if row.get(\"bye\"):", "if set_adp and row.get(\"bye\"):"),
         ("weekly projection cache key drops the week -- every week serves week 1",
          'f"proj_{season}_wk{week}_{pos}"', 'f"proj_{season}_{pos}"'),
+        ("trending cache key ignores add/drop",
+         'f"trending_{kind}_{lookback_hours}h"', 'f"trending_{lookback_hours}h"'),
         ("weekly actuals cache key drops the week",
          'f"stats_{season}_wk{week}_{pos}"', 'f"stats_{season}_{pos}"'),
         ("injury report keeps every week, not the one asked for",
@@ -483,6 +492,21 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          '    out += [("BN", p.name) for p in remaining]', "    pass"),
     ],
     "season.py": [
+        ("free agent pool subtracts only my roster",
+         "rostered |= set(r.get(\"players\") or [])", "rostered = set(r.get(\"players\") or [])"),
+        ("free agent pool skips the projection filter",
+         "if pid not in rostered and pid in projected_ids", "if pid not in rostered"),
+        ("waiver floor does not scale with the horizon",
+         "floor = close_call_points * sqrt(len(weekly_by_week))",
+         "floor = close_call_points"),
+        ("drop chosen on one week instead of the horizon",
+         "scored.append((horizon_total(trial, roster_slots, weekly_by_week) - base, dropped))",
+         "scored.append((lineup_value(with_weekly_points(trial, next(iter(weekly_by_week.values()))), roster_slots) - base, dropped))"),
+        ("drop tie broken by list order",
+         "_, gain, drop = min(tied, key=lambda t: (t[0], t[2].sleeper_id))",
+         "_, gain, drop = tied[0]"),
+        ("weeks_started counts weeks with no row for the candidate",
+         "if candidate.sleeper_id in wk", "if True"),
         ("weekly projection guard stops rejecting a null stats row",
          "if not pid or not stats:", "if not pid:"),
         ("weekly scoring mutates the shared season pool",
@@ -568,19 +592,46 @@ if len(_KEYS) != len(set(_KEYS)):
                      "would be silently dropped. Merge them.")
 
 
+def _write(path: Path, text: str) -> None:
+    """Write source and DROP ITS CACHED BYTECODE.
+
+    Python validates a `.pyc` on the source's mtime-in-SECONDS plus its size.
+    A mutation and its restore are the same size whenever old and new are the
+    same length, and both happen within one second -- so the interpreter keeps
+    serving the bytecode compiled from whichever version got there first. Found
+    2026-09-02: after a full run the tree was byte-identical to HEAD, `git
+    status` was clean, and one test failed because the loaded module was still
+    a mutant. The dangerous direction is the other one, where a restored file
+    runs mutated code and a mutation reports `killed` for a check that never
+    ran -- the third time this tool has reported success while checking
+    something else.
+    """
+    path.write_text(text)
+    cached = Path(importlib.util.cache_from_source(str(path)))
+    cached.unlink(missing_ok=True)
+
+
 def _target_path(fname: str) -> Path:
     """A key with a slash is a path from ROOT (scripts/); anything else is a
     module in the package."""
     return ROOT / fname if "/" in fname else ROOT / "ffhelper" / fname
 
 
-def main() -> int:
+def main(only: str = "") -> int:
+    """Run every mutation, or only those whose label contains `only`.
+
+    The filter exists so a task can check the one mutation it just added in
+    seconds instead of re-running all of them; the whole set still runs before
+    a branch closes, and a filtered run says so in its own total.
+    """
     results = []
     for fname, muts in MUTATIONS.items():
         path = _target_path(fname)
         original = path.read_text()
         try:
             for label, old, new in muts:
+                if only and only not in label:
+                    continue
                 n = original.count(old)
                 if n == 0:
                     results.append((fname, label, "STALE - pattern gone, update this script"))
@@ -597,14 +648,14 @@ def main() -> int:
                     results.append((fname, label, f"AMBIGUOUS - matches {n} places, "
                                                   "anchor it on an adjacent line"))
                     continue
-                path.write_text(original.replace(old, new, 1))
+                _write(path, original.replace(old, new, 1))
                 p = subprocess.run(
                     [str(PY), "-m", "pytest", "-x", "-q", "--no-header", "-p", "no:cacheprovider"],
                     cwd=ROOT, capture_output=True, text=True, timeout=300,
                 )
                 results.append((fname, label, "killed" if p.returncode else "*** SURVIVED ***"))
         finally:
-            path.write_text(original)              # always restore
+            _write(path, original)                 # always restore
 
     print(f"\n{'file':<22} {'mutation':<32} result")
     print("-" * 62)
@@ -622,4 +673,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else ""))

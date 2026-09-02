@@ -19,7 +19,7 @@ from ffhelper.data import (
     CACHE_DIR, LeagueSettings, Player, SLEEPER_ADP_FIELD, adp_format_for, apply_ffc_adp,
     apply_projections, apply_sleeper_adp, fetch_json, load_ffc_adp, load_league_rosters,
     load_league_users, load_nfl_injuries, load_nfl_state, load_players, load_projections,
-    load_weekly_actuals,
+    load_trending, load_weekly_actuals,
     load_sleeper_settings, load_weekly_projections, norm_name, rosters_cache_key,
 )
 from ffhelper.feeds import Pick, PickFeed, SleeperFeed
@@ -1229,15 +1229,82 @@ def _record_snapshot(
         return f"snapshot        : NOT RECORDED -- {exc}"
 
 
-def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
-    """Print this week's optimal lineup. One shot -- no loop, no polling."""
-    settings = resolve_settings(league)
+DROP_CAVEAT = ("  the drop is by PROJECTION ONLY -- it does not know about handcuffs,\n"
+               "  upside, or your bye weeks. read it, do not follow it.")
+
+
+def render_waivers(
+    this_week: list["season_mod.WaiverTarget"], ros: list["season_mod.WaiverTarget"],
+    week: int, last_week: int, league_name: str, owner: str | None,
+    position: int | None, teams: int, trending: dict[str, int],
+    notes: list[str], weeks_scored: int,
+) -> str:
+    """The waiver board. Pure: takes data, returns the screen."""
+    lines = [f"WAIVERS -- {league_name}"
+             + (f" ({owner})" if owner else "") + f" -- week {week}"]
+    for n in notes:
+        lines.append(f"  !! {n}")
+    if position is not None and teams:
+        # ponytail: the ordinal suffix is wrong for a league of 1, 2 or 3 teams.
+        # No fantasy league has fewer than four, so it cannot fire here; give it
+        # a suffix helper if this ever renders a number that is not a team count.
+        lines.append(f"  waiver priority {position} of {teams} -- a successful claim "
+                     f"sends you to {teams}th")
+
+    def section(title: str, targets: list["season_mod.WaiverTarget"], of: int) -> None:
+        lines.append("")
+        lines.append(title)
+        for t in targets:
+            lines.append(f"  {t.player.position:<3} {t.player.name:<26} "
+                         f"+{t.gain:6.1f}   add, drop {t.drop.name} "
+                         f"({t.weeks_started} of {of} starts)")
+            count = trending.get(t.player.sleeper_id)
+            if count:
+                lines.append(f"        trending +{count:,} adds NATIONALLY "
+                             f"-- NOT your league")
+
+    if this_week:
+        section(f"THIS WEEK -- upgrade to your week {week} lineup", this_week, 1)
+    if ros:
+        section(f"REST OF SEASON -- upgrade over weeks {week}-{last_week}",
+                ros, weeks_scored)
+
+    if not this_week and not ros:
+        # A RESULT, not a blank. On a healthy roster the best thing available is
+        # inside the measured weekly error, and saying nothing at all would read
+        # as a failed fetch.
+        lines.append("")
+        lines.append("  nothing on the wire beats what you already have.")
+        lines.append("  (a target must gain more than the weekly projection error "
+                     "to be listed.)")
+    else:
+        lines.append("")
+        lines.append(DROP_CAVEAT)
+    return "\n".join(lines)
+
+
+def _resolve_week(week: int | None) -> tuple[int | None, str, list[str], int | None]:
+    """The NFL week and season to work in, plus any degradation notes.
+
+    Returns week=None when neither /state/nfl nor --week supplied one. The
+    caller prints and stops: guessing a week (the old `or 1`) is exactly the
+    fabrication this design forbids.
+
+    `not week` rather than `week is None` is deliberate -- Sleeper serves
+    "week": 0 in the offseason, and the two guards disagreeing is a defect this
+    project already shipped once.
+
+    The fourth element is the RAW state week, which `_lineup` needs for the
+    snapshot's is-this-the-current-week check. Re-reading it with a second
+    load_nfl_state() would be two fetches that can disagree.
+
+    /state/nfl is one more Sleeper endpoint that "can change or vanish" -- the
+    spec's own risk register says every such endpoint must degrade to an absent
+    column. `season_str` used to come straight from it unguarded, so even
+    `lineup --week 4` -- the obvious thing to try when the week on screen looks
+    wrong -- could not run without it.
+    """
     notes: list[str] = []
-    # /state/nfl is one more Sleeper endpoint that "can change or vanish" --
-    # the spec's own risk register says every such endpoint must degrade to an
-    # absent column. `season_str` used to come straight from it unguarded, so
-    # even `lineup --week 4` -- the obvious thing to try when the week on
-    # screen looks wrong -- could not run without it.
     try:
         state = load_nfl_state()
     except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
@@ -1245,25 +1312,32 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
         notes.append(f"could not reach Sleeper's /state/nfl ({exc}) -- season defaults "
                      f"to {SEASON}")
 
-    if week is None:
-        week = state.get("week")
-        if not week:
-            # Neither the endpoint nor --week can supply a week -- guessing
-            # one (the old `or 1` fallback) is exactly the fabrication this
-            # whole design forbids, so say so and stop instead.
-            print("no NFL week available: /state/nfl is unreachable and --week "
-                  "was not given -- pass e.g. '--week 1' to run without it")
-            return 1
-    week = int(week)
     season_str = str(state.get("season") or SEASON)
+    state_week = state.get("week")
+    if week is None:
+        week = state_week
+        if not week:
+            return None, season_str, notes, state_week
+    return int(week), season_str, notes, state_week
 
-    players = load_players()
-    # Kept, not discarded after scoring: the same rows carry `opponent`, which
-    # is the whole schedule this command needs -- no schedule endpoint, no
-    # second fetch.
-    weekly_rows = load_weekly_projections(season_str, week)
-    weekly = season_mod.weekly_points(weekly_rows, settings.scoring)
 
+def _resolve_my_roster(
+    league: League, settings: LeagueSettings, players: dict[str, Player],
+) -> tuple[list[Player], str | None, list[str], list[dict], int | None]:
+    """Whose roster this is, on either platform, with every degradation note.
+
+    Extracted from `_lineup` so `waivers` cannot grow a second answer to the
+    question. Two commands disagreeing about which team they advise is the
+    `FLEX_ELIGIBLE` mistake with higher stakes.
+
+    Returns the raw Sleeper `rosters` payload and the resolved `roster_id` as
+    well: `waivers` needs both, and re-deriving either would be a second source
+    of truth for one fact -- which is how this project's own conventions say two
+    views start disagreeing.
+    """
+    notes: list[str] = []
+    rosters: list[dict] = []
+    rid: int | None = None
     owner: str | None = None
     if league.platform == "sleeper":
         rosters_failed = False
@@ -1393,6 +1467,29 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
         if not roster:
             notes.append(f"no roster: write one name per line into "
                          f"{ROSTER_DIR / f'{league.name}.txt'}")
+    return roster, owner, notes, rosters, rid
+
+
+def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
+    """Print this week's optimal lineup. One shot -- no loop, no polling."""
+    settings = resolve_settings(league)
+    week, season_str, notes, state_week = _resolve_week(week)
+    if week is None:
+        # Neither the endpoint nor --week can supply a week -- guessing one (the
+        # old `or 1` fallback) is exactly the fabrication this design forbids.
+        print("no NFL week available: /state/nfl is unreachable and --week "
+              "was not given -- pass e.g. '--week 1' to run without it")
+        return 1
+
+    players = load_players()
+    # Kept, not discarded after scoring: the same rows carry `opponent`, which
+    # is the whole schedule this command needs -- no schedule endpoint, no
+    # second fetch.
+    weekly_rows = load_weekly_projections(season_str, week)
+    weekly = season_mod.weekly_points(weekly_rows, settings.scoring)
+
+    roster, owner, notes_r, rosters, rid = _resolve_my_roster(league, settings, players)
+    notes += notes_r
 
     # Practice status is the one thing Sleeper's player DB does not carry (zero
     # of 3231 players), so it comes from nflverse and joins on gsis_id through
@@ -1416,15 +1513,90 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
     # After the lineup, not inside `notes`: notes render as "!!" alarms, and a
     # snapshot that worked is not an alarm. Same reason the unprojected players
     # got their own quiet section in 4a rather than crying wolf every week.
-    print(_record_snapshot(league, season_str, week, state.get("week"),
+    print(_record_snapshot(league, season_str, week, state_week,
                            state_ss, set(weekly)))
+    return 0
+
+
+def _waivers(league: League, tunables: Tunables, week: int | None = None,
+             limit: int = 10) -> int:
+    """Rank the free-agent pool. One shot -- no loop, no polling."""
+    if league.platform != "sleeper":
+        # Not a fallback and not a bug: the pool is the full player list minus
+        # the union of EVERY roster, and Yahoo serves no rosters without API
+        # access. A pool built from one hand-entered roster would be silently
+        # wrong, which is worse than absent.
+        print(f"waivers needs every team's roster to know who is free, and "
+              f"{league.platform} has no API access -- so this command is "
+              f"Sleeper-only. `lineup` still works for {league.name}.")
+        return 1
+
+    settings = resolve_settings(league)
+    week, season_str, notes, _state_week = _resolve_week(week)
+    if week is None:
+        print("no NFL week available: /state/nfl is unreachable and --week "
+              "was not given -- pass e.g. '--week 1' to run without it")
+        return 1
+
+    players = load_players()
+    roster, owner, notes_r, rosters, rid = _resolve_my_roster(league, settings, players)
+    notes += notes_r
+    if not roster:
+        print("no roster resolved, so there is nothing to upgrade -- "
+              + "; ".join(notes))
+        return 1
+
+    weekly_by_week: dict[int, dict[str, float]] = {}
+    failed: list[int] = []
+    for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):
+        try:
+            rows = load_weekly_projections(season_str, w)
+        except Exception:                             # noqa: BLE001 - degrade, never fabricate
+            failed.append(w)
+            continue
+        weekly_by_week[w] = season_mod.weekly_points(rows, settings.scoring)
+    if not weekly_by_week:
+        print("no weekly projections could be fetched -- nothing can be ranked")
+        return 1
+    if failed:
+        # A shorter horizon is a smaller total, and a total that shrank for an
+        # unexplained reason is the kind of silent wrongness this project keeps
+        # finding. Say which weeks are missing.
+        notes.append(f"{len(failed)} week(s) of projections could not be scored "
+                     f"({', '.join(str(w) for w in failed)}) -- the rest-of-season "
+                     f"total covers {len(weekly_by_week)} weeks, not "
+                     f"{season_mod.LAST_REGULAR_WEEK - week + 1}")
+
+    projected = set().union(*(set(wk) for wk in weekly_by_week.values()))
+    pool = season_mod.free_agent_pool(players, rosters, projected)
+
+    this_week_horizon = {week: weekly_by_week[week]} if week in weekly_by_week else {}
+    this_week = season_mod.waiver_targets(
+        roster, pool, settings.roster_slots, this_week_horizon,
+        tunables.close_call_points, limit) if this_week_horizon else []
+    ros = season_mod.waiver_targets(
+        roster, pool, settings.roster_slots, weekly_by_week,
+        tunables.close_call_points, limit)
+
+    try:
+        trending = load_trending("add")
+    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+        trending = {}
+        notes.append(f"could not reach Sleeper's trending endpoint ({exc}) -- "
+                     f"the trending column is absent")
+
+    position, teams = season_mod.waiver_position(rosters, rid) if rid else (None, 0)
+
+    print(render_waivers(this_week, ros, week, season_mod.LAST_REGULAR_WEEK,
+                         league.name, owner, position, teams, trending, notes,
+                         len(weekly_by_week)))
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
     ap = argparse.ArgumentParser(prog="ffhelper")
-    ap.add_argument("command", choices=["run", "preflight", "lineup"])
+    ap.add_argument("command", choices=["run", "preflight", "lineup", "waivers"])
     ap.add_argument("--league", required=True)
     ap.add_argument("--config", type=Path, default=ROOT / "config.toml")
     ap.add_argument("--limit", type=int, default=20)
@@ -1442,6 +1614,8 @@ def main(argv: list[str] | None = None) -> int:
         return _preflight(league, tunables)
     if args.command == "lineup":
         return _lineup(league, tunables, args.week)
+    if args.command == "waivers":
+        return _waivers(league, tunables, args.week, args.limit)
     try:
         return _run(league, tunables, args.limit)
     except KeyboardInterrupt:

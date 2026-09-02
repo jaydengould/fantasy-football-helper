@@ -3020,3 +3020,280 @@ def test_lineup_says_there_is_no_matchup_context_in_week_one(monkeypatch,
     cli._lineup(league, Tunables(), week=1)
 
     assert "matchup context : none -- no completed weeks yet" in capsys.readouterr().out
+
+
+# --- Phase 4c: the seams `waivers` shares with `lineup` -----------------------
+
+
+def test_resolve_week_prefers_the_explicit_week_over_state(monkeypatch):
+    import ffhelper.cli as cli
+
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    week, season_str, notes, state_week = cli._resolve_week(7)
+    assert (week, season_str) == (7, "2026")
+    assert notes == []
+    # The RAW state week survives alongside the resolved one: `_lineup`'s
+    # snapshot needs to know whether the week asked for is the current one, and
+    # a second load_nfl_state() call is two fetches that can disagree.
+    assert state_week == 3
+
+
+def test_resolve_week_returns_none_when_state_is_dead_and_no_week_given(monkeypatch):
+    import ffhelper.cli as cli
+
+    def dead():
+        raise RuntimeError("connection refused")
+    monkeypatch.setattr(cli, "load_nfl_state", dead)
+    week, season_str, notes, state_week = cli._resolve_week(None)
+    # None, not a guessed 1 -- guessing a week is the fabrication the design forbids.
+    assert week is None
+    assert season_str == cli.SEASON
+    assert state_week is None
+    assert any("state/nfl" in n for n in notes)
+
+
+def test_resolve_week_treats_sleepers_offseason_zero_as_no_week(monkeypatch):
+    # Sleeper serves "week": 0 in the offseason. `_lineup` guards on `not week`
+    # and `_preflight` used to guard on `week is None`; the two disagreed and one
+    # of them fetched projections for week 0.
+    import ffhelper.cli as cli
+
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 0, "season": "2026"})
+    week, _, _, _ = cli._resolve_week(None)
+    assert week is None
+
+
+def _fake_players():
+    # Real ids and real names: a fixture of round numbers and "Player 1" is the
+    # documented cause of seven defects in this project.
+    return {
+        "4034": Player(sleeper_id="4034", name="Josh Allen", position="QB", team="BUF"),
+        "8151": Player(sleeper_id="8151", name="Jahmyr Gibbs", position="RB", team="DET"),
+    }
+
+
+def test_resolve_my_roster_prefers_the_config_override_and_names_the_owner(monkeypatch):
+    import ffhelper.cli as cli
+
+    rosters = [
+        {"roster_id": 3, "owner_id": "u1", "players": ["4034", "8151"],
+         "settings": {"waiver_position": 8}},
+        {"roster_id": 5, "owner_id": "u2", "players": ["30"],
+         "settings": {"waiver_position": 1}},
+    ]
+    monkeypatch.setattr(cli, "load_league_rosters", lambda lid: rosters)
+    monkeypatch.setattr(cli, "load_league_users",
+                        lambda lid: [{"user_id": "u1", "display_name": "jaydenpg"}])
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: 0)
+    league = League(name="t", platform="sleeper", league_id="1", roster_id=3)
+    roster, owner, notes, raw, rid = cli._resolve_my_roster(
+        league, _lineup_settings(), _fake_players())
+    assert sorted(p.sleeper_id for p in roster) == ["4034", "8151"]
+    assert owner == "jaydenpg"
+    assert any("override" in n for n in notes)
+    # The raw payload must survive: `waivers` reads waiver_position out of it,
+    # and the roster_id it was read under comes back rather than being
+    # re-derived from the player ids by a second, disagreeable rule.
+    assert raw is rosters
+    assert rid == 3
+
+
+def test_resolve_my_roster_degrades_to_empty_when_rosters_are_unreachable(monkeypatch):
+    import ffhelper.cli as cli
+
+    def dead(lid):
+        raise RuntimeError("connection refused")
+    monkeypatch.setattr(cli, "load_league_rosters", dead)
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+    league = League(name="t", platform="sleeper", league_id="1", roster_id=3)
+    roster, owner, notes, raw, _rid = cli._resolve_my_roster(
+        league, _lineup_settings(), _fake_players())
+    assert roster == [] and raw == []
+    assert any("rosters endpoint" in n for n in notes)
+
+
+# --- Phase 4c: the waiver screen --------------------------------------------
+
+
+def _target(pid, name, pos, gain, drop_name, weeks):
+    from ffhelper import season
+
+    return season.WaiverTarget(
+        player=Player(sleeper_id=pid, name=name, position=pos, team="X"),
+        gain=gain,
+        drop=Player(sleeper_id="7591", name=drop_name, position="RB", team="PIT"),
+        weeks_started=weeks,
+    )
+
+
+def test_render_waivers_says_so_plainly_when_both_boards_are_empty():
+    import ffhelper.cli as cli
+
+    out = cli.render_waivers([], [], week=1, last_week=18, league_name="sleeper-main",
+                             owner="jaydenpg", position=8, teams=12, trending={},
+                             notes=[], weeks_scored=18)
+    assert "nothing on the wire" in out.lower()
+    # An empty board is a RESULT. It must never render as a blank section that
+    # reads like a failed fetch.
+    assert out.strip() != ""
+    assert "THIS WEEK" not in out
+
+
+def test_render_waivers_names_the_drop_and_the_caveat():
+    import ffhelper.cli as cli
+
+    ros = [_target("6790", "Dalton Schultz", "TE", 31.7, "Kenny Gainwell", 14)]
+    out = cli.render_waivers([], ros, week=5, last_week=18, league_name="sleeper-main",
+                             owner=None, position=8, teams=12, trending={}, notes=[],
+                             weeks_scored=14)
+    assert "Dalton Schultz" in out
+    assert "drop Kenny Gainwell" in out
+    assert "PROJECTION ONLY" in out
+    # The week count is what makes the total readable -- a bye is an absent row.
+    assert "14 of 14" in out
+
+
+def test_render_waivers_states_what_a_claim_costs_you():
+    import ffhelper.cli as cli
+
+    out = cli.render_waivers([], [], week=5, last_week=18, league_name="sleeper-main",
+                             owner=None, position=8, teams=12, trending={}, notes=[],
+                             weeks_scored=14)
+    assert "priority 8 of 12" in out
+    assert "12th" in out
+
+
+def test_render_waivers_omits_the_priority_line_when_the_position_is_unknown():
+    import ffhelper.cli as cli
+
+    out = cli.render_waivers([], [], week=5, last_week=18, league_name="y",
+                             owner=None, position=None, teams=0, trending={},
+                             notes=[], weeks_scored=14)
+    assert "priority" not in out.lower()
+
+
+def test_render_waivers_labels_trending_as_national():
+    import ffhelper.cli as cli
+
+    ros = [_target("6790", "Dalton Schultz", "TE", 31.7, "Kenny Gainwell", 14)]
+    out = cli.render_waivers([], ros, week=5, last_week=18, league_name="s", owner=None,
+                             position=8, teams=12, trending={"6790": 279845}, notes=[],
+                             weeks_scored=14)
+    # National counts say nothing about your eleven opponents. Printing one
+    # without that label invites exactly the inference it cannot support.
+    assert "NOT your league" in out or "not a signal about your league" in out
+
+
+# --- Phase 4c: the waivers command ------------------------------------------
+
+
+def _sleeper_league():
+    # roster_id from config, so the test never needs the draft feed to derive it.
+    return League(name="sleeper-main", platform="sleeper", league_id="L1", roster_id=3)
+
+
+def _stub_waiver_inputs(monkeypatch, fail_weeks=()):
+    """Every loader `_waivers` touches. The `_no_network` conftest fixture
+    catches any that is missed, by raising rather than by quietly fetching."""
+    import ffhelper.cli as cli
+
+    players = {
+        "10": Player("10", "Rostered QB", "QB", "BUF"),
+        "20": Player("20", "Free Agent QB", "QB", "KC"),
+        # Better than anything free, and OWNED by another team. He is the reason
+        # the pool subtracts every roster rather than just mine: offering him
+        # would be advice nobody can act on.
+        "30": Player("30", "Other Teams QB", "QB", "PHI"),
+    }
+
+    def weekly(season, week):
+        if week in fail_weeks:
+            raise RuntimeError("connection refused")
+        return [{"player_id": "10", "stats": {"pass_td": 1}},
+                {"player_id": "20", "stats": {"pass_td": 5}},
+                {"player_id": "30", "stats": {"pass_td": 9}}]
+
+    monkeypatch.setattr(cli, "resolve_settings",
+                        lambda lg: _lineup_settings(roster_slots={"QB": 1}))
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 1, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", weekly)
+    monkeypatch.setattr(cli, "load_league_rosters", lambda lid: [
+        {"roster_id": 3, "owner_id": "u1", "players": ["10"],
+         "settings": {"waiver_position": 8}},
+        {"roster_id": 5, "owner_id": "u2", "players": ["30"],
+         "settings": {"waiver_position": 1}},
+    ])
+    monkeypatch.setattr(cli, "load_league_users",
+                        lambda lid: [{"user_id": "u1", "display_name": "jaydenpg"}])
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+    monkeypatch.setattr(cli, "load_trending", lambda kind: {})
+
+
+def test_waivers_refuses_on_yahoo_because_there_is_no_pool(capsys):
+    import ffhelper.cli as cli
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="723573")
+    rc = cli._waivers(league, Tunables(), week=5)
+    out = capsys.readouterr().out
+    assert rc == 1
+    # Labelled, not silent, and it says WHY -- the pool needs every roster.
+    assert "yahoo" in out.lower() and "every team's roster" in out.lower()
+
+
+def test_waivers_never_offers_a_player_another_team_owns(monkeypatch, capsys):
+    # The pool is every player minus the union of EVERY roster. Subtracting only
+    # mine would put the best quarterback in the league at the top of the board,
+    # where he is both the most attractive row and the one thing that cannot be
+    # done.
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    rc = cli._waivers(_sleeper_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Free Agent QB" in out
+    assert "Other Teams QB" not in out
+
+
+def test_waivers_survives_a_dead_trending_endpoint(monkeypatch, capsys):
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+
+    def dead(*a, **k):
+        raise RuntimeError("connection refused")
+    monkeypatch.setattr(cli, "load_trending", dead)
+    rc = cli._waivers(_sleeper_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+    assert rc == 0                                  # the board is the product
+    assert "trending" in out.lower()                # says the column is gone
+    assert "NATIONALLY" not in out                  # and prints no count
+
+
+def test_waivers_drops_a_week_whose_projections_fail_and_says_how_many_scored(
+        monkeypatch, capsys):
+    # A failed week must not silently shrink the horizon -- the total would look
+    # smaller for a reason nothing on screen explains.
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch, fail_weeks={3})
+    rc = cli._waivers(_sleeper_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "1 week(s) of projections" in out and "could not be scored" in out
+    assert "covers 17 weeks, not 18" in out
+
+
+def test_main_dispatches_waivers_with_the_week_and_limit_it_was_given(monkeypatch):
+    seen = {}
+
+    def fake(lg, tun, week, limit):
+        seen["args"] = (lg.name, week, limit)
+        return 7
+    league = _sleeper_league()
+    monkeypatch.setattr("ffhelper.cli.load_config", lambda path: ([league], Tunables()))
+    monkeypatch.setattr("ffhelper.cli._waivers", fake)
+    rc = main(["waivers", "--league", "sleeper-main", "--week", "4", "--limit", "3"])
+    assert rc == 7
+    assert seen["args"] == ("sleeper-main", 4, 3)
