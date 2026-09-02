@@ -278,6 +278,13 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          'notes.append(f"could not reach Sleeper\'s league rosters endpoint "\n'
          '                         f"({exc}) -- showing an empty roster")',
          "pass"),
+        ("lineup's users-fetch guard no longer catches, so a display name kills the lineup",
+         "            except Exception as exc:                      "
+         "# noqa: BLE001 - degrade, never fabricate\n"
+         "                # The last unguarded fetch in this function",
+         "            except ZeroDivisionError as exc:              "
+         "# noqa: BLE001 - degrade, never fabricate\n"
+         "                # The last unguarded fetch in this function"),
     ],
     "feeds.py": [
         ("picks poll drops the cache-buster, so Cloudflare serves a stale board",

@@ -2641,3 +2641,47 @@ def test_lineup_survives_a_dead_rosters_endpoint_and_says_so(monkeypatch, capsys
     assert result == 0
     assert "could not reach Sleeper's league rosters endpoint" in out
     assert "simulated: rosters endpoint down, no cache" in out
+
+
+# --- Final review round 3: `load_league_users` was the LAST unguarded network
+# call in _lineup. Rounds 1 and 2 guarded /state/nfl, the draft feed and
+# /league/{id}/rosters; the users fetch sits on the same happy path, behind
+# the same `fetch_json` whose stale_ok=True only helps when a cache file
+# already exists. It supplies `owner`, which is a DISPLAY field -- crashing a
+# whole lineup for a cosmetic name is the worst trade in the function. ---
+
+
+def test_lineup_survives_a_dead_users_endpoint_and_still_prints_the_lineup(monkeypatch, capsys):
+    """Bare, `load_league_users` raising crashes _lineup after the roster and
+    the projections have both been fetched successfully -- the lineup is fully
+    computed and then thrown away over a display name. It must degrade to an
+    unnamed owner, exactly as the rosters and nfl-state guards degrade."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="sleeper-main", platform="sleeper", league_id="L1",
+                    draft_slot=5, roster_id=3)
+    settings = _lineup_settings()
+    players = {"10": Player("10", "A Real Starter", "QB", "BUF")}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections",
+                        lambda season, week: [{"player_id": "10", "stats": {"pass_td": 2}}])
+    monkeypatch.setattr(cli, "load_league_rosters", lambda league_id: [
+        {"roster_id": 3, "owner_id": "u1", "players": ["10"]}])
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+
+    def boom(league_id):
+        raise ConnectionError("simulated: users endpoint down, no cache")
+    monkeypatch.setattr(cli, "load_league_users", boom)
+
+    result = cli._lineup(league, Tunables(), week=3)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "A Real Starter" in out          # the lineup survived the failure
+    assert "could not reach Sleeper's league users endpoint" in out
+    # The override note still fires, and still refuses to claim an owner it
+    # could not look up -- a wrong-but-valid override must stay visible.
+    assert "an unrecognised owner" in out

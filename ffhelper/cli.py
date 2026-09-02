@@ -1223,7 +1223,20 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
             if missing:
                 notes.append(f"{len(missing)} rostered players are not in the player pool: "
                              f"{', '.join(missing)}")
-            users = {u["user_id"]: u.get("display_name") for u in load_league_users(league.league_id)}
+            try:
+                users = {u["user_id"]: u.get("display_name")
+                         for u in load_league_users(league.league_id)}
+            except Exception as exc:                      # noqa: BLE001 - degrade, never fabricate
+                # The last unguarded fetch in this function, and the cheapest
+                # one to lose: `owner` is a display name. Rounds 1 and 2
+                # guarded /state/nfl, the draft feed and the rosters endpoint
+                # -- this sits on the same happy path behind the same
+                # stale_ok=True, which only helps once a cache file exists.
+                # Crashing a fully-computed lineup over a name is the worst
+                # trade available here.
+                users = {}
+                notes.append(f"could not reach Sleeper's league users endpoint "
+                             f"({exc}) -- the roster owner's name is unavailable")
             owner = next((users.get(r.get("owner_id")) for r in rosters
                           if r.get("roster_id") == rid), None)
             if used_override:
