@@ -6,6 +6,7 @@ fetch, the design is wrong -- put the loader in `data.py`.
 """
 from collections import defaultdict
 from dataclasses import dataclass, replace
+from math import sqrt
 from statistics import fmean
 
 from ffhelper.data import Player, score_stats
@@ -173,6 +174,48 @@ def roster_upgrade(
                 for _, p in optimal_lineup(with_weekly_points(kept, wk), roster_slots))
     )
     return gain, drop, weeks_started
+
+
+@dataclass(frozen=True)
+class WaiverTarget:
+    """One free agent worth taking, and what he costs."""
+    player: Player
+    gain: float
+    drop: Player
+    weeks_started: int
+
+
+def waiver_targets(
+    roster: list[Player], pool: list[Player], roster_slots: dict[str, int],
+    weekly_by_week: dict[int, dict[str, float]], close_call_points: float,
+    limit: int = 10,
+) -> list[WaiverTarget]:
+    """Free agents whose upgrade clears the noise on this horizon, best first.
+
+    THE FLOOR IS `close_call_points * sqrt(weeks)`, and the sqrt is the whole
+    point. `close_call_points` is calibrated to a SINGLE week's projection error
+    (TE weekly MAE 3.23, measured on 2025). The error on a fourteen-week total
+    is not fourteen times that -- independent weekly errors partially cancel, so
+    the standard error of a sum grows as sqrt(n). A flat per-week bar is roughly
+    four times too strict and silences real upgrades.
+
+    On a one-week horizon sqrt(1) = 1, so this same function serves the "this
+    week" section with no branch and no second threshold.
+
+    AN EMPTY LIST IS A RESULT, NOT A FAILURE. On a healthy 15-man roster the
+    best thing on the wire is 0.46 points a week; ranking that would be the
+    over-reaction the matchup adjustment already died on. The caller says so in
+    a sentence.
+    """
+    floor = close_call_points * sqrt(len(weekly_by_week))
+    out: list[WaiverTarget] = []
+    for candidate in pool:
+        gain, drop, weeks_started = roster_upgrade(
+            roster, candidate, roster_slots, weekly_by_week)
+        if gain > floor:
+            out.append(WaiverTarget(candidate, gain, drop, weeks_started))
+    out.sort(key=lambda t: (-t.gain, t.player.sleeper_id))
+    return out[:limit]
 
 
 def opponents(projections: list[dict]) -> dict[str, str]:

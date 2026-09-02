@@ -670,7 +670,7 @@ def test_waiver_position_is_none_when_the_payload_carries_none():
 # --- Phase 4c: the add-and-drop primitive -----------------------------------
 
 
-def _slots():
+def _waiver_slots():
     return {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1}
 
 
@@ -701,7 +701,7 @@ def test_roster_upgrade_pays_for_the_add_with_a_drop():
     roster = _roster_for_upgrade()
     cand = Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU")
     weekly = {1: {**_WK, "6790": 12.0}}
-    gain, drop, weeks_started = season.roster_upgrade(roster, cand, _slots(), weekly)
+    gain, drop, weeks_started = season.roster_upgrade(roster, cand, _waiver_slots(), weekly)
     # Schultz (12.0) starts at TE over Ferguson (9.7): +2.3. The drop must be a
     # player who was not starting, or the gain would be smaller.
     assert gain == pytest.approx(2.3)
@@ -715,7 +715,7 @@ def test_roster_upgrade_is_negative_when_nobody_can_be_spared():
     roster = _roster_for_upgrade()
     cand = Player(sleeper_id="0001", name="Practice Squad Guy", position="WR", team="LV")
     weekly = {1: {**_WK, "0001": 0.5}}
-    gain, _, weeks_started = season.roster_upgrade(roster, cand, _slots(), weekly)
+    gain, _, weeks_started = season.roster_upgrade(roster, cand, _waiver_slots(), weekly)
     assert gain <= 0.0
     assert weeks_started == 0
 
@@ -725,8 +725,8 @@ def test_roster_upgrade_sums_the_whole_horizon_not_just_the_first_week():
     cand = Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU")
     one = {1: {**_WK, "6790": 12.0}}
     three = {1: {**_WK, "6790": 12.0}, 2: {**_WK, "6790": 12.0}, 3: {**_WK, "6790": 12.0}}
-    g1, _, s1 = season.roster_upgrade(roster, cand, _slots(), one)
-    g3, _, s3 = season.roster_upgrade(roster, cand, _slots(), three)
+    g1, _, s1 = season.roster_upgrade(roster, cand, _waiver_slots(), one)
+    g3, _, s3 = season.roster_upgrade(roster, cand, _waiver_slots(), three)
     assert g3 == pytest.approx(g1 * 3)
     assert (s1, s3) == (1, 3)
 
@@ -734,11 +734,17 @@ def test_roster_upgrade_sums_the_whole_horizon_not_just_the_first_week():
 def test_roster_upgrade_counts_only_the_weeks_the_candidate_actually_starts():
     # A bye is an ABSENT ROW, not a zero -- verified against the live endpoint
     # (Gibbs has no week-6 row). A candidate missing from a week must not be
-    # counted as having started it.
+    # counted as having started it, and the lineup check ALONE does not say so:
+    # on a week with no row his proj_pts is the 0.0 SORT value, and if he is the
+    # only player left at his position he fills the slot anyway. Here the drop
+    # is the Broncos, so the added defense is the only DEF on the roster, and
+    # week 2 -- where neither defense has a row -- must still count as no start.
     roster = _roster_for_upgrade()
-    cand = Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU")
-    weekly = {1: {**_WK, "6790": 12.0}, 2: dict(_WK)}     # week 2: no Schultz row
-    _, _, weeks_started = season.roster_upgrade(roster, cand, _slots(), weekly)
+    cand = Player(sleeper_id="NE", name="New England Patriots", position="DEF", team="NE")
+    week2 = {k: v for k, v in _WK.items() if k != "DEN"}
+    weekly = {1: {**_WK, "NE": 9.0}, 2: week2}
+    _, drop, weeks_started = season.roster_upgrade(roster, cand, _waiver_slots(), weekly)
+    assert drop.sleeper_id == "DEN"
     assert weeks_started == 1
 
 
@@ -752,6 +758,66 @@ def test_roster_upgrade_breaks_a_drop_tie_on_the_droppeds_own_points():
     roster = _roster_for_upgrade()
     cand = Player(sleeper_id="NE", name="New England Patriots", position="DEF", team="NE")
     weekly = {1: {**_WK, "NE": 9.0}}
-    gain, drop, _ = season.roster_upgrade(roster, cand, _slots(), weekly)
+    gain, drop, _ = season.roster_upgrade(roster, cand, _waiver_slots(), weekly)
     assert gain == pytest.approx(1.6)
     assert drop.sleeper_id == "DEN"
+
+
+# --- Phase 4c: the ranking and the significance floor ------------------------
+
+
+def test_waiver_targets_ranks_by_gain_and_respects_the_limit():
+    roster = _roster_for_upgrade()
+    pool = [
+        Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU"),
+        Player(sleeper_id="8110", name="Chig Okonkwo", position="TE", team="TEN"),
+    ]
+    weekly = {1: {**_WK, "6790": 22.0, "8110": 18.0}}
+    got = season.waiver_targets(roster, pool, _waiver_slots(), weekly,
+                                close_call_points=3.0, limit=1)
+    assert [t.player.sleeper_id for t in got] == ["6790"]
+    assert got[0].gain == pytest.approx(12.3)
+
+
+def test_waiver_targets_floor_is_close_call_points_on_a_one_week_horizon():
+    roster = _roster_for_upgrade()
+    # Ferguson starts TE at 9.7; an 11.7 TE gains exactly 2.0, under the 3.0 bar.
+    pool = [Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU")]
+    weekly = {1: {**_WK, "6790": 11.7}}
+    assert season.waiver_targets(roster, pool, _waiver_slots(), weekly,
+                                 close_call_points=3.0) == []
+    # 13.7 gains 4.0 and clears it.
+    weekly = {1: {**_WK, "6790": 13.7}}
+    assert len(season.waiver_targets(roster, pool, _waiver_slots(), weekly,
+                                     close_call_points=3.0)) == 1
+
+
+def test_waiver_targets_floor_scales_as_sqrt_of_the_horizon():
+    # THE POINT OF THE SQRT. close_call_points is calibrated to ONE week's
+    # error; independent weekly errors partially cancel, so the bar on a
+    # 9-week total is 3.0*3 = 9.0, not 3.0*9 = 27.0. A flat per-week bar is
+    # ~4x too strict and silences real upgrades.
+    roster = _roster_for_upgrade()
+    pool = [Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU")]
+    # +1.3 a week over 9 weeks = 11.7 total. Bar is 9.0, so it clears.
+    weekly = {w: {**_WK, "6790": 11.0} for w in range(1, 10)}
+    got = season.waiver_targets(roster, pool, _waiver_slots(), weekly, close_call_points=3.0)
+    assert len(got) == 1 and got[0].weeks_started == 9
+    # A flat 3.0/week bar would have demanded 27.0 and printed nothing.
+    assert got[0].gain < 27.0
+    # And the bar really does GROW with the horizon: +0.5 a week is 4.5 over
+    # nine weeks -- above a flat 3.0, below the 9.0 the sqrt demands -- so it is
+    # silenced. Without the sqrt this noise-level target would be listed.
+    quiet = {w: {**_WK, "6790": 10.2} for w in range(1, 10)}
+    assert season.waiver_targets(roster, pool, _waiver_slots(), quiet,
+                                 close_call_points=3.0) == []
+
+
+def test_waiver_targets_returns_empty_when_nothing_clears_and_that_is_a_result():
+    # The measured healthy-roster case: the best thing available is 0.46 pts a
+    # week. An empty board is the honest answer and the caller prints it as one.
+    roster = _roster_for_upgrade()
+    pool = [Player(sleeper_id="0001", name="Deep Bench Guy", position="WR", team="LV")]
+    weekly = {w: {**_WK, "0001": 1.0} for w in range(1, 19)}
+    assert season.waiver_targets(roster, pool, _waiver_slots(), weekly,
+                                 close_call_points=3.0) == []
