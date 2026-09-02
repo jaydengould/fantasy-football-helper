@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from statistics import fmean
 
 from ffhelper.data import Player, score_stats
-from ffhelper.value import FLEX_ELIGIBLE, optimal_lineup
+from ffhelper.value import FLEX_ELIGIBLE, lineup_value, optimal_lineup
 
 
 def roster_id_for_slot(picks, draft_slot: int) -> int | None:
@@ -119,6 +119,60 @@ def with_weekly_points(roster: list[Player], weekly: dict[str, float]) -> list[P
     that to start_sit's `projected_ids` to distinguish genuine 0.0 from absent.
     """
     return [replace(p, proj_pts=weekly.get(p.sleeper_id, 0.0)) for p in roster]
+
+
+def horizon_total(
+    roster: list[Player], roster_slots: dict[str, int],
+    weekly_by_week: dict[int, dict[str, float]],
+) -> float:
+    """Points the optimal lineup scores across every week in the horizon."""
+    return sum(lineup_value(with_weekly_points(roster, wk), roster_slots)
+               for wk in weekly_by_week.values())
+
+
+def roster_upgrade(
+    roster: list[Player], candidate: Player, roster_slots: dict[str, int],
+    weekly_by_week: dict[int, dict[str, float]], drop_tie_points: float = 0.5,
+) -> tuple[float, Player, int]:
+    """(gain, drop, weeks_started) for adding `candidate` at the cost of one cut.
+
+    The roster is full, so an add IS an add-and-drop. An add-only number
+    overstates every candidate by the value of whoever you would have cut, and
+    then no two candidates are comparable.
+
+    THE DROP IS CHOSEN ON THE WHOLE HORIZON, never one week. A one-week horizon
+    happily offers to cut your backup quarterback for 1.2 points of streaming
+    defense -- right arithmetic, ruinous advice.
+
+    Ties are real and must not be broken by list order: in the real week-1 run
+    five drops tied EXACTLY, and naming an arbitrary one of them is fabrication.
+    Among drops within `drop_tie_points` of the best, the one with the fewest
+    projected points of his own is taken, and the caller prints that rule.
+    """
+    base = horizon_total(roster, roster_slots, weekly_by_week)
+    own = {p.sleeper_id: sum(wk.get(p.sleeper_id, 0.0) for wk in weekly_by_week.values())
+           for p in roster}
+
+    scored: list[tuple[float, Player]] = []
+    for i, dropped in enumerate(roster):
+        trial = [*roster[:i], *roster[i + 1:], candidate]
+        scored.append((horizon_total(trial, roster_slots, weekly_by_week) - base, dropped))
+
+    best_gain = max(g for g, _ in scored)
+    tied = [(own[p.sleeper_id], g, p) for g, p in scored
+            if g >= best_gain - drop_tie_points]
+    # The id is the final tie-break so the answer is deterministic across runs:
+    # a drop name that changes when nothing changed is a board nobody can trust.
+    _, gain, drop = min(tied, key=lambda t: (t[0], t[2].sleeper_id))
+
+    kept = [p for p in roster if p.sleeper_id != drop.sleeper_id] + [candidate]
+    weeks_started = sum(
+        1 for wk in weekly_by_week.values()
+        if candidate.sleeper_id in wk
+        and any(p is not None and p.sleeper_id == candidate.sleeper_id
+                for _, p in optimal_lineup(with_weekly_points(kept, wk), roster_slots))
+    )
+    return gain, drop, weeks_started
 
 
 def opponents(projections: list[dict]) -> dict[str, str]:

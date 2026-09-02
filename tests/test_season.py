@@ -665,3 +665,93 @@ def test_waiver_position_is_none_when_the_payload_carries_none():
     # Degrade, never fabricate: a missing position must not become 1.
     rosters = [{"roster_id": 3, "settings": {}}]
     assert season.waiver_position(rosters, 3) == (None, 1)
+
+
+# --- Phase 4c: the add-and-drop primitive -----------------------------------
+
+
+def _slots():
+    return {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1}
+
+
+def _roster_for_upgrade():
+    # Shaped like the real sleeper-main roster: one TE, a backup QB, RB depth.
+    return [
+        Player(sleeper_id="4034", name="Josh Allen", position="QB", team="BUF"),
+        Player(sleeper_id="4892", name="Kyler Murray", position="QB", team="ARI"),
+        Player(sleeper_id="4988", name="D'Andre Swift", position="RB", team="CHI"),
+        Player(sleeper_id="9509", name="TreVeyon Henderson", position="RB", team="NE"),
+        Player(sleeper_id="7591", name="Kenny Gainwell", position="RB", team="PIT"),
+        Player(sleeper_id="9226", name="Jaxon Smith-Njigba", position="WR", team="SEA"),
+        Player(sleeper_id="6794", name="Chris Olave", position="WR", team="NO"),
+        Player(sleeper_id="8130", name="Christian Watson", position="WR", team="GB"),
+        Player(sleeper_id="8144", name="Jake Ferguson", position="TE", team="DAL"),
+        Player(sleeper_id="7839", name="Jason Myers", position="K", team="SEA"),
+        Player(sleeper_id="DEN", name="Denver Broncos", position="DEF", team="DEN"),
+    ]
+
+
+_WK = {
+    "4034": 24.4, "4892": 20.1, "4988": 13.5, "9509": 10.0, "7591": 9.5,
+    "9226": 19.7, "6794": 16.2, "8130": 13.7, "8144": 9.7, "7839": 7.8, "DEN": 7.4,
+}
+
+
+def test_roster_upgrade_pays_for_the_add_with_a_drop():
+    roster = _roster_for_upgrade()
+    cand = Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU")
+    weekly = {1: {**_WK, "6790": 12.0}}
+    gain, drop, weeks_started = season.roster_upgrade(roster, cand, _slots(), weekly)
+    # Schultz (12.0) starts at TE over Ferguson (9.7): +2.3. The drop must be a
+    # player who was not starting, or the gain would be smaller.
+    assert gain == pytest.approx(2.3)
+    assert drop.sleeper_id == "7591"          # Gainwell: RB3, lowest own points
+    assert weeks_started == 1
+
+
+def test_roster_upgrade_is_negative_when_nobody_can_be_spared():
+    # A candidate worse than everyone still forces a drop, so the honest answer
+    # is <= 0. Reporting 0.0 would say "free", which it is not.
+    roster = _roster_for_upgrade()
+    cand = Player(sleeper_id="0001", name="Practice Squad Guy", position="WR", team="LV")
+    weekly = {1: {**_WK, "0001": 0.5}}
+    gain, _, weeks_started = season.roster_upgrade(roster, cand, _slots(), weekly)
+    assert gain <= 0.0
+    assert weeks_started == 0
+
+
+def test_roster_upgrade_sums_the_whole_horizon_not_just_the_first_week():
+    roster = _roster_for_upgrade()
+    cand = Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU")
+    one = {1: {**_WK, "6790": 12.0}}
+    three = {1: {**_WK, "6790": 12.0}, 2: {**_WK, "6790": 12.0}, 3: {**_WK, "6790": 12.0}}
+    g1, _, s1 = season.roster_upgrade(roster, cand, _slots(), one)
+    g3, _, s3 = season.roster_upgrade(roster, cand, _slots(), three)
+    assert g3 == pytest.approx(g1 * 3)
+    assert (s1, s3) == (1, 3)
+
+
+def test_roster_upgrade_counts_only_the_weeks_the_candidate_actually_starts():
+    # A bye is an ABSENT ROW, not a zero -- verified against the live endpoint
+    # (Gibbs has no week-6 row). A candidate missing from a week must not be
+    # counted as having started it.
+    roster = _roster_for_upgrade()
+    cand = Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU")
+    weekly = {1: {**_WK, "6790": 12.0}, 2: dict(_WK)}     # week 2: no Schultz row
+    _, _, weeks_started = season.roster_upgrade(roster, cand, _slots(), weekly)
+    assert weeks_started == 1
+
+
+def test_roster_upgrade_breaks_a_drop_tie_on_the_droppeds_own_points():
+    # Three drops tie EXACTLY here at +1.6 -- Murray, Gainwell and the Broncos --
+    # because upgrading DEF gains the same 1.6 whoever is cut, as long as they
+    # were not starting or are the defense being replaced. Naming an arbitrary
+    # member of a tie is fabrication, and list order would name Murray. The rule
+    # takes the lowest own points, which is the Broncos (7.4) -- and swapping one
+    # defense for a better one is also the move a human would make.
+    roster = _roster_for_upgrade()
+    cand = Player(sleeper_id="NE", name="New England Patriots", position="DEF", team="NE")
+    weekly = {1: {**_WK, "NE": 9.0}}
+    gain, drop, _ = season.roster_upgrade(roster, cand, _slots(), weekly)
+    assert gain == pytest.approx(1.6)
+    assert drop.sleeper_id == "DEN"
