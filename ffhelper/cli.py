@@ -953,6 +953,19 @@ def _preflight(league: League, tunables: Tunables) -> int:
     else:
         print(f"draft_slot      : {league.draft_slot}")
 
+    state = load_nfl_state()
+    print(f"nfl week       : {state.get('week')} ({state.get('season')} {state.get('season_type')})")
+    if league.platform == "sleeper":
+        rosters = load_league_rosters(league.league_id)
+        print(f"rosters        : {len(rosters)} teams")
+    else:
+        path = ROSTER_DIR / f"{league.name}.txt"
+        roster, problems = read_roster_file(path, players)
+        age = roster_file_age_days(path)
+        print(f"roster file    : {path} -- {len(roster)} players, "
+              f"{len(problems)} unresolved, "
+              f"{'missing' if age is None else f'{age}d old'}")
+
     if settings.draft_id:
         try:
             n = len(SleeperFeed(settings.draft_id).get_picks())

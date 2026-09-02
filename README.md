@@ -11,8 +11,9 @@ running backs score higher.
 ## Status
 
 Draft mode is complete and has been exercised end to end against a full 180-pick
-live draft, which is where most of its bugs came from. Season mode and a web UI
-are planned but not built.
+live draft, which is where most of its bugs came from. Season mode's weekly
+lineup command works end to end; matchup adjustment, waivers, and the trade
+finder are not built yet.
 
 | Capability | State |
 | --- | --- |
@@ -25,7 +26,8 @@ are planned but not built.
 | Hand-typed picks survive a crash or restart | working |
 | Yahoo API feed | blocked on Yahoo developer approval |
 | Web board (`python -m ffhelper.app`) | working |
-| Season mode, trade finder | planned |
+| Weekly start/sit lineup (`lineup`) | working |
+| Matchup adjustment, waivers, trade finder | planned |
 
 ## Requirements
 
@@ -255,6 +257,36 @@ dropped from your roster. Clear the stale claim with '-<name>'.
 
 He stays off the board — he really was drafted, just not by you.
 
+### Weekly lineup (season mode)
+
+```bash
+.venv/bin/python -m ffhelper.cli lineup --league my-sleeper-league
+```
+
+One-shot — no loop, no polling. Prints your optimal starting lineup for the
+current NFL week, scored against your league's real settings, then your bench.
+A player with no projection this week is shown separately rather than scored
+as zero. Add `--week 4` to check a different week.
+
+```
+sleeper-main  (jaydenpg)   week 1
+
+STARTERS
+  QB    Josh Allen               QB  BUF   24.4
+  RB    D'Andre Swift            RB  CHI   13.5
+  RB    TreVeyon Henderson       RB  NE    10.0  [Questionable]
+  ...
+        projected total                   134.5
+
+BENCH
+        Kyler Murray             QB  MIN   20.1
+        ...
+```
+
+For a league with no API (Yahoo, ESPN, ...), write one player name per line
+into `.roster/<league>.txt` and the lineup is built from that file instead of
+a live roster. `preflight` reports the file's path, player count, and age.
+
 ## Reading the board
 
 A real board, 12-team full PPR, on the clock at pick 45, holding
@@ -424,7 +456,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 322 tests, no network, runs in ~0.4s
+.venv/bin/pytest          # 362 tests, no network, runs in ~0.5s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

@@ -514,6 +514,9 @@ def test_preflight_reports_ok_with_reachable_feed(monkeypatch, capsys):
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_loop_players(), _loop_settings()))
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    monkeypatch.setattr("ffhelper.cli.load_nfl_state",
+                         lambda: {"week": 1, "season": "2026", "season_type": "regular"})
+    monkeypatch.setattr("ffhelper.cli.load_league_rosters", lambda league_id: [])
 
     result = _preflight(_loop_league(draft_slot=3), Tunables())
     out = capsys.readouterr().out
@@ -529,6 +532,9 @@ def test_preflight_rejects_a_draft_slot_outside_the_league_size(monkeypatch, cap
     monkeypatch.setattr("ffhelper.cli.load_board_inputs",
                          lambda league, tunables: (_loop_players(), _loop_settings()))
     monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    monkeypatch.setattr("ffhelper.cli.load_nfl_state",
+                         lambda: {"week": 1, "season": "2026", "season_type": "regular"})
+    monkeypatch.setattr("ffhelper.cli.load_league_rosters", lambda league_id: [])
 
     result = _preflight(_loop_league(draft_slot=13), Tunables())   # _loop_settings is 10 teams
     out = capsys.readouterr().out
@@ -536,6 +542,28 @@ def test_preflight_rejects_a_draft_slot_outside_the_league_size(monkeypatch, cap
     assert result == 1
     assert "OUT OF RANGE" in out
     assert "PREFLIGHT INCOMPLETE" in out
+
+
+def test_preflight_reports_the_week_and_the_roster(monkeypatch, capsys):
+    """preflight is the thing you run before trusting the output. Season mode
+    adds three new ways to be silently wrong -- the wrong week, no roster, and
+    someone else's roster -- so the week and the roster must both appear."""
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                        lambda league, tunables: (_loop_players(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    monkeypatch.setattr("ffhelper.cli.load_nfl_state",
+                        lambda: {"week": 3, "season": "2026", "season_type": "regular"})
+    monkeypatch.setattr("ffhelper.cli.load_league_rosters",
+                        lambda league_id: [{"roster_id": 1, "players": ["1"]},
+                                           {"roster_id": 2, "players": ["2"]}])
+
+    result = _preflight(_loop_league(draft_slot=3), Tunables())
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "nfl week       : 3" in out
+    assert "2 teams" in out
+    assert "PREFLIGHT OK" in out
 
 
 def test_standard_scoring_uses_sleepers_adp_std_not_adp_standard(monkeypatch):
