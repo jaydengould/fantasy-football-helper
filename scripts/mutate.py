@@ -378,6 +378,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("projected_ids distinction lost -- unprojected treated as projected",
          "unprojected_ids = set() if projected_ids is None else {p.sleeper_id for p in roster if p.sleeper_id not in projected_ids}",
          "unprojected_ids = set()"),
+        ("descriptive-only rows scored as zero instead of omitted",
+         "if not any(k in scoring for k in stats):\n            continue",
+         "pass"),
     ],
 
 }

@@ -153,3 +153,55 @@ def test_start_sit_same_bench_player_can_challenge_multiple_slots():
     # rb3 can challenge both rb1 (gap 3.0) and rb2 (gap 2.0) -- both within threshold
     challenger_ids = [c.challenger.sleeper_id for c in got.close_calls]
     assert challenger_ids.count("rb3") == 2
+
+
+def test_weekly_points_omits_rows_with_only_descriptive_stats():
+    """Real Sleeper rows for unprojected players carry descriptive fields like adp_dd_ppr
+    but NO scoring keys. These must be omitted, not scored as 0.0."""
+    rows = [
+        {"player_id": "jacobs", "stats": {"adp_dd_ppr": 1000.0}},  # real shape
+        {"player_id": "projected", "stats": {"rec": 5.0}},  # real projection
+    ]
+    scoring = {"rec": 1.0, "rec_yd": 0.1}
+    
+    result = season.weekly_points(rows, scoring)
+    
+    # jacobs absent (unprojected), projected included
+    assert "jacobs" not in result
+    assert result["projected"] == pytest.approx(5.0)
+
+
+def test_weekly_points_includes_genuine_zero_projection():
+    """A player with a real but zero stat line (e.g., 0 receptions) IS projected
+    and scores 0.0 -- this is NOT unprojected."""
+    rows = [
+        {"player_id": "zero_proj", "stats": {"rec": 0.0, "rec_yd": 0.0}},
+        {"player_id": "no_proj", "stats": {"adp_dd_ppr": 1000.0}},
+    ]
+    scoring = {"rec": 1.0, "rec_yd": 0.1}
+    
+    result = season.weekly_points(rows, scoring)
+    
+    # zero_proj IS included (genuine zero); no_proj is not
+    assert result["zero_proj"] == pytest.approx(0.0)
+    assert "no_proj" not in result
+
+
+def test_start_sit_unprojected_from_descriptive_only_rows():
+    """Players in rows with only descriptive stats land in unprojected and do not
+    appear in close calls."""
+    roster_raw = [mk("proj", "RB", 10.0), mk("jacobs", "RB", 15.0)]
+    # Only "proj" has scoring keys; jacobs row is descriptive-only
+    rows = [
+        {"player_id": "proj", "stats": {"rec": 5.0}},
+        {"player_id": "jacobs", "stats": {"adp_dd_ppr": 1000.0}},
+    ]
+    scoring = {"rec": 1.0}
+    weekly = season.weekly_points(rows, scoring)
+    roster = season.with_weekly_points(roster_raw, weekly)
+    
+    st = season.start_sit(roster, {"RB": 1}, close_call_points=3.0,
+                          projected_ids=set(weekly))
+    
+    assert [p.sleeper_id for p in st.unprojected] == ["jacobs"]
+    assert len(st.close_calls) == 0

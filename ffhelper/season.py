@@ -16,11 +16,17 @@ def weekly_points(projections: list[dict], scoring: dict[str, float]) -> dict[st
     A row with no stats is OMITTED rather than scored 0.0. Absent means "no
     projection this week" and the caller can say so; 0.0 is a claim that the
     player will score nothing, which is a number the source never supplied.
+
+    Real Sleeper rows for unprojected players carry only descriptive fields
+    (adp_dd_ppr, etc). A row counts as projected only if stats contains at least
+    one key that the league scores.
     """
     out: dict[str, float] = {}
     for row in projections:
         pid, stats = row.get("player_id"), row.get("stats")
         if not pid or not stats:
+            continue
+        if not any(k in scoring for k in stats):
             continue
         out[pid] = score_stats(stats, scoring)
     return out

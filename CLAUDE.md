@@ -448,12 +448,38 @@ this seat owns. Recorded as a coincidence of interest, **not** as evidence the
 analysis was right: nobody has scored either board against outcomes, and one
 pick is not a sample.
 
-**NOT RECORDED, because it is not known: how the tool actually behaved.** No
-defect list, no latency note, no "what the board got wrong" — the drafts were run
-without me and inventing a debrief would be the exact failure this file warns
-about. **Ask the user for it while it is still fresh** and write it here then.
-The Yahoo roster is likewise unknown and unreadable (no API); season mode needs
-it hand-entered.
+**THE DEBRIEF, given by the user 2026-09-01 and recorded with its uncertainty
+intact.** Two things, one good and one open:
+
+- **"It worked fine, but I think it died at some point."** Unresolved, and
+  **no forensic evidence survives to resolve it.** There is no journal (one is
+  written only for MANUAL marks, and a Sleeper draft with a feed makes none), no
+  log file (`logging.basicConfig` writes to stderr, so it lived in a terminal
+  scrollback), and the picks cache mtime was overwritten by my own run an hour
+  later. The draft itself ran 18:00:20 to 19:40:32 — 180 picks in 100 minutes.
+  **Candidate cause, NAMED BUT NOT ENDORSED:** the 2026-08-27 mock's 14s/34s/49s
+  client-side gaps were hypothesised (n=1) as Safari throttling `dcc.Interval` in
+  a background tab, and dismissed on the reasoning that "the tab is foregrounded
+  exactly when you are on the clock". **That reasoning does not survive a
+  100-minute draft on a 90s clock**, where the tab is backgrounded most of the
+  time. The user said "I think", so this is a second soft data point, not a
+  finding. Do not write it up as a diagnosis without evidence.
+- **The real, actionable outcome is that the tool cannot answer the question.**
+  The Aug 27 mock was diagnosed only because a server log happened to be in the
+  terminal. A real draft leaves nothing on disk. `TODO.md` carries the run-log
+  item; it is small and it is what turns "I think it died" into an answerable
+  question next time.
+
+**Pick 5 was the user's own call, NOT the board's.** Asked directly: McCaffrey
+was gone and they did not want Nacua, so they took Smith-Njigba. The earlier
+entry noting that pick 5 landed on the one player the FantasyPros comparison
+flagged is therefore a **coincidence and nothing more** — the tool gets no credit
+for it, and the analysis was not what drove the pick. Recorded because the
+opposite reading was available and would have been flattering.
+
+The Yahoo roster was supplied by hand 2026-09-01 and lives in
+`.roster/yahoo-main.txt` (gitignored): 14 players, all resolving unambiguously,
+confirming the one-RB/two-FLEX shape.
 
 #### The freeze lifted, and only ONE of the two folds was taken
 
