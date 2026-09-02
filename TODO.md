@@ -90,13 +90,55 @@ item. The project is now a season-mode project.
    a scoped re-review of the fix wave: sound, merge recommended, no Criticals.
    **Merging is the user's call — agents never touch `main`.**
    What is left of Phase 4:
-   - **4b — the matchup adjustment**, which is the measured gap: 2026 preseason
-     projections vary **1.4%** week to week for a top-40 RB/WR, so the schedule
-     is essentially not priced in. Plus `backtest_weekly.py` to validate it
-     before it may reorder anything, the snapshot table, and the nflverse
-     injury CSV (spec §5b — 99% practice-status coverage against Sleeper's 0%,
-     joining on `gsis_id` through the crosswalk already fetched).
-     **`injuries_2026.csv` is a 404 until week 1 is played.**
+   - ~~**the snapshot table**~~ **DONE 2026-09-02**, branch `phase-4b-snapshot`,
+     `ffhelper/store.py`. Pulled ahead of the matchup work because it is the
+     only outstanding item with an unrecoverable deadline: the APIs serve
+     current state only, so a week not recorded before it is played can never
+     be scored. **Week 1 is recorded for both leagues.** It must keep running
+     weekly — nothing schedules it, a `lineup` run is what writes it.
+   - ~~**4b — the matchup adjustment**~~ **CLOSED 2026-09-02 ON A MEASUREMENT.
+     What ships is a descriptive opponent RANK (`vs CAR soft 31/32`) that
+     nothing consumes — no projection, no sort key, no snapshot column. The
+     ADJUSTMENT is what lost:** `scripts/backtest_weekly.py`
+     scored it on 2024 and 2025 (~8000 player-weeks) under both leagues'
+     scoring, and it LOST at every position and every shrinkage level, with
+     error rising monotonically as the adjustment gets louder. Out of sample the
+     factor correlates **+0.02 to +0.06** with a player's actual weekly
+     deviation, against **+0.05 to +0.22** for the projection's own week-to-week
+     movement — Rotowire already carries whatever weekly signal exists. The
+     split-half stability of the underlying rate flips sign between seasons
+     (WR +0.351 in 2025, −0.268 in 2024), and a schedule-adjusted estimator
+     behaves the same way, so the estimator is not the problem.
+     `season.points_allowed` / `matchup_factor` / `matchup_deltas` and
+     `data.load_weekly_actuals` STAY — they are what the backtest scores, and
+     one line reopens it. **To reopen, bring a season where the adjustment wins
+     that table.** Full numbers in `scripts/backtest_weekly.py`'s docstring.
+     - **The coarse good/neutral/bad form was measured too, before building it.**
+       Residual (actual − projected) by matchup tercile, out of sample: RB and TE
+       point the right way in both seasons, **QB and WR point the wrong way in
+       2024** (QB +1.00 → +0.76, WR +0.65 → +0.26). Under a null of no signal,
+       ≥2 of 4 positions agreeing across two seasons happens ~69% of the time —
+       no evidence. So the column is worded as a fact about the past, is silent
+       below 3 completed games per defense and in week 1, and is ranked per
+       position (in the 2025 replay CAR reads `tough 2/32` to WRs and
+       `soft 31/32` to TEs in the same week).
+     - **A second finding from the same run, and it constrains every future
+       weekly measurement**: the served weekly projections for a PAST season
+       are survivorship-filtered. 6165 projected player-weeks in 2025, of which
+       **6 did not play (0.1%)** — a real week loses 1–3% of projected starters
+       to inactives. The VALUES look untouched (r = 0.67–0.80 vs actuals), so it
+       is the POPULATION that is contaminated. Absolute weekly accuracy from
+       this source may not be quoted; a relative comparison scored on the same
+       rows still holds. `backtest_weekly.py` prints the check and says which
+       of its numbers survive it.
+   - ~~**nflverse injury report**~~ **BUILT 2026-09-02**, joining on `gsis_id`
+     through the crosswalk already fetched (`load_crosswalk(field=...)`).
+     Coverage on the real rosters is **14/15 and 13/14**, the only misses being
+     team defenses, which have no injury report. `lineup` prints a practice
+     report line every run. **`injuries_2026.csv` is STILL a 404** — it appears
+     once week-1 games are reported, ~Sept 10 — so the degraded line is what
+     both leagues print today, and the join is proved against the 2025 file
+     instead (real roster, real report, week 11).
    - **4c — waivers**: free-agent pool, rest-of-season horizon, trending
      add/drop as the FAAB price signal.
 5. ~~**The Yahoo roster must be hand-entered.**~~ **DONE 2026-09-01.**

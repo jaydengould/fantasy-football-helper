@@ -9,16 +9,18 @@ import sys
 import threading
 import time
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from ffhelper import season as season_mod
+from ffhelper import store
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import (
     CACHE_DIR, LeagueSettings, Player, SLEEPER_ADP_FIELD, adp_format_for, apply_ffc_adp,
     apply_projections, apply_sleeper_adp, fetch_json, load_ffc_adp, load_league_rosters,
-    load_league_users, load_nfl_state, load_players, load_projections, load_sleeper_settings,
-    load_weekly_projections, norm_name, rosters_cache_key,
+    load_league_users, load_nfl_injuries, load_nfl_state, load_players, load_projections,
+    load_weekly_actuals,
+    load_sleeper_settings, load_weekly_projections, norm_name, rosters_cache_key,
 )
 from ffhelper.feeds import Pick, PickFeed, SleeperFeed
 from ffhelper.value import Row, build_board, detect_run, is_bench_only, next_pick_number
@@ -1054,9 +1056,20 @@ def _status_note(p: Player) -> str:
     return f"  [{' / '.join(bits)}]" if bits else ""
 
 
+def _matchup_note(p: Player, matchups: dict) -> str:
+    """The opponent's rank against this position. Context, never a projection.
+
+    Deliberately no number of points: the adjustment was measured on 2024 and
+    2025 and lost, so this states what a defense HAS allowed and stops there.
+    The word carries the direction so a rank never has to be read from memory.
+    """
+    m = matchups.get(p.sleeper_id)
+    return f"  vs {m.defense} {m.label} {m.rank}/{m.of}" if m else ""
+
+
 def render_lineup(
     state: "season_mod.StartSit", week: int, league_name: str,
-    owner: str | None, notes: list[str],
+    owner: str | None, notes: list[str], matchups: dict | None = None,
 ) -> str:
     """One frame of the lineup screen. Pure -- no I/O, so it tests without a network."""
     who = f"  ({owner})" if owner else ""
@@ -1079,7 +1092,8 @@ def render_lineup(
                        f"{'   --':>6}  NO PROJECTION{_status_note(p)}")
         else:
             out.append(f"  {slot:<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
-                       f"{p.proj_pts:6.1f}{_status_note(p)}")
+                       f"{p.proj_pts:6.1f}{_matchup_note(p, matchups or {})}"
+                       f"{_status_note(p)}")
     # The per-player row already says NO PROJECTION, but the total itself was
     # unlabelled -- a reader who skims sees an unqualified number that may be
     # an undercount, with the total's floor-ness living only in a source
@@ -1096,7 +1110,8 @@ def render_lineup(
         out += ["", "BENCH"]
         for p in projected_bench:
             out.append(f"  {'':<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
-                       f"{p.proj_pts:6.1f}{_status_note(p)}")
+                       f"{p.proj_pts:6.1f}{_matchup_note(p, matchups or {})}"
+                       f"{_status_note(p)}")
 
     # NOT a "!!" note. A player can carry no projection for MONTHS -- a deliberate
     # last-round stash on the exempt list is the real case -- and an alert that
@@ -1117,6 +1132,101 @@ def render_lineup(
     if notes:
         out += [""] + [f"!! {n}" for n in notes]
     return "\n".join(out)
+
+
+def _matchup_context(
+    season_str: str, week: int, players: dict[str, Player], scoring: dict[str, float],
+    opponent_by_id: dict[str, str], roster: list[Player],
+) -> tuple[dict, str]:
+    """Rank each starter's opponent against his position. Returns (notes, line).
+
+    **This is CONTEXT and the ranking ignores it**, on a measurement rather than
+    caution: `scripts/backtest_weekly.py` scored the adjusted projection against
+    the plain one on 2024 and 2025 and it lost at every position and every
+    shrinkage level. So the tool prints what each defense has actually allowed
+    and leaves the judgement where it belongs.
+
+    Every completed week of this season is fetched, which is up to seventeen
+    calls -- cached a day, since a played week never changes. A failure costs
+    the column and nothing else.
+    """
+    if week <= 1:
+        return {}, ("matchup context : none -- no completed weeks yet "
+                    "(a rank off no games is not a rank)")
+    try:
+        actuals = [r for w in range(1, week)
+                   for r in load_weekly_actuals(season_str, w)]
+    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+        return {}, (f"matchup context : unavailable ({exc.__class__.__name__}) -- "
+                    f"Sleeper's weekly stats endpoint did not answer")
+    rates = season_mod.points_allowed(actuals, players, scoring)
+    notes = season_mod.matchup_notes(roster, opponent_by_id, rates)
+    if not notes:
+        return {}, ("matchup context : none -- fewer than 3 completed games per "
+                    "defense, which is too few to rank")
+    return notes, ("matchup context : opponent's rank in points allowed to that "
+                   "position, 1 = stingiest. NOT used in the ranking -- adjusting "
+                   "for it lost to plain projections on 2024 and 2025")
+
+
+def _practice_status(season_str: str, week: int) -> tuple[dict[str, str], str]:
+    """nflverse's practice report for this week, and the line that says so.
+
+    Always returns a line, for `_record_snapshot`'s reason: a column that
+    quietly stops arriving is one nobody notices has gone. It is a LINE and not
+    a "!!" note because practice status is context, not the product -- and
+    because `injuries_<season>.csv` is a 404 until week 1 has been played, so
+    an alarm here would fire on every run of the preseason.
+    """
+    try:
+        practice = load_nfl_injuries(season_str, week)
+    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+        return {}, (f"practice report : unavailable ({exc.__class__.__name__}) -- "
+                    f"nflverse publishes injuries_{season_str}.csv once week 1 "
+                    f"has been played")
+    return practice, (f"practice report : {len(practice)} players in nflverse's "
+                      f"week {week} report")
+
+
+def _record_snapshot(
+    league: League, season_str: str, week: int, current_week: int | None,
+    state_ss: "season_mod.StartSit", projected_ids: set[str],
+) -> str:
+    """Record this week's inputs and advice. Returns the line to print.
+
+    It ALWAYS returns a line -- recorded, skipped, or failed. A silent record
+    is one you never notice has stopped working, and this table's whole value
+    is being complete months from now.
+
+    Two refusals, both to protect what is already stored:
+
+    - **No current week, no write.** With /state/nfl down there is nothing to
+      confirm `--week N` against, and assuming it is live is a guess.
+    - **A past week is never overwritten.** Its inputs are not re-served, so
+      `--week 1` in December would replace week 1's real projections with
+      December's and destroy exactly what the table was built to keep.
+    """
+    if not current_week:
+        return ("snapshot        : not recorded -- no current week from /state/nfl "
+                "to check this run against")
+    if week != current_week:
+        return (f"snapshot        : not recorded -- week {week} is not the current week "
+                f"({current_week}); a past week's inputs are not re-served, so "
+                f"overwriting them would destroy the record")
+    try:
+        rows = season_mod.snapshot_rows(
+            state_ss, projected_ids, datetime.now().isoformat(timespec="seconds"))
+        conn = store.connect()
+        try:
+            n = store.write_snapshot(conn, league.name, season_str, week, rows)
+        finally:
+            conn.close()
+        return f"snapshot        : {n} players recorded for week {week}"
+    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+        # The lineup is the product; the snapshot is a side effect. Losing the
+        # thing you actually ran the command for, over a write, is the trade
+        # `load_league_users` was getting wrong one function up.
+        return f"snapshot        : NOT RECORDED -- {exc}"
 
 
 def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
@@ -1148,8 +1258,11 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
     season_str = str(state.get("season") or SEASON)
 
     players = load_players()
-    weekly = season_mod.weekly_points(
-        load_weekly_projections(season_str, week), settings.scoring)
+    # Kept, not discarded after scoring: the same rows carry `opponent`, which
+    # is the whole schedule this command needs -- no schedule endpoint, no
+    # second fetch.
+    weekly_rows = load_weekly_projections(season_str, week)
+    weekly = season_mod.weekly_points(weekly_rows, settings.scoring)
 
     owner: str | None = None
     if league.platform == "sleeper":
@@ -1281,13 +1394,30 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
             notes.append(f"no roster: write one name per line into "
                          f"{ROSTER_DIR / f'{league.name}.txt'}")
 
+    # Practice status is the one thing Sleeper's player DB does not carry (zero
+    # of 3231 players), so it comes from nflverse and joins on gsis_id through
+    # the crosswalk already fetched. It fills the EXISTING field, which is why
+    # nothing downstream -- the status note, the snapshot -- needed changing.
+    practice, practice_line = _practice_status(season_str, week)
+    roster = season_mod.with_practice_status(roster, practice)
+
     # Players with no projection are NOT a "!!" note: see render_lineup. They get
     # their own quiet section, because a stash can carry no number for months.
     scored = season_mod.with_weekly_points(roster, weekly)
     state_ss = season_mod.start_sit(scored, settings.roster_slots,
                                     tunables.close_call_points,
                                     projected_ids=set(weekly))
-    print(render_lineup(state_ss, week, league.name, owner, notes))
+    matchups, matchup_line = _matchup_context(
+        season_str, week, players, settings.scoring,
+        season_mod.opponents(weekly_rows), roster)
+    print(render_lineup(state_ss, week, league.name, owner, notes, matchups))
+    print(matchup_line)
+    print(practice_line)
+    # After the lineup, not inside `notes`: notes render as "!!" alarms, and a
+    # snapshot that worked is not an alarm. Same reason the unprojected players
+    # got their own quiet section in 4a rather than crying wolf every week.
+    print(_record_snapshot(league, season_str, week, state.get("week"),
+                           state_ss, set(weekly)))
     return 0
 
 

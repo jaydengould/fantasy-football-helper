@@ -180,7 +180,14 @@ says so; do not agonise over which name inside it.
   lines of stdlib cannot cover.
 - **`value.py` is pure.** No I/O, no network, no globals. All logic lives there
   so it tests without a network. If something in `value.py` wants to fetch, the
-  design is wrong.
+  design is wrong. **`season.py` obeys the same rule** — including for the
+  snapshot, where deciding what a row SAYS is logic and lives there, while
+  `store.py` only knows how to write one.
+- **`store.py` is the ONLY stateful module** (`season.db` at ROOT, gitignored).
+  It takes an open connection and holds no globals. **No test may reach the real
+  database** — `tests/conftest.py` redirects `store.DB_PATH` autouse and
+  suite-wide, after a green suite was found writing rows into production under
+  real league names, one of which would have replaced a real week-1 record.
 - **No module-level league state.** Every function takes league context. Two
   leagues on two platforms is a requirement, and a "current league" global is a
   rewrite to undo.
@@ -189,6 +196,13 @@ says so; do not agonise over which name inside it.
   the upgrade path.
 - Non-trivial logic leaves one runnable check behind. One `test_value.py` plus
   `preflight`. No mocking the network — the pure core doesn't need it.
+- **No test may reach the network**, guarded autouse and suite-wide in
+  `tests/conftest.py` beside the database redirect. A test that quietly starts
+  fetching keeps PASSING; the only symptom is that the suite gets slower, which
+  nobody reads. That is exactly how it was found — wiring nflverse into
+  `lineup` sent the whole suite to the network and the tell was 0.68s -> 4.78s.
+  Loaders called with an explicit `fetcher` are unaffected; the guard closes the
+  default path, which is the one a new call site picks up by accident.
 - **A new test must be shown to fail before the fix**, by
   `git stash push -u -- ffhelper && pytest -k <name>`. A test written after a fix
   and never seen red is not evidence. **The `-u` is not optional when the test
@@ -335,6 +349,55 @@ fresh opinion.
   free ECR download is a legitimate 20-minute local look (`TODO.md` §18), but it
   can never enter the engine: ECR is RANKS, VBD needs POINTS, and manufacturing
   points from a rank is precisely the blend non-negotiable #2 forbids.
+- **The MATCHUP ADJUSTMENT is CLOSED as of 2026-09-02 — on a measurement, and
+  nothing is shown on screen.** The spec's own third guard said it may not
+  reorder anything until it beats unadjusted projections out of sample.
+  `scripts/backtest_weekly.py` scored it on 2024 AND 2025 (~8000 player-weeks,
+  both leagues' scoring) and it **lost at every position and every shrinkage
+  level**, with error rising monotonically as the adjustment gets louder — so
+  the best shrinkage is the one that turns it off. Out of sample the factor
+  correlates **+0.02 to +0.06** with a player's actual weekly deviation from his
+  own mean, while the projection's OWN week-to-week movement correlates **+0.05
+  to +0.22**: Rotowire already carries whatever weekly signal there is.
+  **Ruling out one suspect is not a verdict, so the estimator was checked too** —
+  a schedule-adjusted version (each game expressed against that offense's own
+  season mean, which removes the confound of who a defense happened to face)
+  behaves identically, and the split-half stability of the rate flips sign
+  between seasons at the same position (WR +0.351 in 2025, −0.268 in 2024). A
+  quantity that unstable is noise.
+  **The spec's stated fallback — ship the points delta display-only — was
+  declined**: a number with r≈0.04 to outcomes, printed beside a projection that
+  has real signal, is the over-reaction the spec itself calls the commonest
+  fantasy error a tool could automate. `season.points_allowed`,
+  `matchup_factor`, `matchup_deltas` and `data.load_weekly_actuals` all stay —
+  they are what the backtest scores and the one line that reopens it.
+  **To reopen, bring a season where the adjustment wins that table.**
+- **What ships instead is DESCRIPTIVE CONTEXT, and the distinction is the whole
+  point** (chosen by the user 2026-09-02 after both alternatives were measured).
+  Each row carries `vs CAR soft 31/32` — where that opponent RANKS in points
+  allowed to that position so far this season, 1 = stingiest, under this
+  league's own scoring. It states what a defense HAS given up, which is true and
+  checkable; it never states what a player WILL score. No number it produces
+  touches a projection, the sort key, or the snapshot's `matchup` column, and
+  the line under the lineup says so on screen.
+  **The tercile label was measured too, not assumed.** Residual (actual −
+  projected) by matchup tercile, out of sample: RB and TE point the right way in
+  both seasons, QB and WR point the WRONG way in 2024 (QB +1.00 → +0.76, WR
+  +0.65 → +0.26). Under a null of no signal, ≥2 of 4 positions agreeing across
+  two seasons happens ~69% of the time — so that table is not evidence either,
+  and the column is presented as a fact about the past rather than a hint about
+  the future. Silent below 3 completed games per defense, and silent in week 1.
+- **Weekly projections for a PAST season are survivorship-filtered, and it
+  bounds every weekly measurement this project will make.** Measured
+  2026-09-02: 6165 projected player-weeks in 2025, **6 of which did not play
+  (0.1%)**. A real week loses 1–3% of projected starters to inactives, so the
+  set served today has been filtered after the fact to who played. The values
+  themselves look untouched (r = 0.67–0.80 against actuals, MAE 3.5–4.7; a
+  copied number would read r = 1.0), so the contamination is the POPULATION, not
+  the numbers. Consequence: **absolute weekly accuracy from this source may
+  never be quoted**, while a comparison scoring two arms on the identical rows
+  survives. This is `backtest.py`'s frozen-source check finding a second, subtler
+  failure mode — the source is not revised, it is pre-selected.
 - **ESPN as a second projection source is CLOSED as of 2026-08-25 — on a
   measurement, not a preference.** It was reconsidered (its JSON API is not HTML
   scraping, and it joins on `espn_id` through the crosswalk we already fetch),
@@ -359,7 +422,7 @@ fresh opinion.
 | 3.6 | Web board appearance — CSS/layout half (`assets/*.css`, no new dependency) | Aug 28 | **COMPLETE** — built early on the user's call |
 | 3.7 | Web board — the `DataTable` replacement and what it unlocks | offseason | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope. Also the trigger for the deferred `board.py` fold |
 | 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4a-start-sit`, 377 tests / 153 mutations. Runs against both leagues. Awaiting the user's merge |
-| 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | not started — `TODO.md`, spec §5b and the matchup section |
+| 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | **COMPLETE 2026-09-02** (branch `phase-4b-snapshot`). Snapshot table shipped; `backtest_weekly.py` shipped and it **closed the matchup ADJUSTMENT** — measured on 2024 and 2025, it loses — so what ships is a descriptive opponent RANK that nothing consumes (see Decisions). nflverse practice report shipped and joins 14/15; `injuries_2026.csv` is a 404 until ~Sept 10, so it prints its degraded line today |
 | 4c | Waivers — free-agent pool, ROS horizon, trending as the FAAB signal | in-season | not started |
 | 5 | Trade finder (own spec) | in-season | not started — unblocked earlier than expected: Sleeper serves every team's roster with no auth |
 
@@ -441,6 +504,206 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   may be committed to this public repo.
 
 ## Session log
+
+### 2026-09-02 (fourth block) — 4b FINISHED, and its headline feature was killed by its own gate
+
+**State:** branch `phase-4b-snapshot`, **419 tests** (from 395), **175 mutations,
+1 needing a look** (the documented `value.py` equivalent mutant), exit 0. New:
+`scripts/backtest_weekly.py`. `lineup` re-run live on both leagues.
+
+Phase 4b is complete: weekly actuals loader, the matchup adjustment, the weekly
+backtest, and the nflverse injury report. **The matchup adjustment does not
+appear anywhere on screen, because the backtest it was gated on says it should
+not.**
+
+#### The feature the slice was named for lost its own test, on two seasons
+
+The spec's third guard was that matchup may not reorder anything until it beats
+unadjusted projections out of sample. It does not:
+
+| | 2025 | 2024 |
+| --- | --- | --- |
+| QB MAE, unadjusted -> adjusted | 7.68 -> 7.70 | 7.41 -> 7.48 |
+| RB | 4.09 -> 4.10 | 3.91 -> 3.90 |
+| WR | 4.07 -> 4.07 | 4.23 -> 4.25 |
+| TE | 3.23 -> 3.24 | 3.20 -> 3.21 |
+
+At the gentlest shrinkage tried, and **worse at every louder one** — error rises
+monotonically with the size of the adjustment, so the optimal setting of the
+tunable is the one that switches it off. Same answer under Yahoo's different
+rulebook. Out of sample the factor correlates **+0.02 to +0.06** with a player's
+actual weekly deviation; the projection's own week-to-week movement correlates
+**+0.05 to +0.22**.
+
+**Ruling out one suspect is not a verdict, so the estimator was tested too.** The
+naive points-allowed rate is confounded by which offenses a defense happened to
+face, so a schedule-adjusted version was measured — same instability, same sign
+flips between seasons. It is not the estimator; the quantity is noise.
+
+**The user was offered the spec's own fallback (ship it display-only) and a
+middle option (a descriptive good/neutral/bad label rather than a points delta),
+and chose neither.** Recorded because the flattering option was available and
+declined: a number with r≈0.04 to outcomes, printed beside one with real signal,
+is the over-reaction the spec calls the commonest fantasy error a tool could
+automate.
+
+The pure functions and the actuals loader STAY — they are what the backtest
+scores, and they are the one line that reopens it.
+
+#### What shipped instead: the rank, not the number
+
+Asked for after the adjustment was cut, and it is a different kind of claim.
+The row now reads
+
+```
+  WR    Puka Nacua               WR  LAR   22.3  vs BAL soft 31/32
+  WR    George Pickens           WR  DAL   17.0  vs CAR tough 2/32
+```
+
+— what that defense HAS allowed to that position this season, ranked, under
+this league's scoring. True and checkable. It touches no projection, no sort
+key and not the snapshot's `matchup` column, and the line under the lineup says
+the ranking ignores it.
+
+**The label was measured before being built, not after.** Residual (actual −
+projected) by matchup tercile, out of sample: RB and TE point the right way in
+both seasons; **QB and WR point the wrong way in 2024** (QB +1.00 → +0.76, WR
++0.65 → +0.26). Under a null of no signal, ≥2 of 4 positions agreeing across two
+seasons happens ~69% of the time. So the coarse form rescues nothing, and the
+column is honest only as a statement about the past — which is exactly how it is
+worded on screen.
+
+Silent below 3 completed games per defense, and silent in week 1, because a rank
+off two games is the over-reaction this was supposed to avoid. Ranked per
+position, never pooled: in the real 2025 replay CAR reads `tough 2/32` to
+receivers and `soft 31/32` to tight ends in the same week.
+
+#### A new contamination shape, and `backtest.py`'s check did not cover it
+
+`backtest.py` makes a source prove it was FROZEN. The weekly projections pass
+that and fail a different one: of **6165 projected player-weeks in 2025, 6 did
+not play — 0.1%**. A real week loses 1–3% of projected starters to inactives, so
+what is served today has been filtered after the fact to who played. The values
+look untouched (r = 0.67–0.80 against actuals; a copied number would read 1.0),
+so **the population is contaminated, not the numbers** — the source is not
+revised, it is pre-selected.
+
+Consequence, and it binds every future weekly measurement: **absolute weekly
+accuracy from this source may not be quoted.** A comparison scoring two arms on
+the identical rows survives, because the bias is shared. `backtest_weekly.py`
+prints the check and labels which of its own numbers survive it.
+
+#### The suite was reaching the network and the only symptom was the clock
+
+Wiring nflverse into `lineup` took the suite from 0.68s to 4.78s. **Every test
+still passed.** The `_lineup` tests stub the loaders they know about, and a new
+one is not on that list — the same shape as the snapshot writing into the
+production database, and caught the same way, by a second number disagreeing.
+
+`tests/conftest.py` now refuses the network autouse and suite-wide, beside the
+database redirect, for the identical reason: a per-test rule is one the next
+test forgets, and it fails in the direction nobody reads.
+
+#### Mutation testing caught the injury test being vacuous
+
+The week filter on the injury CSV survived its mutation. The fixture had the
+same player on weeks 4 and 5, so dropping the filter let week 4 be overwritten
+by week 5 and the assertion still passed — **the test could not see the bug it
+was written for.** Fixed by making the extra row a DIFFERENT player, so removing
+the filter adds a key. Mutation weakened: none.
+
+#### nflverse ships, and it is a 404 today
+
+`load_crosswalk` gained a `field` parameter rather than a second loader over the
+same CSV — the cache key carries the field, or the second caller is served the
+first one's mapping and every id is silently wrong. `Player.gsis_id` joins the
+report: **14/15 and 13/14 on the real rosters**, the misses being team defenses,
+which have no injury report at all.
+
+`injuries_2026.csv` does not exist until week-1 games are reported (~Sept 10),
+so what both leagues print today is the degraded line. **The join was therefore
+proved against the 2025 file on the real roster** rather than left untested:
+week 11, real report rows, correct players.
+
+It fills the EXISTING `practice_participation` field rather than adding one,
+which is why the status note and the snapshot picked it up with no change. It is
+a printed LINE, not a `!!` note — the file is absent for the whole preseason and
+an alarm that fires every run is one you learn to ignore.
+
+### 2026-09-02 (third block) — the snapshot table ships. A green suite was writing to the production database.
+
+**State:** branch `phase-4b-snapshot` (off `main` after the user merged 4a as
+PR #6), **395 tests**, **161 mutations, 1 needing a look**, exit 0. New:
+`ffhelper/store.py`, `tests/conftest.py`, `tests/test_store.py`.
+
+**Week 1 is now recorded for both leagues** — 15 rows / 10 starters on Sleeper,
+14 / 9 on Yahoo, one NULL projection, zero 0.0s. That is the point: the APIs
+serve only current state, so a week not recorded before it is played can never
+be scored. It was built before the rest of 4b for that reason alone.
+
+#### A fully green suite was writing rows into the real `season.db`
+
+**Found by running `lineup` for real and reading the rows back — the printed
+count said 15 and the table held 17.** Not by any test.
+
+Several `_lineup` tests stub `/state/nfl` to the same week they request, which
+is exactly the condition the snapshot writes on, and nothing redirected the
+path. One of the two stray rows was **`yahoo-main` week 1**, which shares a
+primary key with the real week-1 record: `INSERT OR REPLACE` would have
+overwritten a genuine decision with a test fixture. **Invisibly** — the row
+stays present and well-formed, merely fabricated — in the one table whose
+entire value is being trustworthy in December.
+
+Fixed at the root: `tests/conftest.py` redirects `store.DB_PATH` for every
+test, autouse and suite-wide. The per-test version is a rule the next
+`_lineup` test forgets, and it fails silently in the only direction that
+matters. Proved by deleting `season.db`, running the suite, and confirming it
+does not come back; a test guards the fixture.
+
+**The generalisable part is the discrepancy, not the bug.** Printing the count
+and then querying the table is what surfaced it — two independent views of one
+write. Neither alone would have said anything.
+
+#### A default argument made the write path untestable
+
+`connect(path=DB_PATH)` binds `DB_PATH` once at import, so monkeypatching the
+module global afterwards does nothing and every test of the write path would
+have hit the real file. Changed to `path=None` resolved at call time. This is
+the conventions' own "untestable code is untested code" arriving in a new
+disguise — and had it not been changed, the conftest fix above would have
+silently failed too.
+
+#### A survivor that was the TEST's fault, fixed in the direction the rule says
+
+The `no current week` guard mutation survived: with it removed, the *past-week*
+check catches `None` by accident (`1 != None`) and still refuses, so a loose
+`"not recorded" in out` assertion passed. But it refuses **for a reason that is
+not true**, naming a week the user never mentioned. The test now asserts the
+specific message. **Mutation weakened: none. Test tightened: one.**
+
+#### Design calls worth keeping
+
+**`proj_pts` is NULL for an unprojected player, never 0.0.**
+`with_weekly_points` assigns 0.0 as a *sort value* and `projected_ids` exists
+solely to keep that distinct. Writing the sort value into the table built for
+scoring would make an invented number indistinguishable from a measured one
+months later — the exact fabrication the 4a review spent a round removing.
+`matchup` is NULL for the same reason: 0.0 would read as "computed, and it came
+to nothing".
+
+**The snapshot line prints after the lineup, not inside `notes`.** Notes render
+as `!!` alarms and a snapshot that worked is not an alarm — the same call 4a
+made when unprojected players got a quiet section instead of a warning. But it
+always prints something, because a silent record is one you never notice has
+stopped working.
+
+**A write failure costs the line, never the lineup.** The lineup is the
+product; the snapshot is a side effect.
+
+**Overwrite semantics, chosen by the user:** re-running in the current week
+replaces that week, so the record is the last look before kickoff — late injury
+news is exactly what moves a lineup. A past week is never overwritten, because
+its inputs are not re-served.
 
 ### 2026-09-02 (second block) — 4a merge-checked and FINISHED. The verification tool was wrong twice.
 

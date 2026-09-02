@@ -2771,3 +2771,252 @@ def test_lineup_still_names_the_roster_id_override_when_rosters_are_unreachable(
     assert result == 0
     assert "could not reach Sleeper's league rosters endpoint" in out
     assert "roster_id 7" in out and "override" in out
+
+
+# --- Phase 4b: the snapshot. `lineup` records what each source claimed at the
+# moment the decision was taken, because none of it is re-served later. ---
+
+
+def _snapshot_league(**kw):
+    from ffhelper.config import League
+    base = dict(name="sleeper-main", platform="sleeper", league_id="L1",
+                draft_slot=5, roster_id=3)
+    base.update(kw)
+    return League(**base)
+
+
+def _stub_lineup_world(monkeypatch, cli, week_from_state=1):
+    """A working `lineup` run: one projected starter, one unprojected stash."""
+    players = {"10": Player("10", "A Starter", "QB", "BUF"),
+               "99": Player("99", "A Stash", "RB", "GB", injury_status="NA")}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: _lineup_settings())
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state",
+                        lambda: {"week": week_from_state, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections",
+                        lambda season, week: [{"player_id": "10", "stats": {"pass_td": 2}}])
+    monkeypatch.setattr(cli, "load_league_rosters", lambda league_id: [
+        {"roster_id": 3, "owner_id": "u1", "players": ["10", "99"]}])
+    monkeypatch.setattr(cli, "load_league_users",
+                        lambda league_id: [{"user_id": "u1", "display_name": "jaydenpg"}])
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+
+
+def test_lineup_records_a_snapshot_for_the_current_week(monkeypatch, capsys, tmp_path):
+    """The inputs to a decision are not re-served, so a week not recorded
+    before it is played can never be scored. This is the write that makes the
+    advice measurable at all."""
+    import sqlite3
+    import ffhelper.cli as cli
+    from ffhelper import store
+    from ffhelper.config import Tunables
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "season.db")
+    _stub_lineup_world(monkeypatch, cli, week_from_state=1)
+
+    result = cli._lineup(_snapshot_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "snapshot" in out and "2 players recorded for week 1" in out
+
+    rows = sqlite3.connect(tmp_path / "season.db").execute(
+        "SELECT player_id, proj_pts, started, matchup FROM snapshot ORDER BY player_id"
+    ).fetchall()
+    # The stash has NO projection: NULL, never the 0.0 sort value.
+    assert rows == [("10", 12.0, 1, None), ("99", None, 0, None)]
+
+
+def test_lineup_does_not_record_a_snapshot_for_a_past_week(monkeypatch, capsys, tmp_path):
+    """`--week 1` run in December must print normally and write NOTHING.
+    Re-running it would overwrite week 1's real inputs with December's
+    projections -- silently destroying the exact record the table exists to
+    protect, in the one command that touches it."""
+    import ffhelper.cli as cli
+    from ffhelper import store
+    from ffhelper.config import Tunables
+
+    db = tmp_path / "season.db"
+    monkeypatch.setattr(store, "DB_PATH", db)
+    # The season has moved on to week 14; we are asking about week 1.
+    _stub_lineup_world(monkeypatch, cli, week_from_state=14)
+
+    result = cli._lineup(_snapshot_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "A Starter" in out                 # the lineup still printed
+    assert "not recorded" in out and "week 1" in out
+    assert not db.exists()                    # nothing was written at all
+
+
+def test_lineup_does_not_record_a_snapshot_with_no_current_week_to_check(
+        monkeypatch, capsys, tmp_path):
+    """With /state/nfl down there is no current week, so `--week N` cannot be
+    confirmed as the live one. Assuming it is would let a past-week run
+    overwrite a real record -- degrade, never guess."""
+    import ffhelper.cli as cli
+    from ffhelper import store
+    from ffhelper.config import Tunables
+
+    db = tmp_path / "season.db"
+    monkeypatch.setattr(store, "DB_PATH", db)
+    _stub_lineup_world(monkeypatch, cli)
+
+    def boom():
+        raise RuntimeError("state endpoint down")
+    monkeypatch.setattr(cli, "load_nfl_state", boom)
+
+    result = cli._lineup(_snapshot_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "A Starter" in out
+    # The SPECIFIC refusal, not merely that something refused. Dropping this
+    # guard lets the past-week check catch None by accident (1 != None) and
+    # report "week 1 is not the current week (None)" -- which refuses for a
+    # reason that is not true and names a week the user never mentioned.
+    assert "no current week from /state/nfl" in out
+    assert "is not the current week" not in out
+    assert not db.exists()
+
+
+def test_a_failing_snapshot_costs_a_line_and_never_the_lineup(monkeypatch, capsys, tmp_path):
+    """The lineup is the product; the snapshot is a side effect. A database
+    error must not throw away the thing you actually ran the command for --
+    the same trade `load_league_users` was getting wrong one module over."""
+    import ffhelper.cli as cli
+    from ffhelper import store
+    from ffhelper.config import Tunables
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "season.db")
+    _stub_lineup_world(monkeypatch, cli, week_from_state=1)
+
+    def boom(*a, **kw):
+        raise OSError("disk full")
+    monkeypatch.setattr(store, "connect", boom)
+
+    result = cli._lineup(_snapshot_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "A Starter" in out                 # the lineup survived
+    assert "NOT RECORDED" in out and "disk full" in out
+
+
+def test_lineup_shows_practice_status_from_nflverse(monkeypatch, tmp_path, capsys):
+    """The join Sleeper cannot do: gsis_id, through the crosswalk already
+    fetched. It lands in the existing status note rather than a new column."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="L2")
+    settings = _lineup_settings(num_teams=10, roster_slots={"QB": 1}, draft_id=None)
+    players = {"20": Player("20", "Justin Herbert", "QB", "LAC", gsis_id="00-0036355")}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 4, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections",
+                        lambda season, week: [{"player_id": "20", "stats": {"pass_td": 2}}])
+    monkeypatch.setattr(cli, "load_nfl_injuries",
+                        lambda season, week: {"00-0036355": "Limited"})
+    monkeypatch.setattr(cli, "ROSTER_DIR", tmp_path)
+    (tmp_path / "yahoo-main.txt").write_text("Justin Herbert\n")
+
+    cli._lineup(league, Tunables(), week=4)
+    out = capsys.readouterr().out
+
+    assert "[Limited]" in out
+    assert "practice report : 1 players" in out
+
+
+def test_lineup_says_the_practice_report_is_unavailable_rather_than_going_quiet(
+        monkeypatch, tmp_path, capsys):
+    """`injuries_<season>.csv` is a 404 until week 1 has been played, and a
+    column that stops arriving must not do so silently. A LINE, not a "!!" note:
+    an alarm here would fire on every run of the preseason."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="L2")
+    settings = _lineup_settings(num_teams=10, roster_slots={"QB": 1}, draft_id=None)
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: {})
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 1, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    monkeypatch.setattr(cli, "load_nfl_injuries",
+                        lambda season, week: (_ for _ in ()).throw(RuntimeError("404")))
+    monkeypatch.setattr(cli, "ROSTER_DIR", tmp_path)
+
+    assert cli._lineup(league, Tunables(), week=1) == 0
+    out = capsys.readouterr().out
+
+    assert "practice report : unavailable" in out
+    assert "!! practice" not in out
+
+
+def test_lineup_prints_the_matchup_as_context_and_never_as_points(monkeypatch,
+                                                                  tmp_path, capsys):
+    """The adjustment lost its backtest on 2024 and 2025, so the screen carries
+    the opponent's RANK and no points at all -- and the line under the lineup
+    says the ranking ignores it. A points delta beside a projection is the
+    over-reaction this tool exists not to automate."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="L2")
+    settings = _lineup_settings(num_teams=10, roster_slots={"RB": 2},
+                                scoring={"rush_yd": 0.1}, draft_id=None)
+    players = {"9221": Player("9221", "Jahmyr Gibbs", "RB", "DET"),
+               "4034": Player("4034", "Christian McCaffrey", "RB", "SF"),
+               "4866": Player("4866", "Saquon Barkley", "RB", "PHI")}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 6, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [
+        {"player_id": "9221", "opponent": "CAR", "stats": {"rush_yd": 92.0}},
+        {"player_id": "4034", "opponent": "SF", "stats": {"rush_yd": 70.0}}])
+    monkeypatch.setattr(cli, "load_nfl_injuries", lambda season, week: {})
+    # Three defenses, so the terciles have somewhere to land: CAR has been
+    # generous to running backs, SF stingy, PHI in between.
+    monkeypatch.setattr(cli, "load_weekly_actuals", lambda season, week: [
+        {"player_id": "9221", "week": week, "team": "DET", "opponent": "CAR",
+         "stats": {"rush_yd": 140.0}},
+        {"player_id": "4866", "week": week, "team": "PHI", "opponent": "PHI",
+         "stats": {"rush_yd": 81.0}},
+        {"player_id": "4034", "week": week, "team": "SF", "opponent": "SF",
+         "stats": {"rush_yd": 20.0}}])
+    monkeypatch.setattr(cli, "ROSTER_DIR", tmp_path)
+    (tmp_path / "yahoo-main.txt").write_text("Jahmyr Gibbs\nChristian McCaffrey\n")
+
+    cli._lineup(league, Tunables(), week=6)
+    out = capsys.readouterr().out
+
+    assert "vs CAR soft 3/3" in out
+    assert "vs SF tough 1/3" in out
+    assert "9.2" in out          # the projection is still points, untouched
+    assert "1 = stingiest" in out
+    assert "NOT used in the ranking" in out
+
+
+def test_lineup_says_there_is_no_matchup_context_in_week_one(monkeypatch,
+                                                             tmp_path, capsys):
+    """No completed weeks, so no rank -- and it says so rather than printing an
+    empty column that reads as 'every matchup is neutral'."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="L2")
+    settings = _lineup_settings(num_teams=10, roster_slots={"QB": 1}, draft_id=None)
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: {})
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 1, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    monkeypatch.setattr(cli, "load_nfl_injuries", lambda season, week: {})
+    monkeypatch.setattr(cli, "load_weekly_actuals",
+                        lambda season, week: pytest.fail("week 1 must fetch no actuals"))
+    monkeypatch.setattr(cli, "ROSTER_DIR", tmp_path)
+
+    cli._lineup(league, Tunables(), week=1)
+
+    assert "matchup context : none -- no completed weeks yet" in capsys.readouterr().out

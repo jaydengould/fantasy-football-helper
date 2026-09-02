@@ -124,6 +124,11 @@ class Player:
     position: str
     team: str | None
     yahoo_id: str | None = None
+    # nflverse's key. Same crosswalk, same job it already does for yahoo_id --
+    # direct from Sleeper the coverage is 3/15 on a real roster, through the
+    # crosswalk it is 14/15, the miss being a team defense (which has no injury
+    # report at all).
+    gsis_id: str | None = None
     injury_status: str | None = None
     injury_body_part: str | None = None
     practice_participation: str | None = None
@@ -166,7 +171,8 @@ def norm_name(s: str) -> str:
     return "".join(tokens)
 
 
-def build_players(raw: dict, crosswalk: dict[str, str]) -> dict[str, Player]:
+def build_players(raw: dict, crosswalk: dict[str, str],
+                  gsis: dict[str, str] | None = None) -> dict[str, Player]:
     """Join the Sleeper player DB to the DynastyProcess crosswalk BY ID.
 
     Sleeper's own yahoo_id is unusable (0/302 rookies, 13/692 sophomores at
@@ -182,6 +188,7 @@ def build_players(raw: dict, crosswalk: dict[str, str]) -> dict[str, Player]:
             position=p["position"],
             team=p.get("team"),
             yahoo_id=crosswalk.get(pid),
+            gsis_id=(gsis or {}).get(pid),
             injury_status=p.get("injury_status"),
             injury_body_part=p.get("injury_body_part"),
             practice_participation=p.get("practice_participation"),
@@ -193,13 +200,20 @@ def build_players(raw: dict, crosswalk: dict[str, str]) -> dict[str, Player]:
     return out
 
 
-def load_crosswalk(cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None) -> dict[str, str]:
-    """sleeper_id -> yahoo_id. Fetches the DynastyProcess CSV, transforms it into a
+def load_crosswalk(cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None,
+                   field: str = "yahoo_id") -> dict[str, str]:
+    """sleeper_id -> `field`. Fetches the DynastyProcess CSV, transforms it into a
     mapping, and caches that mapping as JSON using the same atomic-write / tolerant-read
-    / stale-on-failure cache mechanics as fetch_json."""
+    / stale-on-failure cache mechanics as fetch_json.
+
+    `field` because the same 12484-row file carries `gsis_id` alongside
+    `yahoo_id`, and nflverse's injury report joins on that. One parameter beats
+    a second loader over the same CSV; the cache key carries the field, or the
+    second caller would be served the first one's mapping and every id would be
+    silently wrong."""
     fetcher = fetcher or _requests_get
     cache_dir = Path(cache_dir)
-    path = cache_dir / "crosswalk.json"
+    path = cache_dir / f"crosswalk_{field}.json"
 
     fresh, value = _try_read_cache(path, 86_400)
     if fresh:
@@ -208,13 +222,13 @@ def load_crosswalk(cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | 
     try:
         text = fetcher(CROSSWALK_URL)
     except Exception as exc:
-        return _stale_fallback(path, exc, "crosswalk")
+        return _stale_fallback(path, exc, f"crosswalk_{field}")
 
     rows = csv.DictReader(io.StringIO(text))
     mapping = {
-        r["sleeper_id"]: r["yahoo_id"]
+        r["sleeper_id"]: r[field]
         for r in rows
-        if r.get("sleeper_id", "").strip() and r.get("yahoo_id", "").strip() not in ("", "NA")
+        if r.get("sleeper_id", "").strip() and r.get(field, "").strip() not in ("", "NA")
     }
     _write_cache_atomic(path, json.dumps(mapping))
     return mapping
@@ -223,7 +237,8 @@ def load_crosswalk(cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | 
 def load_players(cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None) -> dict[str, Player]:
     raw = fetch_json(SLEEPER_PLAYERS_URL, "sleeper_players", cache_dir=cache_dir, fetcher=fetcher)
     crosswalk = load_crosswalk(cache_dir=cache_dir, fetcher=fetcher)
-    return build_players(raw, crosswalk)
+    gsis = load_crosswalk(cache_dir=cache_dir, fetcher=fetcher, field="gsis_id")
+    return build_players(raw, crosswalk, gsis)
 
 
 SLEEPER_LEAGUE_URL = "https://api.sleeper.app/v1/league/{league_id}"
@@ -233,6 +248,10 @@ SLEEPER_PROJ_URL = (
 )
 SLEEPER_WEEKLY_PROJ_URL = (
     "https://api.sleeper.com/projections/nfl/{season}/{week}"
+    "?season_type=regular&position[]={pos}&order_by=pts_ppr"
+)
+SLEEPER_WEEKLY_STATS_URL = (
+    "https://api.sleeper.com/stats/nfl/{season}/{week}"
     "?season_type=regular&position[]={pos}&order_by=pts_ppr"
 )
 SLEEPER_ROSTERS_URL = "https://api.sleeper.app/v1/league/{league_id}/rosters"
@@ -381,6 +400,97 @@ def load_weekly_projections(
             )
         )
     return rows
+
+
+def load_weekly_actuals(
+    season: str, week: int, cache_dir: Path = CACHE_DIR,
+    fetcher: Callable[[str], str] | None = None,
+) -> list[dict]:
+    """One week's ACTUAL stat lines -- the mirror of `load_weekly_projections`.
+
+    Same row shape, plus two fields the projections also carry and this is the
+    only consumer of: `team` and `opponent`. That pair is the entire join for
+    matchup strength -- who a player faced, and therefore what each defense
+    gave up -- which is why Phase 4 needs no `nflreadpy`.
+
+    Scored through `score_stats` like everything else, so "points allowed" is
+    points under THIS league's rules, not a generic fantasy-points-against.
+
+    Cached a day, not an hour: every caller asks only about COMPLETED weeks,
+    and a played week never changes. A caller wanting the current week's numbers
+    while games are running must pass a shorter `ttl_seconds` -- there is no
+    such caller today, and inventing one for it would be inventing a
+    requirement.
+    """
+    rows: list[dict] = []
+    for pos in ("QB", "RB", "WR", "TE", "K", "DEF"):
+        rows.extend(
+            fetch_json(
+                SLEEPER_WEEKLY_STATS_URL.format(season=season, week=week, pos=pos),
+                f"stats_{season}_wk{week}_{pos}",
+                cache_dir=cache_dir,
+                fetcher=fetcher,
+            )
+        )
+    return rows
+
+
+NFLVERSE_INJURIES_URL = ("https://github.com/nflverse/nflverse-data/releases/"
+                         "download/injuries/injuries_{season}.csv")
+
+# The report is filed in prose. These are the three values nflverse emits for
+# `practice_status`, shortened for a terminal column. An unrecognised value is
+# passed through rather than dropped -- a new designation must show up on
+# screen looking odd, not vanish.
+PRACTICE_DISPLAY = {
+    "Did Not Participate In Practice": "DNP",
+    "Limited Participation in Practice": "Limited",
+    "Full Participation in Practice": "Full",
+}
+
+
+def load_nfl_injuries(
+    season: str, week: int, cache_dir: Path = CACHE_DIR,
+    fetcher: Callable[[str], str] | None = None,
+) -> dict[str, str]:
+    """gsis_id -> practice status, for one week. The one gap Sleeper does not fill.
+
+    Sleeper carries `injury_status` for 256 players and `practice_participation`
+    for **zero of 3231** -- measured, after the spec claimed otherwise off a
+    single populated row. nflverse's weekly injury report has practice status on
+    99% of its rows, joins on `gsis_id` through the crosswalk already fetched,
+    and needs no new dependency: it is a plain CSV on a GitHub release, read
+    with `requests` and stdlib `csv`.
+
+    Only the practice half is returned. `injury_status` stays Sleeper's, which
+    is updated continuously, where this file is the official Wed-Fri report --
+    fresher beats more official for a Sunday morning lineup.
+
+    **`injuries_<season>.csv` does not exist until week 1 has been played**, so
+    the whole of the preseason this raises and the caller shows no practice
+    column. That is the designed degradation, not a failure.
+    """
+    fetcher = fetcher or _requests_get
+    cache_dir = Path(cache_dir)
+    path = cache_dir / f"injuries_{season}_wk{week}.json"
+
+    fresh, value = _try_read_cache(path, 3600)
+    if fresh:
+        return value
+
+    try:
+        text = fetcher(NFLVERSE_INJURIES_URL.format(season=season))
+    except Exception as exc:
+        return _stale_fallback(path, exc, f"injuries_{season}_wk{week}")
+
+    mapping = {
+        r["gsis_id"]: PRACTICE_DISPLAY.get(r["practice_status"], r["practice_status"])
+        for r in csv.DictReader(io.StringIO(text))
+        if r.get("gsis_id", "").strip() and r.get("practice_status", "").strip()
+        and r.get("week", "").strip() == str(week)
+    }
+    _write_cache_atomic(path, json.dumps(mapping))
+    return mapping
 
 
 FFC_URL = "https://fantasyfootballcalculator.com/api/v1/adp/{fmt}?teams={teams}&year={year}"

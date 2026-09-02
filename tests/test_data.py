@@ -150,7 +150,7 @@ def test_load_crosswalk_corrupt_cache_within_ttl_refetches(tmp_path: Path):
     result1 = load_crosswalk(cache_dir=tmp_path, fetcher=fetcher)
     assert result1 == {"1": "100", "2": "200"}
 
-    cache_file = tmp_path / "crosswalk.json"
+    cache_file = tmp_path / "crosswalk_yahoo_id.json"
     cache_file.write_text("{corrupted")
 
     result2 = load_crosswalk(cache_dir=tmp_path, fetcher=fetcher)
@@ -169,7 +169,7 @@ def test_load_crosswalk_corrupt_cache_with_failing_fetcher_raises_fetch_error(tm
 
     load_crosswalk(cache_dir=tmp_path, fetcher=ok)
 
-    cache_file = tmp_path / "crosswalk.json"
+    cache_file = tmp_path / "crosswalk_yahoo_id.json"
     cache_file.write_text("{bad json")
 
     with pytest.raises(ConnectionError, match="network down"):
@@ -502,3 +502,46 @@ def test_league_loaders_hit_the_right_urls_and_cache_per_league(tmp_path):
     # actually pins the on-disk name.
     assert (tmp_path / "rosters_123.json").exists()
     assert rosters_cache_key("123") == "rosters_123"
+
+
+def test_load_weekly_actuals_carries_the_week_and_the_opponent(tmp_path):
+    """The actuals endpoint is the mirror of the projections one, and `opponent`
+    is the whole reason it exists -- it is the join for matchup strength. Same
+    per-week cache key for the same reason: without the week, every week after
+    the first is served week 1's results while looking healthy."""
+    from ffhelper.data import load_weekly_actuals
+    seen = []
+
+    def fake(url):
+        seen.append(url)
+        return ('[{"player_id": "4034", "week": 3, "team": "SF", "opponent": "SEA", '
+                '"stats": {"pts_ppr": 18.4, "rush_yd": 76.0}}]')
+
+    rows = load_weekly_actuals("2025", 3, cache_dir=tmp_path, fetcher=fake)
+
+    assert all("/stats/nfl/2025/3?" in u for u in seen), seen
+    assert len(rows) == 6          # one call per position
+    assert rows[0]["opponent"] == "SEA"
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert any("stats_2025_wk3" in n for n in names), names
+
+
+def test_load_nfl_injuries_keeps_only_the_asked_for_week(tmp_path):
+    """One CSV holds every week of the season. Without the week filter a lineup
+    would carry September's practice report in December, looking healthy."""
+    from ffhelper.data import load_nfl_injuries
+
+    csv_text = (
+        "season,week,gsis_id,full_name,report_status,practice_status\n"
+        # A DIFFERENT player, so dropping the week filter ADDS a key rather than
+        # being overwritten by the week-5 row for the same man -- the first
+        # version of this test could not see the bug it existed for.
+        "2025,4,00-0035676,Last Week Only,,Limited Participation in Practice\n"
+        "2025,5,00-0038543,Jahmyr Gibbs,Questionable,Did Not Participate In Practice\n"
+        "2025,5,00-0033280,Christian McCaffrey,,Full Participation in Practice\n"
+        "2025,5,,No Id Guy,,Full Participation in Practice\n"
+        "2025,5,00-0000009,No Practice Filed,Out,\n"
+    )
+    out = load_nfl_injuries("2025", 5, cache_dir=tmp_path, fetcher=lambda url: csv_text)
+
+    assert out == {"00-0038543": "DNP", "00-0033280": "Full"}
