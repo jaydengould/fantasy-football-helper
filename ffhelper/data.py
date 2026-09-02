@@ -358,6 +358,38 @@ def load_nfl_state(
     )
 
 
+SLEEPER_TRENDING_URL = (
+    "https://api.sleeper.app/v1/players/nfl/trending/{kind}"
+    "?lookback_hours={hours}&limit={limit}"
+)
+
+
+def load_trending(
+    kind: str, lookback_hours: int = 24, limit: int = 100,
+    cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None,
+) -> dict[str, int]:
+    """Adds or drops across all of Sleeper in the last `lookback_hours`.
+
+    NATIONAL counts, across millions of leagues -- they say nothing about
+    whether your own leaguemates want a player, and must never be used to
+    predict whether a claim wins. Price description only; see the spec.
+
+    The cache key carries the kind. Without it the second caller is served the
+    first one's answer and every drop count is silently an add count -- the same
+    defect the weekly-projection key was fixed for.
+    """
+    if kind not in ("add", "drop"):
+        raise ValueError(f"trending kind must be 'add' or 'drop', got {kind!r}")
+    rows = fetch_json(
+        SLEEPER_TRENDING_URL.format(kind=kind, hours=lookback_hours, limit=limit),
+        f"trending_{kind}_{lookback_hours}h",
+        ttl_seconds=3600,
+        cache_dir=cache_dir,
+        fetcher=fetcher,
+    )
+    return {r["player_id"]: r.get("count", 0) for r in rows if r.get("player_id")}
+
+
 def load_projections(
     season: str, cache_dir: Path = CACHE_DIR, fetcher: Callable[[str], str] | None = None
 ) -> list[dict]:

@@ -545,3 +545,39 @@ def test_load_nfl_injuries_keeps_only_the_asked_for_week(tmp_path):
     out = load_nfl_injuries("2025", 5, cache_dir=tmp_path, fetcher=lambda url: csv_text)
 
     assert out == {"00-0038543": "DNP", "00-0033280": "Full"}
+
+
+def test_load_trending_maps_player_id_to_count(tmp_path):
+    from ffhelper.data import load_trending
+
+    body = '[{"player_id": "11237", "count": 279845}, {"player_id": "8800", "count": 188559}]'
+    got = load_trending("add", cache_dir=tmp_path, fetcher=lambda url: body)
+    assert got == {"11237": 279845, "8800": 188559}
+
+
+def test_load_trending_cache_key_separates_add_from_drop(tmp_path):
+    # Without the kind in the key, the second caller is served the first one's
+    # answer and every "dropped" count is silently an "added" count. Same defect
+    # as the weekly-projection cache key that had to carry the week.
+    from ffhelper.data import load_trending
+
+    load_trending("add", cache_dir=tmp_path,
+                  fetcher=lambda url: '[{"player_id": "1", "count": 5}]')
+    got = load_trending("drop", cache_dir=tmp_path,
+                        fetcher=lambda url: '[{"player_id": "2", "count": 9}]')
+    assert got == {"2": 9}
+
+
+def test_load_trending_rejects_an_unknown_kind(tmp_path):
+    from ffhelper.data import load_trending
+
+    with pytest.raises(ValueError):
+        load_trending("sideways", cache_dir=tmp_path, fetcher=lambda url: "[]")
+
+
+def test_load_trending_skips_rows_with_no_player_id(tmp_path):
+    from ffhelper.data import load_trending
+
+    body = '[{"count": 5}, {"player_id": "8800", "count": 12}]'
+    got = load_trending("add", cache_dir=tmp_path, fetcher=lambda url: body)
+    assert got == {"8800": 12}

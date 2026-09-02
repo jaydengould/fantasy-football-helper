@@ -364,6 +364,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if row.get(\"bye\"):", "if set_adp and row.get(\"bye\"):"),
         ("weekly projection cache key drops the week -- every week serves week 1",
          'f"proj_{season}_wk{week}_{pos}"', 'f"proj_{season}_{pos}"'),
+        ("trending cache key ignores add/drop",
+         'f"trending_{kind}_{lookback_hours}h"', 'f"trending_{lookback_hours}h"'),
         ("weekly actuals cache key drops the week",
          'f"stats_{season}_wk{week}_{pos}"', 'f"stats_{season}_{pos}"'),
         ("injury report keeps every week, not the one asked for",
@@ -574,13 +576,21 @@ def _target_path(fname: str) -> Path:
     return ROOT / fname if "/" in fname else ROOT / "ffhelper" / fname
 
 
-def main() -> int:
+def main(only: str = "") -> int:
+    """Run every mutation, or only those whose label contains `only`.
+
+    The filter exists so a task can check the one mutation it just added in
+    seconds instead of re-running all of them; the whole set still runs before
+    a branch closes, and a filtered run says so in its own total.
+    """
     results = []
     for fname, muts in MUTATIONS.items():
         path = _target_path(fname)
         original = path.read_text()
         try:
             for label, old, new in muts:
+                if only and only not in label:
+                    continue
                 n = original.count(old)
                 if n == 0:
                     results.append((fname, label, "STALE - pattern gone, update this script"))
@@ -622,4 +632,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else ""))
