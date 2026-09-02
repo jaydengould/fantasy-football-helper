@@ -2561,7 +2561,10 @@ def test_preflight_reports_projection_coverage_for_rostered_players(monkeypatch,
     out = capsys.readouterr().out
 
     assert result == 0
-    assert "projections     : 1 of 3 rostered players projected for week 1" in out
+    # "league-wide" is load-bearing: this counts every team's players (both
+    # rosters above), not yours. The hand-entered branch counts your roster
+    # alone and says so differently.
+    assert "projections     : 1 of 3 players rostered league-wide projected for week 1" in out
 
 
 # --- Final review, item 1: /state/nfl and rosters must degrade to a visible
@@ -2685,3 +2688,86 @@ def test_lineup_survives_a_dead_users_endpoint_and_still_prints_the_lineup(monke
     # The override note still fires, and still refuses to claim an owner it
     # could not look up -- a wrong-but-valid override must stay visible.
     assert "an unrecognised owner" in out
+
+
+# --- Final review round 3: three more from the scoped re-review of the fix
+# wave itself. ---
+
+
+def test_preflight_is_incomplete_when_the_projections_join_cannot_run(monkeypatch, capsys):
+    """`projections` was the only failure branch that did not set ok=False --
+    every sibling (nfl week, rosters, feed reachable) does. So a dead
+    projections endpoint on the morning of week 1 printed PREFLIGHT OK and
+    exited 0, from the one check that exists to prove season mode can run."""
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                        lambda league, tunables: (_loop_players(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    monkeypatch.setattr("ffhelper.cli.load_nfl_state",
+                        lambda: {"week": 1, "season": "2026", "season_type": "regular"})
+    monkeypatch.setattr("ffhelper.cli.load_league_rosters", lambda league_id: [
+        {"roster_id": 1, "players": ["10"]}])
+
+    def boom(season, week):
+        raise ConnectionError("simulated: projections endpoint down")
+    monkeypatch.setattr("ffhelper.cli.load_weekly_projections", boom)
+
+    result = _preflight(_loop_league(draft_slot=3), Tunables())
+    out = capsys.readouterr().out
+
+    assert "projections     : NO -- simulated: projections endpoint down" in out
+    assert "PREFLIGHT INCOMPLETE" in out
+    assert result == 1
+
+
+def test_preflight_treats_week_zero_as_no_week_just_as_lineup_does(monkeypatch, capsys):
+    """Sleeper's /state/nfl serves `"week": 0` in the offseason. `_lineup`
+    guards with `if not week` and refuses to guess; `_preflight` guarded with
+    `if week is None`, so it fell through and made a real week-0 projections
+    call, printing an alarming '0 of N ... for week 0' from a state its own
+    sibling deliberately treats as 'no week'."""
+    monkeypatch.setattr("ffhelper.cli.load_board_inputs",
+                        lambda league, tunables: (_loop_players(), _loop_settings()))
+    monkeypatch.setattr("ffhelper.cli.SleeperFeed", lambda draft_id: _FakeFeed(picks=[]))
+    monkeypatch.setattr("ffhelper.cli.load_nfl_state",
+                        lambda: {"week": 0, "season": "2026", "season_type": "pre"})
+    monkeypatch.setattr("ffhelper.cli.load_league_rosters", lambda league_id: [
+        {"roster_id": 1, "players": ["10"]}])
+
+    def must_not_be_called(season, week):
+        raise AssertionError("week 0 is not a week -- do not fetch projections for it")
+    monkeypatch.setattr("ffhelper.cli.load_weekly_projections", must_not_be_called)
+
+    _preflight(_loop_league(draft_slot=3), Tunables())
+    out = capsys.readouterr().out
+
+    assert "projections     : not checked -- no NFL week resolved" in out
+    assert "week 0" not in out
+
+
+def test_lineup_still_names_the_roster_id_override_when_rosters_are_unreachable(
+        monkeypatch, capsys):
+    """The override note moved inside the branch that needs a successful
+    rosters fetch, so a dead endpoint left a user running a hand-set
+    roster_id with no indication an override was in play at all. Both facts
+    have to be on screen: an override is active, AND nothing was read."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="sleeper-main", platform="sleeper", league_id="L1",
+                    draft_slot=5, roster_id=7)
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: _lineup_settings())
+    monkeypatch.setattr(cli, "load_players", lambda: {})
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+
+    def boom(league_id):
+        raise ConnectionError("simulated: rosters endpoint down, no cache")
+    monkeypatch.setattr(cli, "load_league_rosters", boom)
+
+    result = cli._lineup(league, Tunables(), week=3)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "could not reach Sleeper's league rosters endpoint" in out
+    assert "roster_id 7" in out and "override" in out

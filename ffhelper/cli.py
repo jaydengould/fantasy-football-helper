@@ -970,11 +970,17 @@ def _preflight(league: League, tunables: Tunables) -> int:
         ok = False
 
     rostered_ids: list[str] = []
+    # Named because the Sleeper and hand-entered branches below count different
+    # populations: every team in the league, versus your roster alone. Under a
+    # single "rostered players" label those two numbers read as the same
+    # measurement and neither reader can tell which one they got.
+    roster_scope = "rostered"
     if league.platform == "sleeper":
         try:
             rosters = load_league_rosters(league.league_id)
             print(f"rosters         : {len(rosters)} teams")
             rostered_ids = sorted({pid for r in rosters for pid in (r.get("players") or [])})
+            roster_scope = "rostered league-wide"
         except Exception as exc:                      # noqa: BLE001 - degrade, never fabricate
             print(f"rosters         : NO -- {exc}")
             ok = False
@@ -986,26 +992,35 @@ def _preflight(league: League, tunables: Tunables) -> int:
               f"{len(problems)} unresolved, "
               f"{'missing' if age is None else f'{age}d old'}")
         rostered_ids = [p.sleeper_id for p in roster]
+        roster_scope = "on your roster"
 
     # The spec's Testing section requires this: "rosters fetch, weekly
     # projections join". The join is exactly what broke mid-build -- most
     # rows for an unprojected week carry only descriptive fields, and a bad
     # guard once reported zero unprojected players when one was correct.
-    if week is None:
+    # `not week`, not `is None`: Sleeper serves "week": 0 in the offseason, and
+    # `_lineup` already refuses to treat that as a week. Two sibling functions
+    # disagreeing about what counts as "no week" is how one of them ends up
+    # fetching projections for week 0.
+    if not week:
         print("projections     : not checked -- no NFL week resolved")
     elif not rostered_ids:
         # No network call to make: nobody is rostered (or the roster fetch
         # already failed and said so above).
-        print(f"projections     : 0 of 0 rostered players projected for week {week}")
+        print(f"projections     : 0 of 0 players {roster_scope} projected for week {week}")
     else:
         try:
             weekly = season_mod.weekly_points(
                 load_weekly_projections(season_str, week), settings.scoring)
             projected = sum(1 for pid in rostered_ids if pid in weekly)
-            print(f"projections     : {projected} of {len(rostered_ids)} rostered "
-                  f"players projected for week {week}")
+            print(f"projections     : {projected} of {len(rostered_ids)} players "
+                  f"{roster_scope} projected for week {week}")
         except Exception as exc:                      # noqa: BLE001 - degrade, never fabricate
+            # Every sibling check sets ok=False on failure. Without it the one
+            # check that proves season mode can run printed PREFLIGHT OK and
+            # exited 0 while the projections endpoint was down.
             print(f"projections     : NO -- {exc}")
+            ok = False
 
     if settings.draft_id:
         try:
@@ -1207,6 +1222,14 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
             # roster_id" note below is about a SPECIFIC id the payload doesn't
             # contain and would be misleading here, where nothing was fetched
             # at all.
+            if used_override:
+                # The owner-naming note lives in the success branch, so without
+                # this a hand-set roster_id goes completely unmentioned in
+                # exactly the run that read nothing. Both facts have to show:
+                # an override is active, and nothing came back to check it
+                # against.
+                notes.append(f"using roster_id {rid} from config.toml (override) -- "
+                             f"could not be checked against any owner, nothing was read")
             roster = []
         else:
             ids = season_mod.roster_player_ids(rosters, rid)

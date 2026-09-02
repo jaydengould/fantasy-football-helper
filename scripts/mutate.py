@@ -251,12 +251,14 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          '            rosters = load_league_rosters(league.league_id)\n'
          '            print(f"rosters         : {len(rosters)} teams")\n'
          '            rostered_ids = sorted({pid for r in rosters for pid in (r.get("players") or [])})\n'
+         '            roster_scope = "rostered league-wide"\n'
          '        except Exception as exc:                      # noqa: BLE001 - degrade, never fabricate\n'
          '            print(f"rosters         : NO -- {exc}")\n'
          '            ok = False',
          '        rosters = load_league_rosters(league.league_id)\n'
          '        print(f"rosters         : {len(rosters)} teams")\n'
-         '        rostered_ids = sorted({pid for r in rosters for pid in (r.get("players") or [])})'),
+         '        rostered_ids = sorted({pid for r in rosters for pid in (r.get("players") or [])})\n'
+         '        roster_scope = "rostered league-wide"'),
         ("preflight projections join reports everyone rostered as projected",
          "projected = sum(1 for pid in rostered_ids if pid in weekly)",
          "projected = len(rostered_ids)"),
@@ -419,7 +421,14 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("panel counts a starter on the bench as well",
          "if p.sleeper_id not in started]", "]"),
         ("panel hides empty slots instead of showing them",
-         "    return out", "    return [r for r in out if r[1] is not None]"),
+         # Anchored on the line above, because a bare "    return out" also
+         # matches `board_rows`'s filter 30 lines earlier -- and replace(.., 1)
+         # took THAT one, so this mutation was reporting "killed" for breaking
+         # a completely different function.
+         '    out += [("BN", None)] * max(0, bench_slots - len(remaining))\n'
+         "    return out",
+         '    out += [("BN", None)] * max(0, bench_slots - len(remaining))\n'
+         "    return [r for r in out if r[1] is not None]"),
         ("override shown on a feed league, where it is a dead control",
          '            {"display": "none"} if has_feed else {},',
          "            {},"),
@@ -500,17 +509,34 @@ if len(_KEYS) != len(set(_KEYS)):
                      "would be silently dropped. Merge them.")
 
 
+def _target_path(fname: str) -> Path:
+    """A key with a slash is a path from ROOT (scripts/); anything else is a
+    module in the package."""
+    return ROOT / fname if "/" in fname else ROOT / "ffhelper" / fname
+
+
 def main() -> int:
     results = []
     for fname, muts in MUTATIONS.items():
-        # A key with a slash is a path from ROOT (scripts/); anything else is a
-        # module in the package.
-        path = ROOT / fname if "/" in fname else ROOT / "ffhelper" / fname
+        path = _target_path(fname)
         original = path.read_text()
         try:
             for label, old, new in muts:
-                if old not in original:
+                n = original.count(old)
+                if n == 0:
                     results.append((fname, label, "STALE - pattern gone, update this script"))
+                    continue
+                if n > 1:
+                    # `replace(old, new, 1)` silently takes the FIRST match, so
+                    # an ambiguous pattern mutates somewhere other than the line
+                    # the label names -- and then reports "killed" for breaking
+                    # an unrelated function. Found 2026-09-02 in app.py, where a
+                    # bare "    return out" hit `board_rows` instead of the
+                    # roster panel. Same failure shape as the duplicate-key bug
+                    # above: the check reports success while checking the wrong
+                    # thing. Anchor the pattern on an adjacent line instead.
+                    results.append((fname, label, f"AMBIGUOUS - matches {n} places, "
+                                                  "anchor it on an adjacent line"))
                     continue
                 path.write_text(original.replace(old, new, 1))
                 p = subprocess.run(

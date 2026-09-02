@@ -495,8 +495,10 @@ def test_league_loaders_hit_the_right_urls_and_cache_per_league(tmp_path):
     got = load_league_rosters("123", cache_dir=tmp_path, fetcher=fake)
     assert seen == ["https://api.sleeper.app/v1/league/123/rosters"]
     assert got[0]["roster_id"] == 3
-    # EXACT filename, not a substring -- a substring check still passes if the
-    # key format grows to "rosters_123_v2", which would silently break
-    # cli.cache_age_minutes's matching call (it would look for a file that no
-    # longer exists and always report "no age data").
-    assert (tmp_path / f"{rosters_cache_key('123')}.json").exists()
+    # The LITERAL filename. Deriving it from `rosters_cache_key` -- the very
+    # function under test -- made this assertion pass for any key format at
+    # all, including the "rosters_123_v2" case the comment claimed to catch:
+    # both sides moved together. The exact string is the only form that
+    # actually pins the on-disk name.
+    assert (tmp_path / "rosters_123.json").exists()
+    assert rosters_cache_key("123") == "rosters_123"
