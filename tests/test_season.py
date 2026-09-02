@@ -213,7 +213,7 @@ def test_start_sit_no_close_call_when_starter_is_unprojected():
     the incumbent has no number (fabricated 0.0)."""
     # Construct case: unprojected RB will be chosen as starter (higher proj_pts than zero_proj)
     # but is actually unprojected (no scoring keys), while zero_proj is genuine 0.0
-    roster_raw = [mk("zero_proj", "RB", 0.0), mk("unprojected", "RB", 10.0)]
+    roster_raw = [mk("unprojected", "RB", 10.0), mk("zero_proj", "RB", 0.0)]
     rows = [
         {"player_id": "zero_proj", "stats": {"rec": 0.0}},
         {"player_id": "unprojected", "stats": {"adp_dd_ppr": 1000.0}},
