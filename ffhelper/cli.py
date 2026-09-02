@@ -1138,7 +1138,20 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
 
     owner: str | None = None
     if league.platform == "sleeper":
-        rosters = load_league_rosters(league.league_id)
+        rosters_failed = False
+        try:
+            rosters = load_league_rosters(league.league_id)
+        except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+            # `fetch_json`'s stale_ok=True only saves you if a cache file
+            # already exists -- first run on a new machine, a cleared
+            # `.cache/`, or a brand-new league all raise here instead. Bare,
+            # that is an unhandled traceback printing nothing: no roster, no
+            # notes, no partial lineup. Same defect class as the bare
+            # get_picks() a few lines below.
+            rosters = []
+            rosters_failed = True
+            notes.append(f"could not reach Sleeper's league rosters endpoint "
+                         f"({exc}) -- showing an empty roster")
         # `fetch_json` defaults to stale_ok=True, so a FAILED fetch silently
         # serves whatever cached copy exists and the roster looks healthy while
         # being out of date. That is the shape of two defects this project has
@@ -1189,7 +1202,11 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
                 notes.append("could not derive your roster_id from the draft -- "
                              "set `roster_id` in config.toml for this league")
 
-        if rid is None:
+        if rid is None or rosters_failed:
+            # rosters_failed already left its own note above; the "orphaned
+            # roster_id" note below is about a SPECIFIC id the payload doesn't
+            # contain and would be misleading here, where nothing was fetched
+            # at all.
             roster = []
         else:
             ids = season_mod.roster_player_ids(rosters, rid)

@@ -2601,3 +2601,43 @@ def test_preflight_survives_a_dead_rosters_endpoint_and_reaches_the_feed_check(m
 
     assert "rosters         : NO" in out
     assert "feed reachable" in out          # reached the check below, not aborted
+
+
+# --- Final review round 2: load_league_rosters inside _lineup was still
+# unguarded -- its stale-cache fallback only saves you if a cache file
+# already exists, and a first run on a new machine (or a cleared .cache/, or
+# a brand-new league) raises instead. ---
+
+
+def test_lineup_survives_a_dead_rosters_endpoint_and_says_so(monkeypatch, capsys):
+    """Bare, `load_league_rosters` raising crashes _lineup with an unhandled
+    traceback: no roster, no notes, no partial lineup -- the same defect
+    class as the bare get_picks() a few lines below it in the same function.
+    The roster_id override is used here to isolate this test from the draft
+    feed, which already has its own guard and its own test."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="sleeper-main", platform="sleeper", league_id="L1",
+                    draft_slot=5, roster_id=7)
+    settings = _lineup_settings()
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: {})
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    monkeypatch.setattr(cli, "cache_age_minutes", lambda key: None)
+
+    def boom(league_id):
+        raise ConnectionError("simulated: rosters endpoint down, no cache")
+    monkeypatch.setattr(cli, "load_league_rosters", boom)
+
+    def must_not_be_called(draft_id):
+        raise AssertionError("the override must skip the draft feed entirely")
+    monkeypatch.setattr(cli, "SleeperFeed", must_not_be_called)
+
+    result = cli._lineup(league, Tunables(), week=3)
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert "could not reach Sleeper's league rosters endpoint" in out
+    assert "simulated: rosters endpoint down, no cache" in out
