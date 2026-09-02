@@ -105,8 +105,12 @@ Unused and wanted: `injury_status`, `injury_body_part`, `injury_notes`,
 `injury_start_date`, `practice_participation`, `practice_description`,
 `news_updated`, `depth_chart_order`, `depth_chart_position`, `status`.
 
-This is the structured form of the news the user asked about, and it costs one
-dataclass change. `depth_chart_order` is a direct waiver signal: the backup who
+These are the structured form of the news the user asked about, and they cost one
+dataclass change. **Measured after shipping them: `injury_status` covers 256
+players, `injury_body_part` 253, `depth_chart_order` 617 — and
+`practice_participation` covers ZERO.** Sleeper does not carry practice reports;
+§5b brings them from nflverse instead. Recheck the Sleeper field in week 1 before
+assuming it stays empty in season. `depth_chart_order` is a direct waiver signal: the backup who
 becomes the starter on Wednesday is the claim you want on Tuesday.
 
 ### 5. Trending adds/drops — a PRICE signal
@@ -118,6 +122,36 @@ the hundreds of thousands. This is crowd consensus on the wire.
 FAAB bid (how contested is this claim) and a divergence flag (the wire is
 chasing someone our numbers do not like). Feeding it into value would be
 non-negotiable #2 by a new route.
+
+### 5b. nflverse injury reports — the one real gap, added 2026-09-01
+
+**Measured after Task 1-2 shipped, because the fields promised in source 4 did
+not deliver what this spec claimed.** Sleeper carries `injury_status` for 256
+players and `practice_participation` for **zero of 3231** — the sentence above
+calling those fields "the structured form of the news" was written off a single
+populated row and was wrong about the practice half.
+
+nflverse fills exactly that gap:
+
+| | Sleeper | nflverse `injuries_<season>.csv` |
+| --- | --- | --- |
+| practice status (Full / Limited / DNP) | 0 of 3231 | **99% of 6068 rows, weeks 1-22** |
+| game designation (Out / Doubtful / Questionable) | 256 players | 46% of rows — correct, it is only filed for players who have one |
+| history | current state only | 2009-2025 |
+
+**It joins on `gsis_id` THROUGH THE CROSSWALK ALREADY FETCHED.** `db_playerids.csv`
+carries `gsis_id` for all 12484 rows. Direct from Sleeper the coverage is 3/15 on
+a real roster; through the crosswalk it is **14/15 and 13/14**, the only miss
+being a team defense, which has no injury report at all. Same crosswalk, same job
+it already does for `yahoo_id`. `Player` gains a `gsis_id` field.
+
+**No new dependency.** nflverse publishes plain CSV on GitHub releases, read with
+`requests` and stdlib `csv`. `nflreadpy` is a wrapper over these same files, so
+the library stays cut (below) while the data comes in.
+
+**PHASE 4b, not 4a, and the reason is a 404:** `injuries_2026.csv` does not exist
+yet. It appears once week-1 games are reported, around Sept 10. This project does
+not ship against a source it has not run.
 
 ### 6. `nflreadpy` — NOT in Phase 4
 
