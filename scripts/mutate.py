@@ -24,6 +24,7 @@ KNOWN EQUIVALENT MUTANT (expected to survive, do not chase):
   "tier threshold strictness" -- `>` vs `>=` on float gaps. Two gaps are never
   exactly equal on real data, so no test can distinguish the two forms.
 """
+import importlib.util
 import re
 import subprocess
 import sys
@@ -591,6 +592,25 @@ if len(_KEYS) != len(set(_KEYS)):
                      "would be silently dropped. Merge them.")
 
 
+def _write(path: Path, text: str) -> None:
+    """Write source and DROP ITS CACHED BYTECODE.
+
+    Python validates a `.pyc` on the source's mtime-in-SECONDS plus its size.
+    A mutation and its restore are the same size whenever old and new are the
+    same length, and both happen within one second -- so the interpreter keeps
+    serving the bytecode compiled from whichever version got there first. Found
+    2026-09-02: after a full run the tree was byte-identical to HEAD, `git
+    status` was clean, and one test failed because the loaded module was still
+    a mutant. The dangerous direction is the other one, where a restored file
+    runs mutated code and a mutation reports `killed` for a check that never
+    ran -- the third time this tool has reported success while checking
+    something else.
+    """
+    path.write_text(text)
+    cached = Path(importlib.util.cache_from_source(str(path)))
+    cached.unlink(missing_ok=True)
+
+
 def _target_path(fname: str) -> Path:
     """A key with a slash is a path from ROOT (scripts/); anything else is a
     module in the package."""
@@ -628,14 +648,14 @@ def main(only: str = "") -> int:
                     results.append((fname, label, f"AMBIGUOUS - matches {n} places, "
                                                   "anchor it on an adjacent line"))
                     continue
-                path.write_text(original.replace(old, new, 1))
+                _write(path, original.replace(old, new, 1))
                 p = subprocess.run(
                     [str(PY), "-m", "pytest", "-x", "-q", "--no-header", "-p", "no:cacheprovider"],
                     cwd=ROOT, capture_output=True, text=True, timeout=300,
                 )
                 results.append((fname, label, "killed" if p.returncode else "*** SURVIVED ***"))
         finally:
-            path.write_text(original)              # always restore
+            _write(path, original)                 # always restore
 
     print(f"\n{'file':<22} {'mutation':<32} result")
     print("-" * 62)
