@@ -27,7 +27,7 @@ lineup command works end to end; waivers and the trade finder are not built yet.
 | Web board (`python -m ffhelper.app`) | working |
 | Weekly start/sit lineup (`lineup`) | working |
 | Official practice report (nflverse) | working — the file appears once week 1 is played |
-| Opponent matchup adjustment | built, measured, and **cut** — it lost to plain projections on 2024 and 2025 |
+| Opponent matchup context | working — a rank, not an adjustment: adjusting lost to plain projections on 2024 and 2025 |
 | Waivers, trade finder | planned |
 
 ## Requirements
@@ -282,9 +282,24 @@ STARTERS
 BENCH
         Kyler Murray             QB  MIN   20.1
         ...
+matchup context : none -- no completed weeks yet (a rank off no games is not a rank)
 practice report : unavailable (HTTPError) -- nflverse publishes injuries_2026.csv once week 1 has been played
 snapshot        : 15 players recorded for week 1
 ```
+
+Once three games have been played, each row carries its matchup — a rank, never
+a number of points (real output, week 6 of 2025 replayed):
+
+```
+  WR    Puka Nacua               WR  LAR   22.3  vs BAL soft 31/32  [Questionable]
+  TE    Trey McBride             TE  ARI   14.8  vs IND tough 11/32
+```
+
+That is where the opponent ranks in points allowed to that position this season,
+under your league's own scoring, 1 being the stingiest. Nothing reads it:
+adjusting a projection by that rank was measured on 2024 and 2025 and made the
+projection *worse*, so the tool shows what a defense has given up and leaves the
+call to you.
 
 The practice line is the official Wed-Fri injury report, which Sleeper does not
 carry for anybody; it joins on `gsis_id` and shows as `[Limited]` or `[DNP]`
@@ -481,7 +496,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 412 tests, no network, runs in ~0.6s
+.venv/bin/pytest          # 419 tests, no network, runs in ~0.7s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

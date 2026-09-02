@@ -121,6 +121,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "return False"),
     ],
     "cli.py": [
+        ("matchup context ranked in week 1, off no completed weeks at all",
+         "    if week <= 1:", "    if week <= 0:"),
         ("restore banner reports typed marks, not the roster you will see",
          "    mine = _manual_mine(log_path, mark_state.mine, draft_slot, num_teams, has_feed)",
          "    mine = mark_state.mine"),
@@ -524,6 +526,13 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "            if row.get(\"player_id\") and row.get(\"opponent\")}",
          "    return {row[\"player_id\"]: row.get(\"opponent\") for row in projections\n"
          "            if row.get(\"player_id\")}"),
+        ("matchup rank inverted -- the stingiest defense reads as the softest",
+         "        key=lambda k: rates.allowed[k],", "        key=lambda k: -rates.allowed[k],"),
+        ("matchup ranks a defense with one game beside one with ten",
+         "        (k for k, n in rates.games.items() if n >= min_games),",
+         "        (k for k, n in rates.games.items()),"),
+        ("matchup ranks every position as one pool",
+         "        by_pos[key[1]].append(key)", "        by_pos[\"ALL\"].append(key)"),
         ("practice status overwritten by an absent nflverse row",
          "    return [replace(p, practice_participation=(\n"
          "        practice.get(p.gsis_id) if p.gsis_id else None) or p.practice_participation)\n"

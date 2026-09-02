@@ -365,13 +365,28 @@ fresh opinion.
   behaves identically, and the split-half stability of the rate flips sign
   between seasons at the same position (WR +0.351 in 2025, −0.268 in 2024). A
   quantity that unstable is noise.
-  **The spec's stated fallback was "ship it display-only". That was declined**
-  by the user 2026-09-02: a points delta with r≈0.04 to outcomes, printed beside
-  a projection that has real signal, is the over-reaction the spec itself calls
-  the commonest fantasy error a tool could automate. `season.points_allowed`,
+  **The spec's stated fallback — ship the points delta display-only — was
+  declined**: a number with r≈0.04 to outcomes, printed beside a projection that
+  has real signal, is the over-reaction the spec itself calls the commonest
+  fantasy error a tool could automate. `season.points_allowed`,
   `matchup_factor`, `matchup_deltas` and `data.load_weekly_actuals` all stay —
   they are what the backtest scores and the one line that reopens it.
   **To reopen, bring a season where the adjustment wins that table.**
+- **What ships instead is DESCRIPTIVE CONTEXT, and the distinction is the whole
+  point** (chosen by the user 2026-09-02 after both alternatives were measured).
+  Each row carries `vs CAR soft 31/32` — where that opponent RANKS in points
+  allowed to that position so far this season, 1 = stingiest, under this
+  league's own scoring. It states what a defense HAS given up, which is true and
+  checkable; it never states what a player WILL score. No number it produces
+  touches a projection, the sort key, or the snapshot's `matchup` column, and
+  the line under the lineup says so on screen.
+  **The tercile label was measured too, not assumed.** Residual (actual −
+  projected) by matchup tercile, out of sample: RB and TE point the right way in
+  both seasons, QB and WR point the WRONG way in 2024 (QB +1.00 → +0.76, WR
+  +0.65 → +0.26). Under a null of no signal, ≥2 of 4 positions agreeing across
+  two seasons happens ~69% of the time — so that table is not evidence either,
+  and the column is presented as a fact about the past rather than a hint about
+  the future. Silent below 3 completed games per defense, and silent in week 1.
 - **Weekly projections for a PAST season are survivorship-filtered, and it
   bounds every weekly measurement this project will make.** Measured
   2026-09-02: 6165 projected player-weeks in 2025, **6 of which did not play
@@ -407,7 +422,7 @@ fresh opinion.
 | 3.6 | Web board appearance — CSS/layout half (`assets/*.css`, no new dependency) | Aug 28 | **COMPLETE** — built early on the user's call |
 | 3.7 | Web board — the `DataTable` replacement and what it unlocks | offseason | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope. Also the trigger for the deferred `board.py` fold |
 | 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4a-start-sit`, 377 tests / 153 mutations. Runs against both leagues. Awaiting the user's merge |
-| 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | **COMPLETE 2026-09-02** (branch `phase-4b-snapshot`). Snapshot table shipped; `backtest_weekly.py` shipped and it **closed the matchup adjustment** — measured on 2024 and 2025, it loses, so nothing is shown (see Decisions). nflverse practice report shipped and joins 14/15; `injuries_2026.csv` is a 404 until ~Sept 10, so it prints its degraded line today |
+| 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | **COMPLETE 2026-09-02** (branch `phase-4b-snapshot`). Snapshot table shipped; `backtest_weekly.py` shipped and it **closed the matchup ADJUSTMENT** — measured on 2024 and 2025, it loses — so what ships is a descriptive opponent RANK that nothing consumes (see Decisions). nflverse practice report shipped and joins 14/15; `injuries_2026.csv` is a 404 until ~Sept 10, so it prints its degraded line today |
 | 4c | Waivers — free-agent pool, ROS horizon, trending as the FAAB signal | in-season | not started |
 | 5 | Trade finder (own spec) | in-season | not started — unblocked earlier than expected: Sleeper serves every team's roster with no auth |
 
@@ -492,7 +507,7 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
 
 ### 2026-09-02 (fourth block) — 4b FINISHED, and its headline feature was killed by its own gate
 
-**State:** branch `phase-4b-snapshot`, **412 tests** (from 395), **171 mutations,
+**State:** branch `phase-4b-snapshot`, **419 tests** (from 395), **175 mutations,
 1 needing a look** (the documented `value.py` equivalent mutant), exit 0. New:
 `scripts/backtest_weekly.py`. `lineup` re-run live on both leagues.
 
@@ -534,6 +549,34 @@ automate.
 
 The pure functions and the actuals loader STAY — they are what the backtest
 scores, and they are the one line that reopens it.
+
+#### What shipped instead: the rank, not the number
+
+Asked for after the adjustment was cut, and it is a different kind of claim.
+The row now reads
+
+```
+  WR    Puka Nacua               WR  LAR   22.3  vs BAL soft 31/32
+  WR    George Pickens           WR  DAL   17.0  vs CAR tough 2/32
+```
+
+— what that defense HAS allowed to that position this season, ranked, under
+this league's scoring. True and checkable. It touches no projection, no sort
+key and not the snapshot's `matchup` column, and the line under the lineup says
+the ranking ignores it.
+
+**The label was measured before being built, not after.** Residual (actual −
+projected) by matchup tercile, out of sample: RB and TE point the right way in
+both seasons; **QB and WR point the wrong way in 2024** (QB +1.00 → +0.76, WR
++0.65 → +0.26). Under a null of no signal, ≥2 of 4 positions agreeing across two
+seasons happens ~69% of the time. So the coarse form rescues nothing, and the
+column is honest only as a statement about the past — which is exactly how it is
+worded on screen.
+
+Silent below 3 completed games per defense, and silent in week 1, because a rank
+off two games is the over-reaction this was supposed to avoid. Ranked per
+position, never pooled: in the real 2025 replay CAR reads `tough 2/32` to
+receivers and `soft 31/32` to tight ends in the same week.
 
 #### A new contamination shape, and `backtest.py`'s check did not cover it
 

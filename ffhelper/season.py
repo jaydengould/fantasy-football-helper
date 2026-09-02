@@ -196,6 +196,69 @@ def matchup_deltas(
     return out
 
 
+@dataclass(frozen=True)
+class MatchupNote:
+    """Where one opponent ranks in points allowed to one position. CONTEXT ONLY.
+
+    `rank` 1 is the STINGIEST defense, so a high rank is a soft matchup, and
+    `label` says which end it is so nobody has to remember the direction.
+    """
+    defense: str
+    position: str
+    rank: int
+    of: int
+    label: str        # "tough" | "mid" | "soft"
+    games: int
+
+
+def matchup_notes(
+    roster: list[Player], opponent_by_id: dict[str, str], rates: MatchupRates,
+    min_games: int = 3,
+) -> dict[str, MatchupNote]:
+    """Rank each player's opponent against his position. A FACT, not a forecast.
+
+    This exists instead of an adjustment, and the difference is the whole point.
+    `scripts/backtest_weekly.py` scored the adjustment on 2024 and 2025 and it
+    LOST at every position and every shrinkage level, so no number here touches
+    a projection, a sort key, or the snapshot's `matchup` column. What it states
+    is true and checkable -- what this defense has given up so far -- and the
+    reader does the rest.
+
+    Ranked among defenses with at least `min_games` games at that position, and
+    silent below that: a rank built on one or two games is noise, and the early
+    season is exactly when people over-react to it. Week 1 has no completed
+    games at all, so this returns nothing, which is the honest output.
+
+    Terciles rather than a raw number alone because a rank of 14 versus 19 is a
+    distinction the underlying data cannot support -- the split-half stability
+    of these rates flips sign between seasons.
+    """
+    eligible = sorted(
+        (k for k, n in rates.games.items() if n >= min_games),
+        key=lambda k: rates.allowed[k],
+    )
+    by_pos: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for key in eligible:
+        by_pos[key[1]].append(key)
+
+    ranked: dict[tuple[str, str], MatchupNote] = {}
+    for pos, keys in by_pos.items():
+        n = len(keys)
+        for i, key in enumerate(keys):
+            third = n / 3
+            label = "tough" if i < third else ("soft" if i >= n - third else "mid")
+            ranked[key] = MatchupNote(defense=key[0], position=pos, rank=i + 1,
+                                      of=n, label=label, games=rates.games[key])
+
+    out: dict[str, MatchupNote] = {}
+    for p in roster:
+        opp = opponent_by_id.get(p.sleeper_id)
+        note = ranked.get((opp, p.position)) if opp else None
+        if note is not None:
+            out[p.sleeper_id] = note
+    return out
+
+
 def with_practice_status(roster: list[Player], practice: dict[str, str]) -> list[Player]:
     """Copies of `roster` carrying nflverse's practice status where it has one.
 

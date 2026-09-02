@@ -416,8 +416,11 @@ def load_weekly_actuals(
     Scored through `score_stats` like everything else, so "points allowed" is
     points under THIS league's rules, not a generic fantasy-points-against.
 
-    Same 1h TTL as the projections: a completed week never changes, but the
-    CURRENT week does, all Sunday.
+    Cached a day, not an hour: every caller asks only about COMPLETED weeks,
+    and a played week never changes. A caller wanting the current week's numbers
+    while games are running must pass a shorter `ttl_seconds` -- there is no
+    such caller today, and inventing one for it would be inventing a
+    requirement.
     """
     rows: list[dict] = []
     for pos in ("QB", "RB", "WR", "TE", "K", "DEF"):
@@ -425,7 +428,6 @@ def load_weekly_actuals(
             fetch_json(
                 SLEEPER_WEEKLY_STATS_URL.format(season=season, week=week, pos=pos),
                 f"stats_{season}_wk{week}_{pos}",
-                ttl_seconds=3600,
                 cache_dir=cache_dir,
                 fetcher=fetcher,
             )

@@ -547,3 +547,74 @@ def test_with_practice_status_leaves_a_player_with_no_gsis_id_alone():
     roster = [Player("SEA", "Seahawks", "DEF", "SEA")]
 
     assert season.with_practice_status(roster, {None: "DNP"})[0].practice_participation is None
+
+
+def _allowed(pairs, position="RB", games=4):
+    """MatchupRates with a chosen points-allowed rate per defense."""
+    return season.MatchupRates(
+        allowed={(d, position): v for d, v in pairs},
+        games={(d, position): games for d, _ in pairs},
+        league_mean={position: sum(v for _, v in pairs) / len(pairs)})
+
+
+def test_matchup_notes_rank_one_is_the_stingiest_defense():
+    """The direction has to be fixed and stated, because a rank read the wrong
+    way round recommends the exact opposite of what the data says. 1 allows the
+    FEWEST points, so a high rank is the soft matchup, and the label carries the
+    direction so it never has to be remembered."""
+    rates = _allowed([("SF", 11.4), ("GB", 17.9), ("CAR", 24.6)])
+    roster = [mk("a", "RB", 12.0), mk("b", "RB", 9.5)]
+
+    notes = season.matchup_notes(roster, {"a": "SF", "b": "CAR"}, rates)
+
+    assert (notes["a"].rank, notes["a"].label) == (1, "tough")
+    assert (notes["b"].rank, notes["b"].label) == (3, "soft")
+    assert notes["a"].of == 3
+
+
+def test_matchup_notes_stay_silent_on_a_sample_too_small_to_rank():
+    """A rank off one or two games is noise, and the early season is exactly when
+    people over-react to it. Week 1 has no completed games at all, so nothing is
+    printed rather than a rank built on nothing."""
+    rates = _allowed([("SF", 11.4), ("GB", 17.9), ("CAR", 24.6)], games=2)
+
+    assert season.matchup_notes([mk("a", "RB", 12.0)], {"a": "SF"}, rates) == {}
+
+
+def test_matchup_notes_rank_only_against_defenses_with_a_real_sample():
+    """A defense with two games must not sit in the ranking and shift everyone
+    else's position -- it is excluded, and `of` says how many were ranked."""
+    rates = season.MatchupRates(
+        allowed={("SF", "RB"): 11.4, ("GB", "RB"): 17.9, ("CAR", "RB"): 24.6},
+        games={("SF", "RB"): 4, ("GB", "RB"): 4, ("CAR", "RB"): 1},
+        league_mean={"RB": 17.9})
+
+    notes = season.matchup_notes([mk("a", "RB", 12.0), mk("b", "RB", 8.0)],
+                                 {"a": "GB", "b": "CAR"}, rates)
+
+    assert notes["a"].of == 2
+    assert "b" not in notes
+
+
+def test_matchup_notes_are_per_position_never_pooled():
+    """A defense that is generous to tight ends may be the stingiest in the
+    league against running backs. Ranking the two together is the same defect as
+    tiering across positions."""
+    rates = season.MatchupRates(
+        allowed={("GB", "RB"): 24.6, ("SF", "RB"): 11.4,
+                 ("GB", "TE"): 4.1, ("SF", "TE"): 9.8},
+        games={k: 4 for k in (("GB", "RB"), ("SF", "RB"), ("GB", "TE"), ("SF", "TE"))},
+        league_mean={"RB": 18.0, "TE": 6.9})
+    roster = [mk("rb", "RB", 12.0), mk("te", "TE", 7.0)]
+
+    notes = season.matchup_notes(roster, {"rb": "GB", "te": "GB"}, rates)
+
+    assert notes["rb"].rank == 2 and notes["rb"].of == 2      # softest to RBs
+    assert notes["te"].rank == 1                              # stingiest to TEs
+
+
+def test_matchup_notes_skip_a_player_on_a_bye():
+    """No opponent, no matchup. Absent rather than a neutral-looking rank."""
+    rates = _allowed([("SF", 11.4), ("GB", 17.9), ("CAR", 24.6)])
+
+    assert season.matchup_notes([mk("a", "RB", 12.0)], {}, rates) == {}

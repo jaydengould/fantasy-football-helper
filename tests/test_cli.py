@@ -2953,3 +2953,70 @@ def test_lineup_says_the_practice_report_is_unavailable_rather_than_going_quiet(
 
     assert "practice report : unavailable" in out
     assert "!! practice" not in out
+
+
+def test_lineup_prints_the_matchup_as_context_and_never_as_points(monkeypatch,
+                                                                  tmp_path, capsys):
+    """The adjustment lost its backtest on 2024 and 2025, so the screen carries
+    the opponent's RANK and no points at all -- and the line under the lineup
+    says the ranking ignores it. A points delta beside a projection is the
+    over-reaction this tool exists not to automate."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="L2")
+    settings = _lineup_settings(num_teams=10, roster_slots={"RB": 2},
+                                scoring={"rush_yd": 0.1}, draft_id=None)
+    players = {"9221": Player("9221", "Jahmyr Gibbs", "RB", "DET"),
+               "4034": Player("4034", "Christian McCaffrey", "RB", "SF"),
+               "4866": Player("4866", "Saquon Barkley", "RB", "PHI")}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 6, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [
+        {"player_id": "9221", "opponent": "CAR", "stats": {"rush_yd": 92.0}},
+        {"player_id": "4034", "opponent": "SF", "stats": {"rush_yd": 70.0}}])
+    monkeypatch.setattr(cli, "load_nfl_injuries", lambda season, week: {})
+    # Three defenses, so the terciles have somewhere to land: CAR has been
+    # generous to running backs, SF stingy, PHI in between.
+    monkeypatch.setattr(cli, "load_weekly_actuals", lambda season, week: [
+        {"player_id": "9221", "week": week, "team": "DET", "opponent": "CAR",
+         "stats": {"rush_yd": 140.0}},
+        {"player_id": "4866", "week": week, "team": "PHI", "opponent": "PHI",
+         "stats": {"rush_yd": 81.0}},
+        {"player_id": "4034", "week": week, "team": "SF", "opponent": "SF",
+         "stats": {"rush_yd": 20.0}}])
+    monkeypatch.setattr(cli, "ROSTER_DIR", tmp_path)
+    (tmp_path / "yahoo-main.txt").write_text("Jahmyr Gibbs\nChristian McCaffrey\n")
+
+    cli._lineup(league, Tunables(), week=6)
+    out = capsys.readouterr().out
+
+    assert "vs CAR soft 3/3" in out
+    assert "vs SF tough 1/3" in out
+    assert "9.2" in out          # the projection is still points, untouched
+    assert "1 = stingiest" in out
+    assert "NOT used in the ranking" in out
+
+
+def test_lineup_says_there_is_no_matchup_context_in_week_one(monkeypatch,
+                                                             tmp_path, capsys):
+    """No completed weeks, so no rank -- and it says so rather than printing an
+    empty column that reads as 'every matchup is neutral'."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="L2")
+    settings = _lineup_settings(num_teams=10, roster_slots={"QB": 1}, draft_id=None)
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: {})
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 1, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    monkeypatch.setattr(cli, "load_nfl_injuries", lambda season, week: {})
+    monkeypatch.setattr(cli, "load_weekly_actuals",
+                        lambda season, week: pytest.fail("week 1 must fetch no actuals"))
+    monkeypatch.setattr(cli, "ROSTER_DIR", tmp_path)
+
+    cli._lineup(league, Tunables(), week=1)
+
+    assert "matchup context : none -- no completed weeks yet" in capsys.readouterr().out

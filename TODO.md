@@ -96,8 +96,10 @@ item. The project is now a season-mode project.
      current state only, so a week not recorded before it is played can never
      be scored. **Week 1 is recorded for both leagues.** It must keep running
      weekly — nothing schedules it, a `lineup` run is what writes it.
-   - ~~**4b — the matchup adjustment**~~ **CLOSED 2026-09-02 ON A
-     MEASUREMENT, AND NOTHING SHIPS TO THE SCREEN.** `scripts/backtest_weekly.py`
+   - ~~**4b — the matchup adjustment**~~ **CLOSED 2026-09-02 ON A MEASUREMENT.
+     What ships is a descriptive opponent RANK (`vs CAR soft 31/32`) that
+     nothing consumes — no projection, no sort key, no snapshot column. The
+     ADJUSTMENT is what lost:** `scripts/backtest_weekly.py`
      scored it on 2024 and 2025 (~8000 player-weeks) under both leagues'
      scoring, and it LOST at every position and every shrinkage level, with
      error rising monotonically as the adjustment gets louder. Out of sample the
@@ -111,6 +113,15 @@ item. The project is now a season-mode project.
      `data.load_weekly_actuals` STAY — they are what the backtest scores, and
      one line reopens it. **To reopen, bring a season where the adjustment wins
      that table.** Full numbers in `scripts/backtest_weekly.py`'s docstring.
+     - **The coarse good/neutral/bad form was measured too, before building it.**
+       Residual (actual − projected) by matchup tercile, out of sample: RB and TE
+       point the right way in both seasons, **QB and WR point the wrong way in
+       2024** (QB +1.00 → +0.76, WR +0.65 → +0.26). Under a null of no signal,
+       ≥2 of 4 positions agreeing across two seasons happens ~69% of the time —
+       no evidence. So the column is worded as a fact about the past, is silent
+       below 3 completed games per defense and in week 1, and is ranked per
+       position (in the 2025 replay CAR reads `tough 2/32` to WRs and
+       `soft 31/32` to TEs in the same week).
      - **A second finding from the same run, and it constrains every future
        weekly measurement**: the served weekly projections for a PAST season
        are survivorship-filtered. 6165 projected player-weeks in 2025, of which
