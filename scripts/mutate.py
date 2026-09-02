@@ -274,6 +274,10 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("misleading injury codes rendered raw instead of through the display map",
          "injury = INJURY_STATUS_DISPLAY.get(p.injury_status, p.injury_status)",
          "injury = p.injury_status"),
+        ("lineup's rosters-fetch guard drops its note, so a dead endpoint says nothing",
+         'notes.append(f"could not reach Sleeper\'s league rosters endpoint "\n'
+         '                         f"({exc}) -- showing an empty roster")',
+         "pass"),
     ],
     "feeds.py": [
         ("picks poll drops the cache-buster, so Cloudflare serves a stale board",

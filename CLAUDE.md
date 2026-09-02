@@ -353,7 +353,9 @@ fresh opinion.
 | 3.5 | Opponent needs, bye clustering, notifications, manual overrides | Sept 5 | not started — but the bye CLASH flag landed 2026-08-28 in `board_rows`, presentation only, sort untouched |
 | 3.6 | Web board appearance — CSS/layout half (`assets/*.css`, no new dependency) | Aug 28 | **COMPLETE** — built early on the user's call |
 | 3.7 | Web board — the `DataTable` replacement and what it unlocks | offseason | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope. Also the trigger for the deferred `board.py` fold |
-| 4 | Season mode — start/sit + waivers, CLI first | week 1 (Sept 9) | **spec being written 2026-09-01**. Weekly Sleeper projections + props + `nflreadpy` usage |
+| 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE 2026-09-02**, branch `phase-4a-start-sit`. Runs against both leagues |
+| 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | not started — `TODO.md`, spec §5b and the matchup section |
+| 4c | Waivers — free-agent pool, ROS horizon, trending as the FAAB signal | in-season | not started |
 | 5 | Trade finder (own spec) | in-season | not started — unblocked earlier than expected: Sleeper serves every team's roster with no auth |
 
 Phase 1 builds against the Sleeper feed because it needs no auth and Sleeper
@@ -434,6 +436,82 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   may be committed to this public repo.
 
 ## Session log
+
+### 2026-09-02 — PHASE 4a SHIPPED. `lineup` works on both leagues. The plan carried the defects, not the code.
+
+**State:** branch `phase-4a-start-sit`, 16 commits, **362 tests** (from 322), 144
+mutations (1 survivor, the documented equivalent mutant), suite 0.48s with no
+network. Final whole-branch review: **sound, recommend merge, no Critical
+findings.**
+
+`.venv/bin/python -m ffhelper.cli lineup --league sleeper-main` prints the
+optimal starting lineup for the current NFL week under that league's own
+scoring, plus bench, players with no projection, and the close start/sit calls.
+Yahoo runs off `.roster/yahoo-main.txt` because it has no API.
+
+#### The one number that matters: three of four defects were in the PLAN
+
+Every review round found real defects and **three of them were in briefs written
+by the controller, shipped verbatim by implementers doing exactly as told:**
+
+1. `with_weekly_points` fabricated 0.0 for a player with no projection, and that
+   invented number drove a lineup decision with nothing recording it was
+   invented. **The fabricating line was in the brief.** It violated the spec the
+   brief was arguing from.
+2. The fix's guard tested `stats is None`. **Real Sleeper rows for an
+   unprojected player are `{"adp_dd_ppr": 1000.0}`** — a populated dict of
+   descriptive fields. 2843 of 3304 week-1 rows have that shape. The guard
+   passed them, `score_stats` returned 0.0, and the fabrication arrived one
+   layer deeper. Found by the CONTROLLER running the code against the real
+   roster, not by any test.
+3. `_lineup` called `SleeperFeed.get_picks()` bare. Every other call site in the
+   codebase guards it, and `get_picks` uses `stale_ok=False` **by design** so a
+   failed poll raises — a contract that only holds because callers catch. A
+   network blip produced a traceback and printed nothing.
+4. The failure message told the user to set `roster_id` in `config.toml`, and
+   `League` had no such field, so following the advice made `League(**entry)`
+   raise and broke every command.
+
+**The generalisable lesson is not "review works" — it is that a plan detailed
+enough to be transcribed is detailed enough to transcribe a defect.** The
+implementers were not careless; they built what was specified. Test fixtures
+inherited from a brief inherit the brief's misconceptions, which is why (2)
+survived a green suite and a passing mutation run.
+
+#### `draft_slot` is NOT `roster_id`, and assuming so hands you another team
+
+Measured before the plan was written: in the real league **draft_slot 5 maps to
+roster_id 3, and roster_id 5 belongs to a different manager.** The derivation
+goes through the draft's own picks and refuses (returns None) when the draft
+cannot answer — Sleeper mocks set `roster_id: None` on every pick. The plan
+carries a stop condition for it and the live run passes: owner reads `jaydenpg`.
+
+#### Two design calls worth keeping
+
+**A stale roster degrades differently in season mode than on draft night.** The
+draft-night fix for a stale feed was to make failure RAISE, because a stale board
+loses you a player. In season mode a twenty-minute-old roster still gives a
+usable lineup, so the fix is an AGE ON SCREEN, not a hard failure. Same
+information, opposite remedy, because the cost of staleness differs.
+
+**A season-long absence must not fire a weekly alert.** Josh Jacobs is on the
+Commissioner Exempt list and was drafted as a last-round stash, so he carries no
+projection for MONTHS. Sleeper cannot say why — he reads `status: Active`,
+`injury_status: Questionable`, body part Groin, which is simply wrong. The only
+truthful signal is the ABSENCE of a projection. He renders under
+"NO PROJECTION THIS WEEK -- not started, and not a zero" showing `--`, never
+0.0, as a quiet section rather than a `!!` alert that would cry wolf from week 1
+to week 18.
+
+#### `practice_participation` is empty, and the spec said otherwise
+
+Recorded because it was my error: the spec called four Sleeper fields "the
+structured form of the news". Measured after shipping them — `injury_status` 256
+players, `injury_body_part` 253, `depth_chart_order` 617, and
+**`practice_participation` ZERO of 3231.** The claim was generalised from a
+single populated row in an earlier probe. nflverse fills that gap (99% across
+weeks 1-22, joining on `gsis_id` through the crosswalk already fetched) and is
+scheduled for 4b — `injuries_2026.csv` is a 404 until week 1 is played.
 
 ### 2026-09-01 (post-draft) — both drafts done. The freeze lifted and was spent on one fold. Season mode scoped against live endpoints.
 

@@ -810,6 +810,20 @@ def read_roster_file(path: Path, pool: dict[str, Player]) -> tuple[list[Player],
     return players, problems
 
 
+def cache_age_minutes(cache_key: str) -> int | None:
+    """Whole minutes since `.cache/<cache_key>.json` was last written, or None.
+
+    `fetch_json` serves a stale cached copy when a fetch fails (stale_ok=True by
+    default), and says nothing. This is how the caller finds out. Same job as
+    `roster_file_age_days` does for the hand-maintained file: an age on screen,
+    so "healthy but wrong" is visible rather than inferred.
+    """
+    path = CACHE_DIR / f"{cache_key}.json"
+    if not path.exists():
+        return None
+    return int((time.time() - path.stat().st_mtime) // 60)
+
+
 def roster_file_age_days(path: Path) -> int | None:
     """Whole days since the roster file was last edited, or None if absent.
 
@@ -916,11 +930,22 @@ def render_lineup(
     """One frame of the lineup screen. Pure -- no I/O, so it tests without a network."""
     who = f"  ({owner})" if owner else ""
     out = [f"{league_name}{who}   week {week}", ""]
+    # Unprojected starters contribute their invented 0.0 to this total, so the
+    # total is a floor when any starter has no projection. Said on screen below.
     total = sum(p.proj_pts for _, p in state.lineup if p is not None)
     out.append("STARTERS")
+    unprojected_ids = {p.sleeper_id for p in state.unprojected}
     for slot, p in state.lineup:
         if p is None:
             out.append(f"  {slot:<5} -- EMPTY --   no eligible player on this roster")
+        elif p.sleeper_id in unprojected_ids:
+            # A starter can be unprojected when nothing else is eligible for the
+            # slot. Print "--", never "0.0": the 0.0 is a sort value we invented,
+            # and printing it as a projection is the fabrication this whole
+            # design exists to prevent -- arriving in the one place the user is
+            # most likely to trust it.
+            out.append(f"  {slot:<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
+                       f"{'   --':>6}  NO PROJECTION{_status_note(p)}")
         else:
             out.append(f"  {slot:<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
                        f"{p.proj_pts:6.1f}{_status_note(p)}")
@@ -972,6 +997,19 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
     owner: str | None = None
     if league.platform == "sleeper":
         rosters = load_league_rosters(league.league_id)
+        # `fetch_json` defaults to stale_ok=True, so a FAILED fetch silently
+        # serves whatever cached copy exists and the roster looks healthy while
+        # being out of date. That is the shape of two defects this project has
+        # already shipped -- the STALE banner that could never fire, and the
+        # dead feed that rebuilt the board from no picks. The Yahoo file reports
+        # its age; the Sleeper roster must too, and the cache file's mtime is
+        # that age. A waiver claim you made this morning not showing up is the
+        # symptom, and it must not be silent.
+        age_min = cache_age_minutes(f"rosters_{league.league_id}")
+        if age_min is not None and age_min > 30:
+            notes.append(f"roster data is {age_min} minutes old -- a fetch may have "
+                         f"failed and a cached copy was served; recent waiver moves "
+                         f"may be missing")
         # feeds.Pick already carries roster_id AND draft_slot, so no re-fetch and
         # no reshaping: the draft is the only thing that knows which roster is
         # yours, and it is cached like everything else.
