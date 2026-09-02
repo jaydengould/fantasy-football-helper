@@ -157,7 +157,7 @@ not decoration.
 
 | file | change |
 | --- | --- |
-| `data.py` | `load_trending(kind, ...)`, `load_league_transactions(league_id, week)`. Loaders only, same `fetch_json` shape as every sibling. |
+| `data.py` | `load_trending(kind, ...)`. One loader, same `fetch_json` shape as every sibling. |
 | `season.py` | **pure.** `free_agent_pool`, `waiver_targets` → ranked `WaiverTarget(player, gain, drop, weeks_started)`. |
 | `cli.py` | the `waivers` subcommand, and one extraction (below). |
 
@@ -189,7 +189,7 @@ Compute is a non-issue. The cold fetch is the real cost and it is once an hour
 | source down | result |
 | --- | --- |
 | trending | the trending line is absent. Never a zero. |
-| transactions | the priority-cost line is absent; the position line survives (it comes from `rosters`). |
+| a roster with no `waiver_position` | the priority line is absent; the board still ranks. |
 | a week's projections | that week drops out of the ROS sum **and the printed week count says so** — see below. |
 | rosters | no pool can be computed; the command says so and stops. |
 | **Yahoo** | refuses, labelled. The free-agent pool needs every roster and Yahoo has no API. |
@@ -247,3 +247,16 @@ Same discipline as 4a and 4b, for the same reason.
 - **A Dash page.** CLI first, as with `lineup`.
 - **Yahoo waivers.** No API, no pool. If access ever arrives it is a loader and
   nothing here changes.
+
+## Amendment 2026-09-02, during planning — `load_league_transactions` is cut
+
+The Architecture table originally carried it. **It has no consumer.** Under FAAB
+it supplied spend-to-date; under priority, your position comes from the
+`rosters` payload (`settings.waiver_position`) and the cost-of-spending line is
+arithmetic on two already-computed targets. The one option that would have read
+it — league-local add/drop activity — was offered and not chosen. Cut rather
+than built unused.
+
+**And the two sections are one code path.** The floor is
+`close_call_points × √weeks`, and √1 = 1, so THIS WEEK is the rest-of-season
+function called with a single-week horizon. No branch, no second threshold.
