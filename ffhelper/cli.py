@@ -1229,6 +1229,60 @@ def _record_snapshot(
         return f"snapshot        : NOT RECORDED -- {exc}"
 
 
+DROP_CAVEAT = ("  the drop is by PROJECTION ONLY -- it does not know about handcuffs,\n"
+               "  upside, or your bye weeks. read it, do not follow it.")
+
+
+def render_waivers(
+    this_week: list["season_mod.WaiverTarget"], ros: list["season_mod.WaiverTarget"],
+    week: int, last_week: int, league_name: str, owner: str | None,
+    position: int | None, teams: int, trending: dict[str, int],
+    notes: list[str], weeks_scored: int,
+) -> str:
+    """The waiver board. Pure: takes data, returns the screen."""
+    lines = [f"WAIVERS -- {league_name}"
+             + (f" ({owner})" if owner else "") + f" -- week {week}"]
+    for n in notes:
+        lines.append(f"  !! {n}")
+    if position is not None and teams:
+        # ponytail: the ordinal suffix is wrong for a league of 1, 2 or 3 teams.
+        # No fantasy league has fewer than four, so it cannot fire here; give it
+        # a suffix helper if this ever renders a number that is not a team count.
+        lines.append(f"  waiver priority {position} of {teams} -- a successful claim "
+                     f"sends you to {teams}th")
+
+    def section(title: str, targets: list["season_mod.WaiverTarget"], of: int) -> None:
+        lines.append("")
+        lines.append(title)
+        for t in targets:
+            lines.append(f"  {t.player.position:<3} {t.player.name:<26} "
+                         f"+{t.gain:6.1f}   add, drop {t.drop.name} "
+                         f"({t.weeks_started} of {of} starts)")
+            count = trending.get(t.player.sleeper_id)
+            if count:
+                lines.append(f"        trending +{count:,} adds NATIONALLY "
+                             f"-- NOT your league")
+
+    if this_week:
+        section(f"THIS WEEK -- upgrade to your week {week} lineup", this_week, 1)
+    if ros:
+        section(f"REST OF SEASON -- upgrade over weeks {week}-{last_week}",
+                ros, weeks_scored)
+
+    if not this_week and not ros:
+        # A RESULT, not a blank. On a healthy roster the best thing available is
+        # inside the measured weekly error, and saying nothing at all would read
+        # as a failed fetch.
+        lines.append("")
+        lines.append("  nothing on the wire beats what you already have.")
+        lines.append("  (a target must gain more than the weekly projection error "
+                     "to be listed.)")
+    else:
+        lines.append("")
+        lines.append(DROP_CAVEAT)
+    return "\n".join(lines)
+
+
 def _resolve_week(week: int | None) -> tuple[int | None, str, list[str], int | None]:
     """The NFL week and season to work in, plus any degradation notes.
 

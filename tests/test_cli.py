@@ -3109,3 +3109,75 @@ def test_resolve_my_roster_degrades_to_empty_when_rosters_are_unreachable(monkey
         league, _lineup_settings(), _fake_players())
     assert roster == [] and raw == []
     assert any("rosters endpoint" in n for n in notes)
+
+
+# --- Phase 4c: the waiver screen --------------------------------------------
+
+
+def _target(pid, name, pos, gain, drop_name, weeks):
+    from ffhelper import season
+
+    return season.WaiverTarget(
+        player=Player(sleeper_id=pid, name=name, position=pos, team="X"),
+        gain=gain,
+        drop=Player(sleeper_id="7591", name=drop_name, position="RB", team="PIT"),
+        weeks_started=weeks,
+    )
+
+
+def test_render_waivers_says_so_plainly_when_both_boards_are_empty():
+    import ffhelper.cli as cli
+
+    out = cli.render_waivers([], [], week=1, last_week=18, league_name="sleeper-main",
+                             owner="jaydenpg", position=8, teams=12, trending={},
+                             notes=[], weeks_scored=18)
+    assert "nothing on the wire" in out.lower()
+    # An empty board is a RESULT. It must never render as a blank section that
+    # reads like a failed fetch.
+    assert out.strip() != ""
+    assert "THIS WEEK" not in out
+
+
+def test_render_waivers_names_the_drop_and_the_caveat():
+    import ffhelper.cli as cli
+
+    ros = [_target("6790", "Dalton Schultz", "TE", 31.7, "Kenny Gainwell", 14)]
+    out = cli.render_waivers([], ros, week=5, last_week=18, league_name="sleeper-main",
+                             owner=None, position=8, teams=12, trending={}, notes=[],
+                             weeks_scored=14)
+    assert "Dalton Schultz" in out
+    assert "drop Kenny Gainwell" in out
+    assert "PROJECTION ONLY" in out
+    # The week count is what makes the total readable -- a bye is an absent row.
+    assert "14 of 14" in out
+
+
+def test_render_waivers_states_what_a_claim_costs_you():
+    import ffhelper.cli as cli
+
+    out = cli.render_waivers([], [], week=5, last_week=18, league_name="sleeper-main",
+                             owner=None, position=8, teams=12, trending={}, notes=[],
+                             weeks_scored=14)
+    assert "priority 8 of 12" in out
+    assert "12th" in out
+
+
+def test_render_waivers_omits_the_priority_line_when_the_position_is_unknown():
+    import ffhelper.cli as cli
+
+    out = cli.render_waivers([], [], week=5, last_week=18, league_name="y",
+                             owner=None, position=None, teams=0, trending={},
+                             notes=[], weeks_scored=14)
+    assert "priority" not in out.lower()
+
+
+def test_render_waivers_labels_trending_as_national():
+    import ffhelper.cli as cli
+
+    ros = [_target("6790", "Dalton Schultz", "TE", 31.7, "Kenny Gainwell", 14)]
+    out = cli.render_waivers([], ros, week=5, last_week=18, league_name="s", owner=None,
+                             position=8, teams=12, trending={"6790": 279845}, notes=[],
+                             weeks_scored=14)
+    # National counts say nothing about your eleven opponents. Printing one
+    # without that label invites exactly the inference it cannot support.
+    assert "NOT your league" in out or "not a signal about your league" in out

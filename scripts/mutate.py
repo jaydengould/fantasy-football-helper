@@ -121,6 +121,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "return False"),
     ],
     "cli.py": [
+        ("empty waiver board renders as a blank",
+         'lines.append("  nothing on the wire beats what you already have.")',
+         "pass"),
         ("matchup context ranked in week 1, off no completed weeks at all",
          "    if week <= 1:", "    if week <= 0:"),
         ("restore banner reports typed marks, not the roster you will see",
