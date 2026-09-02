@@ -618,3 +618,50 @@ def test_matchup_notes_skip_a_player_on_a_bye():
     rates = _allowed([("SF", 11.4), ("GB", 17.9), ("CAR", 24.6)])
 
     assert season.matchup_notes([mk("a", "RB", 12.0)], {}, rates) == {}
+
+
+# --- Phase 4c: the free-agent pool and what a claim costs --------------------
+
+
+def _pool():
+    return {
+        "4034": Player(sleeper_id="4034", name="Josh Allen", position="QB", team="BUF"),
+        "8151": Player(sleeper_id="8151", name="Jahmyr Gibbs", position="RB", team="DET"),
+        "6790": Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU"),
+        "1234": Player(sleeper_id="1234", name="Marcedes Lewis", position="TE", team=None),
+    }
+
+
+def test_free_agent_pool_removes_every_rostered_player_not_just_mine():
+    rosters = [{"roster_id": 3, "players": ["4034"]}, {"roster_id": 5, "players": ["8151"]}]
+    got = season.free_agent_pool(_pool(), rosters, {"4034", "8151", "6790", "1234"})
+    assert [p.sleeper_id for p in got] == ["6790", "1234"]
+
+
+def test_free_agent_pool_keeps_only_players_with_a_projection():
+    # 3051 of the 3231-player pool are unrostered, and most are retired or on a
+    # practice squad. Without this filter the board is a list of retirees.
+    rosters = [{"roster_id": 3, "players": ["4034"]}]
+    got = season.free_agent_pool(_pool(), rosters, {"8151", "6790"})
+    assert [p.sleeper_id for p in got] == ["8151", "6790"]
+
+
+def test_free_agent_pool_survives_a_roster_with_players_none():
+    # Sleeper serves "players": null for an empty roster; `or []` is required.
+    rosters = [{"roster_id": 3, "players": None}, {"roster_id": 5, "players": ["4034"]}]
+    got = season.free_agent_pool(_pool(), rosters, {"4034", "8151"})
+    assert [p.sleeper_id for p in got] == ["8151"]
+
+
+def test_waiver_position_reads_my_row_and_counts_the_league():
+    rosters = [
+        {"roster_id": 3, "settings": {"waiver_position": 8}},
+        {"roster_id": 5, "settings": {"waiver_position": 1}},
+    ]
+    assert season.waiver_position(rosters, 3) == (8, 2)
+
+
+def test_waiver_position_is_none_when_the_payload_carries_none():
+    # Degrade, never fabricate: a missing position must not become 1.
+    rosters = [{"roster_id": 3, "settings": {}}]
+    assert season.waiver_position(rosters, 3) == (None, 1)

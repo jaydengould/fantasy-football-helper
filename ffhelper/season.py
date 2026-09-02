@@ -38,6 +38,43 @@ def roster_player_ids(rosters: list[dict], roster_id: int) -> list[str]:
     return []
 
 
+# The 2026 regular season. Week 18 is the last one a fantasy roster can score
+# in; playoffs are league-configured and this tool does not model them.
+LAST_REGULAR_WEEK = 18
+
+
+def free_agent_pool(
+    players: dict[str, Player], rosters: list[dict], projected_ids: set[str],
+) -> list[Player]:
+    """Everyone not on ANY roster who carries a projection in the horizon.
+
+    Both halves are load-bearing. Subtracting only YOUR roster offers you
+    players another team owns. Skipping the projection filter leaves 3051 of
+    the 3231-player pool, nearly all retired or on a practice squad.
+    """
+    rostered: set[str] = set()
+    for r in rosters:
+        rostered |= set(r.get("players") or [])
+    return [p for pid, p in players.items()
+            if pid not in rostered and pid in projected_ids]
+
+
+def waiver_position(rosters: list[dict], roster_id: int) -> tuple[int | None, int]:
+    """(your rolling-waiver position, number of teams).
+
+    The league is NOT FAAB -- that claim's entire provenance was `waiver_budget:
+    100`, a field Sleeper returns by default whether or not bidding is on. It is
+    rolling priority, so there is no bid to derive: position is a consumable
+    ordering, not a currency.
+
+    Position is None when the payload does not carry one; the caller drops the
+    line rather than printing a 1.
+    """
+    mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
+    pos = (mine or {}).get("settings", {}).get("waiver_position")
+    return pos, len(rosters)
+
+
 def weekly_points(projections: list[dict], scoring: dict[str, float]) -> dict[str, float]:
     """Score one week's projection rows under this league's rules.
 

@@ -485,6 +485,10 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          '    out += [("BN", p.name) for p in remaining]', "    pass"),
     ],
     "season.py": [
+        ("free agent pool subtracts only my roster",
+         "rostered |= set(r.get(\"players\") or [])", "rostered = set(r.get(\"players\") or [])"),
+        ("free agent pool skips the projection filter",
+         "if pid not in rostered and pid in projected_ids", "if pid not in rostered"),
         ("weekly projection guard stops rejecting a null stats row",
          "if not pid or not stats:", "if not pid:"),
         ("weekly scoring mutates the shared season pool",
