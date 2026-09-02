@@ -1924,3 +1924,50 @@ def test_the_restore_banner_counts_the_roster_you_will_actually_see(tmp_path, ca
                               draft_slot=2, num_teams=12, has_feed=False)
     out = capsys.readouterr().out
     assert "26 drafted, 3 yours" in out, out
+
+
+def test_read_roster_file_resolves_names_and_reports_every_problem_line(tmp_path):
+    """Yahoo has no API, so this file IS the roster. A silently dropped or
+    wrongly-resolved line is a silently wrong lineup every week -- so ambiguous
+    and unknown lines are REPORTED and excluded, never guessed at.
+
+    Bijan and Brian Robinson are both ATL RBs. That is the real case."""
+    import ffhelper.cli as cli
+    from ffhelper.data import Player
+    pool = {
+        "1": Player("1", "Bijan Robinson", "RB", "ATL"),
+        "2": Player("2", "Brian Robinson", "RB", "ATL"),
+        "3": Player("3", "Josh Allen", "QB", "BUF"),
+    }
+    path = tmp_path / "yahoo-main.txt"
+    path.write_text("Josh Allen\n\n# a comment\nrobinson\nNobody At All\n")
+
+    players, problems = cli.read_roster_file(path, pool)
+
+    assert [p.sleeper_id for p in players] == ["3"]
+    assert len(problems) == 2
+    assert any("robinson" in m and "Bijan Robinson" in m and "Brian Robinson" in m
+               for m in problems), problems
+    assert any("Nobody At All" in m for m in problems), problems
+
+
+def test_read_roster_file_is_empty_and_quiet_when_there_is_no_file(tmp_path):
+    import ffhelper.cli as cli
+    players, problems = cli.read_roster_file(tmp_path / "missing.txt", {})
+    assert players == [] and problems == []
+
+
+def test_roster_file_age_is_reported_so_a_stale_roster_is_visible(tmp_path):
+    """A hand-maintained roster drifts the moment you make a waiver claim, and a
+    stale one silently produces a wrong lineup every week -- the same failure
+    class as draft-mode attribution drift. The file's mtime is the roster's age
+    and it must be on screen, not inferred."""
+    import os, time
+    import ffhelper.cli as cli
+    path = tmp_path / "yahoo-main.txt"
+    path.write_text("Josh Allen\n")
+    old = time.time() - 9 * 86400
+    os.utime(path, (old, old))
+
+    assert cli.roster_file_age_days(path) == 9
+    assert cli.roster_file_age_days(tmp_path / "missing.txt") is None

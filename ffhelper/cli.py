@@ -58,6 +58,52 @@ def find_players(pool: dict[str, Player], query: str) -> list[Player]:
     )
 
 
+ROSTER_DIR = ROOT / ".roster"
+
+
+def read_roster_file(path: Path, pool: dict[str, Player]) -> tuple[list[Player], list[str]]:
+    """A hand-maintained roster for a league with no API. One name per line.
+
+    Yahoo requires per-developer approval that has not arrived, so for that
+    league this file IS the roster and nothing else can supply it. Blank lines
+    and `#` comments are ignored.
+
+    Ambiguous and unknown lines are REPORTED and EXCLUDED, never guessed --
+    "robinson" is both Bijan and Brian, both ATL RBs, and picking one silently
+    starts the wrong player every week. Anchored to ROOT, not cwd: the roster you
+    read must not depend on which directory you launched from.
+    """
+    if not path.exists():
+        return [], []
+    players: list[Player] = []
+    problems: list[str] = []
+    for line in path.read_text().splitlines():
+        name = line.strip()
+        if not name or name.startswith("#"):
+            continue
+        matches = find_players(pool, name)
+        if len(matches) == 1:
+            players.append(matches[0])
+        elif not matches:
+            problems.append(f"no player matches {name!r}")
+        else:
+            shown = ", ".join(f"{p.name} ({p.position} {p.team})" for p in matches[:6])
+            problems.append(f"{name!r} is ambiguous: {shown}")
+    return players, problems
+
+
+def roster_file_age_days(path: Path) -> int | None:
+    """Whole days since the roster file was last edited, or None if absent.
+
+    A hand-maintained roster is stale the moment a waiver claim lands, and a
+    stale roster produces a confidently wrong lineup. The age goes on screen so
+    the user can see how much to trust it.
+    """
+    if not path.exists():
+        return None
+    return int((time.time() - path.stat().st_mtime) // 86400)
+
+
 class MarkDrafted:
     """Manual mark-drafted state: player_ids hand-marked gone, which of those
     are the user's own roster, and a full LIFO undo stack -- `_history` is

@@ -192,6 +192,11 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if frame != last_frame or stale or iterations == 0:", "if True:"),
         ("adp_source validated",
          "if league.adp_source not in ADP_SOURCES:", "if False:"),
+        ("ambiguous roster line silently resolved to the first match",
+         "        if len(matches) == 1:\n            players.append(matches[0])",
+         "        if matches:\n            players.append(matches[0])"),
+        ("unresolved roster lines dropped silently",
+         'problems.append(f"no player matches {name!r}")', "pass"),
     ],
     "feeds.py": [
         ("picks poll drops the cache-buster, so Cloudflare serves a stale board",
