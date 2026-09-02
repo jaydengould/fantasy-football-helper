@@ -408,7 +408,7 @@ free-agent pool is non-empty.
 | --- | --- | --- |
 | **4a** | weekly projections, player-status fields, `season.py`, `ffhelper.cli lineup` | a correct optimal lineup prints for both leagues in week 1 |
 | **4b** | weekly actuals loader, matchup adjustment, `backtest_weekly.py`, snapshot table | the matchup column appears AND has been scored against unadjusted on 2025 |
-| **4c** | league state loaders, free-agent pool, ROS horizon, trending, `ffhelper.cli waivers` | ranked waiver targets with a derived FAAB bid |
+| **4c** | league state loaders, free-agent pool, ROS horizon, trending, `ffhelper.cli waivers` | ranked waiver targets with priority context (**NOT a FAAB bid** — see the 2026-09-02 correction below) |
 | **Phase 5** | two-sided search over public rosters | own spec |
 
 **4a is the only slice with a deadline** — week 1 is Sept 9. 4b is second
@@ -438,3 +438,36 @@ every week. Waivers can land mid-season at no cost.
   the top tier of a position, projection ordering carries very little
   information. The weekly backtest is what turns that from a worry into a
   number, which is why it is in 4c rather than "later".
+
+---
+
+## CORRECTION 2026-09-02 — this spec's FAAB premise is wrong
+
+**The Sleeper league runs ROLLING WAIVER PRIORITY, not FAAB.** Confirmed by the
+user against Sleeper's own UI after the live settings contradicted this document:
+`waiver_type: 0`, and every one of the 12 rosters carries a distinct
+`waiver_position` 1-12 with `waiver_budget_used: 0`.
+
+**The bad claim's provenance is one field.** `waiver_budget: 100` appears in the
+settings payload — and Sleeper returns it by default whether or not bidding is
+on. Every FAAB sentence in this spec, and in the 2026-08-24 draft-mode design,
+descends from reading that default as a fact. It is the same failure as the Yahoo
+one-RB-slot error: a league rule inferred from an API payload instead of read off
+the platform's own screen.
+
+**What it changes in 4c:**
+
+- **There is no bid to derive.** "the FAAB budget is READ" (Commands), "the FAAB
+  bid" (sources table, source 5), and the FAAB bid mutation (Testing) are all
+  void. Priority is a consumable ORDERING, not a currency.
+- **What replaces it is priority context**: where you sit, and that a successful
+  claim sends you to the back. Trending stays exactly where this spec puts it —
+  in the PRICE column, as "how contested is this claim" — which is if anything
+  more useful under priority, because the only question is whether a player is
+  worth burning position on.
+- **`transactions/<wk>` stays a loader**, for adds/drops; it simply carries no
+  spend to total.
+
+**What it does NOT change:** the waiver notify-bot stays cut. That decision rests
+on claims resolving in a scheduled batch (`waiver_clear_days: 2`,
+`waiver_day_of_week: 2`), which is still true, not on the payment mechanism.

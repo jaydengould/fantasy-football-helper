@@ -295,9 +295,21 @@ fresh opinion.
 - **`lineup_value()` is a standalone pure function.** Phase 1 needs it for
   starter-slot awareness; Phase 5's trade finder needs the identical function.
   Never inline it into the board.
-- **Waiver notify-bot is cut.** The league is FAAB with scheduled batch
-  processing (`waiver_clear_days: 2`), so claims resolve simultaneously and a
-  same-day alert gives no timing edge.
+- **Waiver notify-bot is cut, and the reason survives a corrected premise.**
+  Claims resolve in a scheduled batch (`waiver_clear_days: 2`,
+  `waiver_day_of_week: 2`), so submission time buys nothing. That is what the
+  cut rests on, and it is unaffected by the correction below.
+- **CORRECTED 2026-09-02: the Sleeper league is NOT FAAB. It is ROLLING WAIVER
+  PRIORITY.** Confirmed by the user against Sleeper's own UI. This file and both
+  specs said FAAB, and the claim's entire provenance was `waiver_budget: 100` in
+  the settings payload — **a field Sleeper returns by default whether or not
+  bidding is on.** The live evidence points the other way: `waiver_type: 0`, and
+  all 12 rosters carry a distinct `waiver_position` 1-12 with
+  `waiver_budget_used: 0`. Same shape as the Yahoo one-RB-slot error — a league
+  setting inferred from an API default instead of read off the platform's own
+  screen. **Consequence for 4c: there is no bid to derive.** Priority is a
+  consumable ordering, not a currency, so the honest output is your position and
+  what a claim costs you, never a manufactured dollar figure.
 - **Yahoo risk is confined to draft day.** The risk is unrepeatability, not
   difficulty. In-season Yahoo is *lower* risk than Sleeper draft mode. Phase 0
   OAuth is never wasted — season mode needs it regardless.
@@ -423,7 +435,7 @@ fresh opinion.
 | 3.7 | Web board — the `DataTable` replacement and what it unlocks | offseason | not started — `TODO.md` §19. **This is the half 3.6 deliberately cut**, not new scope. Also the trigger for the deferred `board.py` fold |
 | 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4a-start-sit`, 377 tests / 153 mutations. Runs against both leagues. Awaiting the user's merge |
 | 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | **COMPLETE 2026-09-02** (branch `phase-4b-snapshot`). Snapshot table shipped; `backtest_weekly.py` shipped and it **closed the matchup ADJUSTMENT** — measured on 2024 and 2025, it loses — so what ships is a descriptive opponent RANK that nothing consumes (see Decisions). nflverse practice report shipped and joins 14/15; `injuries_2026.csv` is a 404 until ~Sept 10, so it prints its degraded line today |
-| 4c | Waivers — free-agent pool, ROS horizon, trending as the FAAB signal | in-season | not started |
+| 4c | Waivers — free-agent pool, ROS horizon, trending as the price signal | in-season | not started. **Unblocked 2026-09-02**: every endpoint answers, weekly projections exist for all 18 weeks, byes read as an ABSENT ROW not a zero. **No FAAB bid** — see the correction in Decisions |
 | 5 | Trade finder (own spec) | in-season | not started — unblocked earlier than expected: Sleeper serves every team's roster with no auth |
 
 Phase 1 builds against the Sleeper feed because it needs no auth and Sleeper

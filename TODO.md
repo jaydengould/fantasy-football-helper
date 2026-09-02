@@ -140,7 +140,28 @@ item. The project is now a season-mode project.
      both leagues print today, and the join is proved against the 2025 file
      instead (real roster, real report, week 11).
    - **4c — waivers**: free-agent pool, rest-of-season horizon, trending
-     add/drop as the FAAB price signal.
+     add/drop as the price signal. **Nothing blocks it as of 2026-09-02** —
+     probed live: `state/nfl` reads week 1 `in_season`, weekly projections exist
+     for **all 18 weeks** (so the ROS horizon is buildable), trending and
+     transactions both answer, and 12 rosters give a 3051-player free-agent pool.
+     Three things the probe changed:
+     - **THE LEAGUE IS NOT FAAB. It is rolling waiver priority** (user-confirmed
+       against Sleeper's UI). The FAAB claim in `CLAUDE.md` and both specs came
+       from `waiver_budget: 100`, which Sleeper returns by default; the live
+       settings say `waiver_type: 0` with distinct `waiver_position` 1-12.
+       **The "derived FAAB bid" deliverable is dead** — priority is an ordering
+       you spend, not a currency, so the output is your position and the cost of
+       burning it. The notify-bot cut is unaffected: it rests on batch
+       processing, which is still true.
+     - **A bye is an ABSENT ROW, not a zero** (Gibbs wk6, Allen wk7, Nacua wk11).
+       So is an unprojected player. Summing an ROS horizon over "weeks that
+       answered" silently loses the 4a distinction between a measured 0.0 and no
+       number at all — print the count of projected weeks beside the total.
+     - **The raw pool is 3051 of 3231 players**, i.e. mostly retired and
+       practice-squad. It needs a filter before it is a list anyone reads.
+     Preseason weekly projections are flat (Nacua 20.4-21.0 across all 18), so
+     ROS today is season value x weeks left; the feature only becomes measurable
+     once week 1 is played.
 5. ~~**The Yahoo roster must be hand-entered.**~~ **DONE 2026-09-01.**
    `.roster/yahoo-main.txt`, 14 players, all resolving unambiguously, gitignored.
    It must be UPDATED after every add/drop — `lineup` and `preflight` both print
