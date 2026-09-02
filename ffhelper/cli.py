@@ -9,10 +9,11 @@ import sys
 import threading
 import time
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from ffhelper import season as season_mod
+from ffhelper import store
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import (
     CACHE_DIR, LeagueSettings, Player, SLEEPER_ADP_FIELD, adp_format_for, apply_ffc_adp,
@@ -1119,6 +1120,47 @@ def render_lineup(
     return "\n".join(out)
 
 
+def _record_snapshot(
+    league: League, season_str: str, week: int, current_week: int | None,
+    state_ss: "season_mod.StartSit", projected_ids: set[str],
+) -> str:
+    """Record this week's inputs and advice. Returns the line to print.
+
+    It ALWAYS returns a line -- recorded, skipped, or failed. A silent record
+    is one you never notice has stopped working, and this table's whole value
+    is being complete months from now.
+
+    Two refusals, both to protect what is already stored:
+
+    - **No current week, no write.** With /state/nfl down there is nothing to
+      confirm `--week N` against, and assuming it is live is a guess.
+    - **A past week is never overwritten.** Its inputs are not re-served, so
+      `--week 1` in December would replace week 1's real projections with
+      December's and destroy exactly what the table was built to keep.
+    """
+    if not current_week:
+        return ("snapshot        : not recorded -- no current week from /state/nfl "
+                "to check this run against")
+    if week != current_week:
+        return (f"snapshot        : not recorded -- week {week} is not the current week "
+                f"({current_week}); a past week's inputs are not re-served, so "
+                f"overwriting them would destroy the record")
+    try:
+        rows = season_mod.snapshot_rows(
+            state_ss, projected_ids, datetime.now().isoformat(timespec="seconds"))
+        conn = store.connect()
+        try:
+            n = store.write_snapshot(conn, league.name, season_str, week, rows)
+        finally:
+            conn.close()
+        return f"snapshot        : {n} players recorded for week {week}"
+    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+        # The lineup is the product; the snapshot is a side effect. Losing the
+        # thing you actually ran the command for, over a write, is the trade
+        # `load_league_users` was getting wrong one function up.
+        return f"snapshot        : NOT RECORDED -- {exc}"
+
+
 def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
     """Print this week's optimal lineup. One shot -- no loop, no polling."""
     settings = resolve_settings(league)
@@ -1288,6 +1330,11 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
                                     tunables.close_call_points,
                                     projected_ids=set(weekly))
     print(render_lineup(state_ss, week, league.name, owner, notes))
+    # After the lineup, not inside `notes`: notes render as "!!" alarms, and a
+    # snapshot that worked is not an alarm. Same reason the unprojected players
+    # got their own quiet section in 4a rather than crying wolf every week.
+    print(_record_snapshot(league, season_str, week, state.get("week"),
+                           state_ss, set(weekly)))
     return 0
 
 

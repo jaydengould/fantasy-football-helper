@@ -148,3 +148,50 @@ def start_sit(
         if gap <= close_call_points:
             calls.append(CloseCall(slot, starter, challenger, gap))
     return StartSit(lineup=lineup, bench=bench, close_calls=calls, unprojected=unprojected)
+
+
+def snapshot_rows(
+    state: StartSit, projected_ids: set[str], taken_at: str,
+) -> list[dict]:
+    """One record per rostered player: what was claimed, and what we advised.
+
+    Pure, and deliberately here rather than in `store.py`: deciding what a row
+    SAYS is logic and needs testing without a database. `store.py` only knows
+    how to write one.
+
+    **`proj_pts` is None for a player with no projection -- never 0.0.**
+    `with_weekly_points` assigns 0.0 as a SORT value (it correctly benches
+    them), and `projected_ids` exists solely to keep that distinct from a real
+    zero. Writing the sort value into the one table built for scoring would
+    make an invented number indistinguishable from a measured one months later,
+    which is the exact fabrication the 4a review spent a round removing.
+
+    `matchup` is None until 4b ships the adjustment -- not 0.0, which would read
+    as "computed, and it came to nothing".
+    """
+    started = {p.sleeper_id for _, p in state.lineup if p is not None}
+    # An unprojected STARTER is in both `lineup` and `unprojected` (a known
+    # overlap from the 4a review), so this walks the three lists and dedupes
+    # rather than assuming they partition the roster. A duplicate would
+    # over-report the count while the primary key quietly wrote one row.
+    everyone = ([p for _, p in state.lineup if p is not None]
+                + list(state.bench) + list(state.unprojected))
+
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for p in everyone:
+        if p.sleeper_id in seen:
+            continue
+        seen.add(p.sleeper_id)
+        # Absent means absent, not healthy -- the same rule the screen follows.
+        # An empty string would later read as "we checked, and he was fine".
+        bits = [b for b in (p.injury_status, p.practice_participation) if b]
+        rows.append({
+            "player_id": p.sleeper_id,
+            "taken_at": taken_at,
+            "proj_pts": p.proj_pts if p.sleeper_id in projected_ids else None,
+            "matchup": None,
+            "status": " / ".join(bits) if bits else None,
+            "started": 1 if p.sleeper_id in started else 0,
+        })
+    return rows

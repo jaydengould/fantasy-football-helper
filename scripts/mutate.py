@@ -280,6 +280,10 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          'notes.append(f"could not reach Sleeper\'s league rosters endpoint "\n'
          '                         f"({exc}) -- showing an empty roster")',
          "pass"),
+        ("snapshot overwrites a PAST week, destroying inputs that are never re-served",
+         "    if week != current_week:", "    if False:"),
+        ("snapshot written with no current week to check the run against",
+         "    if not current_week:", "    if False:"),
         ("lineup's users-fetch guard no longer catches, so a display name kills the lineup",
          "            except Exception as exc:                      "
          "# noqa: BLE001 - degrade, never fabricate\n"
@@ -287,6 +291,13 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "            except ZeroDivisionError as exc:              "
          "# noqa: BLE001 - degrade, never fabricate\n"
          "                # The last unguarded fetch in this function"),
+    ],
+    "store.py": [
+        ("snapshot write never committed, so the record dies with the process",
+         "    conn.commit()      # the whole point is surviving to December",
+         "    pass"),
+        ("re-running lineup in a week raises instead of replacing that week",
+         "INSERT OR REPLACE INTO snapshot", "INSERT INTO snapshot"),
     ],
     "feeds.py": [
         ("picks poll drops the cache-buster, so Cloudflare serves a stale board",
@@ -490,6 +501,16 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "             if p.draft_slot == draft_slot and p.roster_id is not None}\n"
          "    return found.pop() if len(found) == 1 else None",
          "    return draft_slot"),
+        ("snapshot records the 0.0 SORT value instead of NULL for an unprojected player",
+         '"proj_pts": p.proj_pts if p.sleeper_id in projected_ids else None,',
+         '"proj_pts": p.proj_pts,'),
+        ("snapshot loses which players the tool advised starting",
+         '"started": 1 if p.sleeper_id in started else 0,', '"started": 0,'),
+        ("snapshot emits an unprojected STARTER twice (lineup and unprojected overlap)",
+         "        if p.sleeper_id in seen:\n            continue",
+         "        if False:\n            continue"),
+        ("snapshot status blank instead of absent, so unknown reads as healthy",
+         '" / ".join(bits) if bits else None', '" / ".join(bits)'),
         ("a contradictory draft picks the first roster_id instead of refusing",
          "return found.pop() if len(found) == 1 else None",
          "return found.pop() if found else None"),

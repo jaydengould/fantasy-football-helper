@@ -275,3 +275,99 @@ def test_roster_player_ids_returns_the_named_roster_only():
                {"roster_id": 5, "players": ["c"]}]
     assert season.roster_player_ids(rosters, 3) == ["a", "b"]
     assert season.roster_player_ids(rosters, 99) == []
+
+
+# --- Phase 4b: the snapshot rows. Pure -- deciding WHAT a row says is logic and
+# belongs here; `store.py` only knows how to write one. ---
+
+
+def _slots():
+    return {"QB": 1, "RB": 1, "FLEX": 1}
+
+
+def test_snapshot_rows_marks_who_the_tool_advised_starting():
+    """`started` is the advice itself -- without it the table records what was
+    projected but not what was recommended, and scoring the ADVICE is the whole
+    reason the table exists."""
+    roster = [mk("qb", "QB", 22.0), mk("rb", "RB", 15.0), mk("wr", "WR", 11.0),
+              mk("bench", "WR", 2.0)]
+    state = season.start_sit(roster, _slots(), projected_ids={"qb", "rb", "wr", "bench"})
+
+    rows = {r["player_id"]: r for r in
+            season.snapshot_rows(state, projected_ids={"qb", "rb", "wr", "bench"},
+                                 taken_at="2026-09-08T10:00:00")}
+
+    assert rows["qb"]["started"] == 1
+    assert rows["rb"]["started"] == 1
+    assert rows["wr"]["started"] == 1        # FLEX
+    assert rows["bench"]["started"] == 0
+
+
+def test_snapshot_rows_records_an_unprojected_player_as_None_not_zero():
+    """THE load-bearing assertion. `with_weekly_points` hands an unprojected
+    player proj_pts=0.0 as a SORT value, and `projected_ids` exists solely to
+    keep that separate from a real zero. If the sort value is written here,
+    then in December an invented number is indistinguishable from a measured
+    one, in the one table built to tell them apart."""
+    roster = [mk("qb", "QB", 22.0), mk("stash", "RB", 0.0)]
+    # `stash` is absent from projected_ids: no projection at all this week.
+    state = season.start_sit(roster, _slots(), projected_ids={"qb"})
+
+    rows = {r["player_id"]: r for r in
+            season.snapshot_rows(state, projected_ids={"qb"}, taken_at="T")}
+
+    assert rows["qb"]["proj_pts"] == pytest.approx(22.0)
+    assert rows["stash"]["proj_pts"] is None
+    # Not merely falsy -- 0.0 is falsy too, and that is the bug being excluded.
+    assert rows["stash"]["proj_pts"] is not 0.0        # noqa: F632 - identity is the point
+
+
+def test_snapshot_rows_covers_every_rostered_player_exactly_once():
+    """An unprojected STARTER appears in both `lineup` and `unprojected` -- a
+    known overlap from the 4a review. Emitting him twice would over-report the
+    count and, with a primary key on the player, write one row while claiming
+    two."""
+    roster = [mk("qb", "QB", 0.0), mk("rb", "RB", 15.0), mk("bench", "WR", 1.0)]
+    # The QB has no projection but is still the only QB, so he starts.
+    state = season.start_sit(roster, _slots(), projected_ids={"rb", "bench"})
+    assert any(p.sleeper_id == "qb" for _, p in state.lineup if p is not None)
+    assert any(p.sleeper_id == "qb" for p in state.unprojected)
+
+    rows = season.snapshot_rows(state, projected_ids={"rb", "bench"}, taken_at="T")
+
+    ids = [r["player_id"] for r in rows]
+    assert sorted(ids) == ["bench", "qb", "rb"]
+    assert len(ids) == len(set(ids))
+
+
+def test_snapshot_rows_carries_status_at_decision_time_and_None_when_absent():
+    """Absent means absent, not healthy -- the same rule `_status_note` follows
+    on screen. A blank string would later read as 'we checked and he was fine'."""
+    hurt = Player("h", "H", "RB", "SEA", injury_status="Questionable",
+                  practice_participation="DNP", proj_pts=9.0)
+    fine = mk("f", "QB", 20.0)
+    state = season.start_sit([hurt, fine], _slots(), projected_ids={"h", "f"})
+
+    rows = {r["player_id"]: r for r in
+            season.snapshot_rows(state, projected_ids={"h", "f"}, taken_at="T")}
+
+    assert rows["h"]["status"] == "Questionable / DNP"
+    assert rows["f"]["status"] is None
+
+
+def test_snapshot_rows_leaves_matchup_None_because_4b_has_not_shipped_it():
+    """The column exists so the adjustment can be recorded WITH the decision it
+    influenced. Until it exists, NULL -- never 0.0, which would read as 'the
+    adjustment was computed and came to nothing'."""
+    state = season.start_sit([mk("qb", "QB", 20.0)], _slots(), projected_ids={"qb"})
+    rows = season.snapshot_rows(state, projected_ids={"qb"}, taken_at="T")
+    assert rows[0]["matchup"] is None
+
+
+def test_snapshot_rows_stamps_every_row_with_the_same_taken_at():
+    """One run is one observation. Rows drifting apart in time would make a
+    week look like several separate looks when it was one."""
+    roster = [mk("qb", "QB", 20.0), mk("rb", "RB", 10.0)]
+    state = season.start_sit(roster, _slots(), projected_ids={"qb", "rb"})
+    rows = season.snapshot_rows(state, projected_ids={"qb", "rb"}, taken_at="2026-09-08T10:00:00")
+    assert {r["taken_at"] for r in rows} == {"2026-09-08T10:00:00"}
