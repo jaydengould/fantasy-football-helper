@@ -361,6 +361,14 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("bench picks hidden -- you cannot see your own bench",
          '    out += [("BN", p.name) for p in remaining]', "    pass"),
     ],
+    "season.py": [
+        ("missing weekly projection scored as zero instead of omitted",
+         "        if not pid or not stats:\n            continue",
+         "        if not pid:\n            continue\n        stats = stats or {}"),
+        ("weekly scoring mutates the shared season pool",
+         "return [replace(p, proj_pts=weekly.get(p.sleeper_id, 0.0)) for p in roster]",
+         "for p in roster:\n        p.proj_pts = weekly.get(p.sleeper_id, 0.0)\n    return roster"),
+    ],
 }
 
 
