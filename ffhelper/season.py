@@ -106,6 +106,8 @@ def start_sit(
     for slot, starter in lineup:
         if starter is None:
             continue
+        if starter.sleeper_id in unprojected_ids:
+            continue
         challenger = next((b for b in bench if _eligible(b, slot) and b.sleeper_id not in unprojected_ids), None)
         if challenger is None:
             continue

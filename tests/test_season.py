@@ -205,3 +205,28 @@ def test_start_sit_unprojected_from_descriptive_only_rows():
     
     assert [p.sleeper_id for p in st.unprojected] == ["jacobs"]
     assert len(st.close_calls) == 0
+
+
+def test_start_sit_no_close_call_when_starter_is_unprojected():
+    """No close call is emitted when the starter is unprojected, even if a projected
+    player on the bench could challenge it. There is no meaningful comparison when
+    the incumbent has no number (fabricated 0.0)."""
+    # Construct case: unprojected RB will be chosen as starter (higher proj_pts than zero_proj)
+    # but is actually unprojected (no scoring keys), while zero_proj is genuine 0.0
+    roster_raw = [mk("zero_proj", "RB", 0.0), mk("unprojected", "RB", 10.0)]
+    rows = [
+        {"player_id": "zero_proj", "stats": {"rec": 0.0}},
+        {"player_id": "unprojected", "stats": {"adp_dd_ppr": 1000.0}},
+    ]
+    scoring = {"rec": 1.0}
+    weekly = season.weekly_points(rows, scoring)  # unprojected absent from weekly
+    roster = season.with_weekly_points(roster_raw, weekly)  # unprojected gets 0.0, zero_proj stays 0.0
+    
+    st = season.start_sit(roster, {"RB": 1}, close_call_points=3.0,
+                          projected_ids=set(weekly))
+    
+    # unprojected is in the unprojected list (never projected)
+    assert [p.sleeper_id for p in st.unprojected] == ["unprojected"]
+    # No close call for the RB slot, even though unprojected was started and zero_proj is on bench
+    # (the guard prevents close calls when starter is unprojected)
+    assert len(st.close_calls) == 0

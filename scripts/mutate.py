@@ -362,9 +362,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          '    out += [("BN", p.name) for p in remaining]', "    pass"),
     ],
     "season.py": [
-        ("missing weekly projection scored as zero instead of omitted",
-         "        if not pid or not stats:\n            continue",
-         "        if not pid:\n            continue\n        stats = stats or {}"),
+        ("weekly projection guard stops rejecting a null stats row",
+         "if not pid or not stats:", "if not pid:"),
         ("weekly scoring mutates the shared season pool",
          "return [replace(p, proj_pts=weekly.get(p.sleeper_id, 0.0)) for p in roster]",
          "for p in roster:\n        p.proj_pts = weekly.get(p.sleeper_id, 0.0)\n    return roster"),
@@ -380,6 +379,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "unprojected_ids = set()"),
         ("descriptive-only rows scored as zero instead of omitted",
          "if not any(k in scoring for k in stats):\n            continue",
+         "pass"),
+        ("unprojected starters can generate close calls (comparing invented vs genuine 0.0)",
+         "if starter.sleeper_id in unprojected_ids:\n            continue",
          "pass"),
     ],
 
