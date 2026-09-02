@@ -362,6 +362,12 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if row.get(\"bye\"):", "if set_adp and row.get(\"bye\"):"),
         ("weekly projection cache key drops the week -- every week serves week 1",
          'f"proj_{season}_wk{week}_{pos}"', 'f"proj_{season}_{pos}"'),
+        ("weekly actuals cache key drops the week",
+         'f"stats_{season}_wk{week}_{pos}"', 'f"stats_{season}_{pos}"'),
+        ("injury report keeps every week, not the one asked for",
+         'and r.get("week", "").strip() == str(week)', 'and True'),
+        ("crosswalk cache key drops the field, so gsis ids are served yahoo ids",
+         'path = cache_dir / f"crosswalk_{field}.json"', 'path = cache_dir / "crosswalk.json"'),
         ("missing depth chart reads as first string",
          'depth_chart_order=(int(p["depth_chart_order"])\n'
          '                               if p.get("depth_chart_order") is not None else None),',
@@ -501,6 +507,29 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "             if p.draft_slot == draft_slot and p.roster_id is not None}\n"
          "    return found.pop() if len(found) == 1 else None",
          "    return draft_slot"),
+        ("points allowed credited to the scorer's own team, not the defense faced",
+         "        key = (opp, player.position)", "        key = (row[\"team\"], player.position)"),
+        ("points allowed left as a season total instead of a per-game rate",
+         "    allowed = {k: totals[k] / len(weeks[k]) for k in totals}",
+         "    allowed = {k: totals[k] for k in totals}"),
+        ("matchup shrinkage removed -- two games treated as a settled fact",
+         "    weight = n / (n + shrink_k)", "    weight = 1.0"),
+        ("matchup adjusts on an empty sample instead of staying neutral",
+         "    if not mean or not n:\n        return 1.0", "    if False:\n        return 1.0"),
+        ("matchup delta invented for a player with no projection",
+         "        if p.sleeper_id not in projected_ids:\n            continue",
+         "        pass"),
+        ("opponent map keeps a bye-week row with no opponent",
+         "    return {row[\"player_id\"]: row[\"opponent\"] for row in projections\n"
+         "            if row.get(\"player_id\") and row.get(\"opponent\")}",
+         "    return {row[\"player_id\"]: row.get(\"opponent\") for row in projections\n"
+         "            if row.get(\"player_id\")}"),
+        ("practice status overwritten by an absent nflverse row",
+         "    return [replace(p, practice_participation=(\n"
+         "        practice.get(p.gsis_id) if p.gsis_id else None) or p.practice_participation)\n"
+         "        for p in roster]",
+         "    return [replace(p, practice_participation=practice.get(p.gsis_id))\n"
+         "            for p in roster]"),
         ("snapshot records the 0.0 SORT value instead of NULL for an unprojected player",
          '"proj_pts": p.proj_pts if p.sleeper_id in projected_ids else None,',
          '"proj_pts": p.proj_pts,'),

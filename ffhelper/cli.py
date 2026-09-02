@@ -18,8 +18,8 @@ from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import (
     CACHE_DIR, LeagueSettings, Player, SLEEPER_ADP_FIELD, adp_format_for, apply_ffc_adp,
     apply_projections, apply_sleeper_adp, fetch_json, load_ffc_adp, load_league_rosters,
-    load_league_users, load_nfl_state, load_players, load_projections, load_sleeper_settings,
-    load_weekly_projections, norm_name, rosters_cache_key,
+    load_league_users, load_nfl_injuries, load_nfl_state, load_players, load_projections,
+    load_sleeper_settings, load_weekly_projections, norm_name, rosters_cache_key,
 )
 from ffhelper.feeds import Pick, PickFeed, SleeperFeed
 from ffhelper.value import Row, build_board, detect_run, is_bench_only, next_pick_number
@@ -1120,6 +1120,25 @@ def render_lineup(
     return "\n".join(out)
 
 
+def _practice_status(season_str: str, week: int) -> tuple[dict[str, str], str]:
+    """nflverse's practice report for this week, and the line that says so.
+
+    Always returns a line, for `_record_snapshot`'s reason: a column that
+    quietly stops arriving is one nobody notices has gone. It is a LINE and not
+    a "!!" note because practice status is context, not the product -- and
+    because `injuries_<season>.csv` is a 404 until week 1 has been played, so
+    an alarm here would fire on every run of the preseason.
+    """
+    try:
+        practice = load_nfl_injuries(season_str, week)
+    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+        return {}, (f"practice report : unavailable ({exc.__class__.__name__}) -- "
+                    f"nflverse publishes injuries_{season_str}.csv once week 1 "
+                    f"has been played")
+    return practice, (f"practice report : {len(practice)} players in nflverse's "
+                      f"week {week} report")
+
+
 def _record_snapshot(
     league: League, season_str: str, week: int, current_week: int | None,
     state_ss: "season_mod.StartSit", projected_ids: set[str],
@@ -1323,6 +1342,13 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
             notes.append(f"no roster: write one name per line into "
                          f"{ROSTER_DIR / f'{league.name}.txt'}")
 
+    # Practice status is the one thing Sleeper's player DB does not carry (zero
+    # of 3231 players), so it comes from nflverse and joins on gsis_id through
+    # the crosswalk already fetched. It fills the EXISTING field, which is why
+    # nothing downstream -- the status note, the snapshot -- needed changing.
+    practice, practice_line = _practice_status(season_str, week)
+    roster = season_mod.with_practice_status(roster, practice)
+
     # Players with no projection are NOT a "!!" note: see render_lineup. They get
     # their own quiet section, because a stash can carry no number for months.
     scored = season_mod.with_weekly_points(roster, weekly)
@@ -1330,6 +1356,7 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
                                     tunables.close_call_points,
                                     projected_ids=set(weekly))
     print(render_lineup(state_ss, week, league.name, owner, notes))
+    print(practice_line)
     # After the lineup, not inside `notes`: notes render as "!!" alarms, and a
     # snapshot that worked is not an alarm. Same reason the unprojected players
     # got their own quiet section in 4a rather than crying wolf every week.

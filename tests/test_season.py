@@ -355,10 +355,13 @@ def test_snapshot_rows_carries_status_at_decision_time_and_None_when_absent():
     assert rows["f"]["status"] is None
 
 
-def test_snapshot_rows_leaves_matchup_None_because_4b_has_not_shipped_it():
-    """The column exists so the adjustment can be recorded WITH the decision it
-    influenced. Until it exists, NULL -- never 0.0, which would read as 'the
-    adjustment was computed and came to nothing'."""
+def test_snapshot_rows_leaves_matchup_None_because_no_adjustment_is_applied():
+    """The column exists so an adjustment could be recorded WITH the decision it
+    influenced. None is ever applied -- 4b measured the matchup adjustment on
+    2024 and 2025 and it lost to unadjusted projections at every position and
+    every shrinkage level (scripts/backtest_weekly.py) -- so this stays NULL.
+    Never 0.0, which would read as 'the adjustment was computed and came to
+    nothing' rather than 'none was made'."""
     state = season.start_sit([mk("qb", "QB", 20.0)], _slots(), projected_ids={"qb"})
     rows = season.snapshot_rows(state, projected_ids={"qb"}, taken_at="T")
     assert rows[0]["matchup"] is None
@@ -371,3 +374,176 @@ def test_snapshot_rows_stamps_every_row_with_the_same_taken_at():
     state = season.start_sit(roster, _slots(), projected_ids={"qb", "rb"})
     rows = season.snapshot_rows(state, projected_ids={"qb", "rb"}, taken_at="2026-09-08T10:00:00")
     assert {r["taken_at"] for r in rows} == {"2026-09-08T10:00:00"}
+
+
+# --- matchup ---------------------------------------------------------------
+#
+# Fixtures use real team codes and stat lines that do not divide evenly, for
+# the reason this project has traced seven defects to: a fixture built for
+# arithmetic convenience stops resembling the data the code actually meets.
+
+MATCHUP_SCORING = {"rec": 1.0, "rec_yd": 0.1, "rec_td": 6.0, "rush_yd": 0.1, "rush_td": 6.0}
+
+
+def act(pid, week, team, opponent, **stats):
+    """One weekly-actuals row, in Sleeper's shape."""
+    return {"player_id": pid, "week": week, "team": team,
+            "opponent": opponent, "stats": stats}
+
+
+MATCHUP_POOL = {
+    "4034": Player("4034", "Christian McCaffrey", "RB", "SF"),
+    "6794": Player("6794", "Amon-Ra St. Brown", "WR", "DET"),
+    "9221": Player("9221", "Jahmyr Gibbs", "RB", "DET"),
+}
+
+
+def test_points_allowed_credits_the_defense_faced_not_the_players_own_team():
+    """`opponent` is the defense; `team` is the man scoring against it. Reading
+    the wrong one inverts every matchup on the board -- the softest defense in
+    the league would render as the hardest, and nothing on screen would say so."""
+    rows = [act("4034", 1, "SF", "SEA", rush_yd=87.0, rec=4.0, rush_td=1.0)]
+    rates = season.points_allowed(rows, MATCHUP_POOL, MATCHUP_SCORING)
+
+    assert ("SEA", "RB") in rates.allowed
+    assert ("SF", "RB") not in rates.allowed
+    assert rates.allowed[("SEA", "RB")] == pytest.approx(8.7 + 4 + 6)
+
+
+def test_points_allowed_divides_by_games_actually_faced_not_weeks_elapsed():
+    """A defense on a bye, or a week whose rows never arrived, must not drag its
+    per-game rate down. The divisor is the DISTINCT weeks the rows cover."""
+    rows = [act("9221", 1, "DET", "GB", rush_yd=64.0, rec=3.0),
+            act("9221", 4, "DET", "GB", rush_yd=112.0, rec=2.0, rush_td=1.0)]
+    rates = season.points_allowed(rows, MATCHUP_POOL, MATCHUP_SCORING)
+
+    assert rates.games[("GB", "RB")] == 2
+    assert rates.allowed[("GB", "RB")] == pytest.approx(((6.4 + 3) + (11.2 + 2 + 6)) / 2)
+
+
+def test_points_allowed_sums_every_player_at_a_position_into_one_game():
+    """A defense faces a whole position group, not one man. Two RBs in the same
+    game are one game's worth of RB points allowed, not two."""
+    rows = [act("9221", 2, "DET", "CHI", rush_yd=71.0, rec=4.0),
+            act("4034", 2, "SF", "CHI", rush_yd=53.0, rec=6.0)]
+    rates = season.points_allowed(rows, MATCHUP_POOL, MATCHUP_SCORING)
+
+    assert rates.games[("CHI", "RB")] == 1
+    assert rates.allowed[("CHI", "RB")] == pytest.approx(7.1 + 4 + 5.3 + 6)
+
+
+def test_points_allowed_skips_a_player_the_pool_does_not_know():
+    """Position is the grouping key and it comes from the player pool. A row for
+    somebody not in it cannot be grouped, and guessing a position would file
+    points against the wrong matchup."""
+    rows = [act("999999", 1, "SF", "SEA", rush_yd=40.0),
+            act("4034", 1, "SF", "SEA", rush_yd=87.0)]
+    rates = season.points_allowed(rows, MATCHUP_POOL, MATCHUP_SCORING)
+
+    assert rates.allowed[("SEA", "RB")] == pytest.approx(8.7)
+
+
+def test_matchup_factor_is_exactly_neutral_in_week_one():
+    """Week 1 has no completed games, so there is no matchup to know. The honest
+    adjustment is none -- and it must be EXACTLY 1.0, because anything else is a
+    number invented out of an empty sample."""
+    empty = season.points_allowed([], MATCHUP_POOL, MATCHUP_SCORING)
+
+    assert season.matchup_factor(empty, "SEA", "RB", shrink_k=4.0) == 1.0
+
+
+def test_matchup_factor_shrinks_toward_neutral_as_the_sample_stays_small():
+    """Two games against a generous defense is mostly noise. `shrink_k` is what
+    stops the tool automating the commonest fantasy error there is, so a small
+    sample must move the factor LESS than the raw ratio does."""
+    rows = [act("9221", w, "DET", "GB", rush_yd=150.0, rec=5.0) for w in (1, 2)]
+    rows += [act("4034", w, "SF", "SEA", rush_yd=30.0, rec=1.0) for w in (1, 2)]
+    rates = season.points_allowed(rows, MATCHUP_POOL, MATCHUP_SCORING)
+
+    raw = season.matchup_factor(rates, "GB", "RB", shrink_k=0.0)
+    shrunk = season.matchup_factor(rates, "GB", "RB", shrink_k=4.0)
+    heavy = season.matchup_factor(rates, "GB", "RB", shrink_k=16.0)
+
+    assert raw > shrunk > heavy > 1.0
+    assert shrunk == pytest.approx(1.0 + (2 / 6) * (raw - 1.0))
+
+
+def test_matchup_factor_is_neutral_for_a_defense_it_has_never_seen():
+    """Degrade, never fabricate: an unknown opponent removes the adjustment
+    rather than producing one from the league mean alone."""
+    rows = [act("9221", 1, "DET", "GB", rush_yd=64.0)]
+    rates = season.points_allowed(rows, MATCHUP_POOL, MATCHUP_SCORING)
+
+    assert season.matchup_factor(rates, "KC", "RB", shrink_k=4.0) == 1.0
+    assert season.matchup_factor(rates, "GB", "QB", shrink_k=4.0) == 1.0
+
+
+def test_matchup_deltas_leave_an_unprojected_player_out_entirely():
+    """His proj_pts is the 0.0 SORT value `with_weekly_points` invented. Scaling
+    it produces a 0.0 delta, which in the snapshot table reads as 'computed, and
+    it came to nothing' -- indistinguishable months later from a real zero."""
+    rows = [act("9221", w, "DET", "GB", rush_yd=150.0, rec=5.0) for w in (1, 2)]
+    rows += [act("4034", w, "SF", "SEA", rush_yd=30.0, rec=1.0) for w in (1, 2)]
+    rates = season.points_allowed(rows, MATCHUP_POOL, MATCHUP_SCORING)
+    roster = [mk("9221", "RB", 14.2), mk("4034", "RB", 0.0)]
+
+    deltas = season.matchup_deltas(roster, {"9221": "GB", "4034": "GB"}, rates,
+                                   projected_ids={"9221"}, shrink_k=4.0)
+
+    assert set(deltas) == {"9221"}
+    assert deltas["9221"] == pytest.approx(
+        14.2 * (season.matchup_factor(rates, "GB", "RB", 4.0) - 1.0))
+
+
+def test_matchup_deltas_skip_a_player_with_no_opponent():
+    """A bye week has no opponent in the projection rows, so there is no matchup
+    to show. Absent, not zero -- the same rule the projection column follows."""
+    rows = [act("9221", 1, "DET", "GB", rush_yd=64.0)]
+    rates = season.points_allowed(rows, MATCHUP_POOL, MATCHUP_SCORING)
+
+    deltas = season.matchup_deltas([mk("9221", "RB", 11.9)], {}, rates,
+                                   projected_ids={"9221"}, shrink_k=4.0)
+
+    assert deltas == {}
+
+
+def test_opponents_reads_the_projection_rows_already_fetched():
+    """No schedule endpoint: the weekly projection row carries `opponent`, and a
+    row without one (a bye) must be absent rather than mapped to something."""
+    rows = [{"player_id": "9221", "opponent": "GB", "stats": {"rush_yd": 60.0}},
+            {"player_id": "4034", "stats": {"rush_yd": 40.0}},
+            {"opponent": "SEA"}]
+
+    assert season.opponents(rows) == {"9221": "GB"}
+
+
+def test_with_practice_status_fills_the_field_sleeper_leaves_empty():
+    """Sleeper carries `practice_participation` for ZERO of 3231 players --
+    measured, after the spec claimed otherwise off one populated row. nflverse
+    fills that existing field, which is what lets the status note and the
+    snapshot pick it up with no change to either."""
+    roster = [Player("9221", "Jahmyr Gibbs", "RB", "DET", gsis_id="00-0038543"),
+              Player("4034", "Christian McCaffrey", "RB", "SF", gsis_id="00-0033280")]
+
+    out = season.with_practice_status(roster, {"00-0038543": "Limited"})
+
+    assert out[0].practice_participation == "Limited"
+    assert out[1].practice_participation is None      # absent, never "Full"
+    assert roster[0].practice_participation is None   # copies, never mutation
+
+
+def test_with_practice_status_keeps_sleepers_own_value_if_it_ever_arrives():
+    """Sleeper's field is updated continuously; the nflverse file is the
+    Wednesday-to-Friday report. Fresher wins for a Sunday morning lineup."""
+    roster = [Player("1", "P", "WR", "SEA", gsis_id="00-0000001",
+                     practice_participation="Full")]
+
+    assert season.with_practice_status(roster, {})[0].practice_participation == "Full"
+
+
+def test_with_practice_status_leaves_a_player_with_no_gsis_id_alone():
+    """A team defense has no gsis_id and no injury report at all. Joining on a
+    None key would file somebody else's practice status against it."""
+    roster = [Player("SEA", "Seahawks", "DEF", "SEA")]
+
+    assert season.with_practice_status(roster, {None: "DNP"})[0].practice_participation is None

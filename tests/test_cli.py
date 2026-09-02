@@ -2902,3 +2902,54 @@ def test_a_failing_snapshot_costs_a_line_and_never_the_lineup(monkeypatch, capsy
     assert result == 0
     assert "A Starter" in out                 # the lineup survived
     assert "NOT RECORDED" in out and "disk full" in out
+
+
+def test_lineup_shows_practice_status_from_nflverse(monkeypatch, tmp_path, capsys):
+    """The join Sleeper cannot do: gsis_id, through the crosswalk already
+    fetched. It lands in the existing status note rather than a new column."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="L2")
+    settings = _lineup_settings(num_teams=10, roster_slots={"QB": 1}, draft_id=None)
+    players = {"20": Player("20", "Justin Herbert", "QB", "LAC", gsis_id="00-0036355")}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 4, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections",
+                        lambda season, week: [{"player_id": "20", "stats": {"pass_td": 2}}])
+    monkeypatch.setattr(cli, "load_nfl_injuries",
+                        lambda season, week: {"00-0036355": "Limited"})
+    monkeypatch.setattr(cli, "ROSTER_DIR", tmp_path)
+    (tmp_path / "yahoo-main.txt").write_text("Justin Herbert\n")
+
+    cli._lineup(league, Tunables(), week=4)
+    out = capsys.readouterr().out
+
+    assert "[Limited]" in out
+    assert "practice report : 1 players" in out
+
+
+def test_lineup_says_the_practice_report_is_unavailable_rather_than_going_quiet(
+        monkeypatch, tmp_path, capsys):
+    """`injuries_<season>.csv` is a 404 until week 1 has been played, and a
+    column that stops arriving must not do so silently. A LINE, not a "!!" note:
+    an alarm here would fire on every run of the preseason."""
+    import ffhelper.cli as cli
+    from ffhelper.config import League, Tunables
+
+    league = League(name="yahoo-main", platform="yahoo", league_id="L2")
+    settings = _lineup_settings(num_teams=10, roster_slots={"QB": 1}, draft_id=None)
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: settings)
+    monkeypatch.setattr(cli, "load_players", lambda: {})
+    monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 1, "season": "2026"})
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [])
+    monkeypatch.setattr(cli, "load_nfl_injuries",
+                        lambda season, week: (_ for _ in ()).throw(RuntimeError("404")))
+    monkeypatch.setattr(cli, "ROSTER_DIR", tmp_path)
+
+    assert cli._lineup(league, Tunables(), week=1) == 0
+    out = capsys.readouterr().out
+
+    assert "practice report : unavailable" in out
+    assert "!! practice" not in out

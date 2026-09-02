@@ -4,7 +4,9 @@ Same rule as `value.py`, for the same reason: this is where the logic worth
 testing lives, and it must test without a network. If something here wants to
 fetch, the design is wrong -- put the loader in `data.py`.
 """
+from collections import defaultdict
 from dataclasses import dataclass, replace
+from statistics import fmean
 
 from ffhelper.data import Player, score_stats
 from ffhelper.value import FLEX_ELIGIBLE, optimal_lineup
@@ -80,6 +82,136 @@ def with_weekly_points(roster: list[Player], weekly: dict[str, float]) -> list[P
     that to start_sit's `projected_ids` to distinguish genuine 0.0 from absent.
     """
     return [replace(p, proj_pts=weekly.get(p.sleeper_id, 0.0)) for p in roster]
+
+
+def opponents(projections: list[dict]) -> dict[str, str]:
+    """Who each player faces this week, from the projection rows already fetched.
+
+    Sleeper's weekly projection row carries `opponent` alongside the stat line,
+    so the upcoming schedule needs no second endpoint and no schedule loader.
+    A row without one (a bye) is simply absent, which is what makes the caller
+    show no matchup rather than a zero.
+    """
+    return {row["player_id"]: row["opponent"] for row in projections
+            if row.get("player_id") and row.get("opponent")}
+
+
+@dataclass(frozen=True)
+class MatchupRates:
+    """Fantasy points each defense has allowed, per game, per position.
+
+    Under THIS league's scoring -- computed from weekly actuals through
+    `score_stats`, never a generic "points against" from someone else's
+    rulebook. `games` is how many games back each number rests on, which is
+    what the shrinkage in `matchup_factor` needs and the reason it is kept.
+    """
+    allowed: dict[tuple[str, str], float]     # (defense, position) -> points per game
+    games: dict[tuple[str, str], int]
+    league_mean: dict[str, float]             # position -> mean across defenses
+
+
+def points_allowed(
+    actuals: list[dict], players: dict[str, Player], scoring: dict[str, float],
+) -> MatchupRates:
+    """Aggregate completed weeks into per-defense, per-position rates.
+
+    One row is one player's game, and `opponent` is the defense he faced -- so
+    summing every RB row that faced DEN gives what DEN's defense allowed to
+    running backs, and the distinct weeks in those rows give how many games
+    that rests on. Counting weeks rather than dividing by a schedule length is
+    what makes byes and a mid-season run of missing rows harmless.
+
+    A row whose player is not in the pool is skipped rather than guessed at:
+    position is the grouping key, and an unknown position cannot be grouped.
+    """
+    totals: dict[tuple[str, str], float] = defaultdict(float)
+    weeks: dict[tuple[str, str], set] = defaultdict(set)
+    for row in actuals:
+        pid, stats, opp, wk = (row.get("player_id"), row.get("stats"),
+                               row.get("opponent"), row.get("week"))
+        player = players.get(pid) if pid else None
+        if not stats or not opp or player is None or wk is None:
+            continue
+        key = (opp, player.position)
+        totals[key] += score_stats(stats, scoring)
+        weeks[key].add(wk)
+
+    allowed = {k: totals[k] / len(weeks[k]) for k in totals}
+    games = {k: len(weeks[k]) for k in totals}
+    by_pos: dict[str, list[float]] = defaultdict(list)
+    for (_, pos), rate in allowed.items():
+        by_pos[pos].append(rate)
+    return MatchupRates(allowed=allowed, games=games,
+                        league_mean={pos: fmean(v) for pos, v in by_pos.items()})
+
+
+def matchup_factor(
+    rates: MatchupRates, defense: str, position: str, shrink_k: float,
+) -> float:
+    """How much a position's points scale against this defense. 1.0 is neutral.
+
+    Shrunk toward the league mean by `n / (n + shrink_k)`, where n is the games
+    the defense has played. **Week 1 has no completed games at all, so n is 0,
+    the weight is 0, and the factor is exactly 1.0** -- the honest adjustment
+    when there is no data is none. After two games a raw points-allowed number
+    is mostly noise, and over-reacting to it is the commonest fantasy error
+    this tool could automate; `shrink_k` is what stops it, and it is a measured
+    tunable rather than a taste (see `scripts/backtest_weekly.py`).
+
+    Returns 1.0 for an unknown defense or position rather than raising: a
+    matchup we cannot compute must remove the column, never invent a number.
+    """
+    mean = rates.league_mean.get(position)
+    n = rates.games.get((defense, position), 0)
+    if not mean or not n:
+        return 1.0
+    weight = n / (n + shrink_k)
+    return 1.0 + weight * (rates.allowed[(defense, position)] / mean - 1.0)
+
+
+def matchup_deltas(
+    roster: list[Player], opponent_by_id: dict[str, str], rates: MatchupRates,
+    projected_ids: set[str], shrink_k: float,
+) -> dict[str, float]:
+    """Points the matchup is worth to each player, as a delta on his projection.
+
+    A DELTA, deliberately, not an adjusted total: the spec's third guard is
+    that this shows as its own column and is never folded silently into the
+    projection, and a delta cannot be mistaken for the projection itself.
+
+    Only projected players get an entry. An unprojected player's `proj_pts` is
+    the 0.0 SORT value `with_weekly_points` invented, and multiplying it would
+    produce a 0.0 adjustment that reads in the snapshot table as "computed, and
+    it came to nothing" -- the fabrication `snapshot_rows` exists to avoid.
+    """
+    out: dict[str, float] = {}
+    for p in roster:
+        if p.sleeper_id not in projected_ids:
+            continue
+        opp = opponent_by_id.get(p.sleeper_id)
+        if not opp:
+            continue
+        factor = matchup_factor(rates, opp, p.position, shrink_k)
+        out[p.sleeper_id] = p.proj_pts * (factor - 1.0)
+    return out
+
+
+def with_practice_status(roster: list[Player], practice: dict[str, str]) -> list[Player]:
+    """Copies of `roster` carrying nflverse's practice status where it has one.
+
+    Sleeper's own `practice_participation` is empty for every player in the
+    league, so this fills a field that already exists rather than adding a
+    second one -- which is what lets `_status_note` and `snapshot_rows` pick it
+    up with no change at all.
+
+    Sleeper's value wins if it ever starts arriving, since it is updated
+    continuously while the nflverse file is the Wednesday-to-Friday report.
+    Copies, never mutation, for `with_weekly_points`'s reason: the pool is
+    shared, and rewriting it in place is how two views start disagreeing.
+    """
+    return [replace(p, practice_participation=(
+        practice.get(p.gsis_id) if p.gsis_id else None) or p.practice_participation)
+        for p in roster]
 
 
 @dataclass(frozen=True)

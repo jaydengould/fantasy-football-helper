@@ -12,8 +12,7 @@ running backs score higher.
 
 Draft mode is complete and has been exercised end to end against a full 180-pick
 live draft, which is where most of its bugs came from. Season mode's weekly
-lineup command works end to end; matchup adjustment, waivers, and the trade
-finder are not built yet.
+lineup command works end to end; waivers and the trade finder are not built yet.
 
 | Capability | State |
 | --- | --- |
@@ -27,7 +26,9 @@ finder are not built yet.
 | Yahoo API feed | blocked on Yahoo developer approval |
 | Web board (`python -m ffhelper.app`) | working |
 | Weekly start/sit lineup (`lineup`) | working |
-| Matchup adjustment, waivers, trade finder | planned |
+| Official practice report (nflverse) | working — the file appears once week 1 is played |
+| Opponent matchup adjustment | built, measured, and **cut** — it lost to plain projections on 2024 and 2025 |
+| Waivers, trade finder | planned |
 
 ## Requirements
 
@@ -276,13 +277,19 @@ STARTERS
   RB    D'Andre Swift            RB  CHI   13.5
   RB    TreVeyon Henderson       RB  NE    10.0  [Questionable]
   ...
-        projected total                   134.5
+        projected total                   134.4
 
 BENCH
         Kyler Murray             QB  MIN   20.1
         ...
+practice report : unavailable (HTTPError) -- nflverse publishes injuries_2026.csv once week 1 has been played
 snapshot        : 15 players recorded for week 1
 ```
+
+The practice line is the official Wed-Fri injury report, which Sleeper does not
+carry for anybody; it joins on `gsis_id` and shows as `[Limited]` or `[DNP]`
+beside the player. The season's file does not exist until week 1 has been
+played, which is what the line above says.
 
 That last line is the run recording what every source claimed at the moment
 you decided, into `season.db` (gitignored, created on first use). The APIs
@@ -409,10 +416,11 @@ be one.
 
 ## Scripts
 
-Four tools that answer questions the board cannot.
+Five tools that answer questions the board cannot.
 
 ```bash
 .venv/bin/python scripts/backtest.py [season ...]     # is source X actually better?
+.venv/bin/python scripts/backtest_weekly.py [--league L] [--season Y]  # weekly, and matchup
 .venv/bin/python scripts/calibrate.py <draft_id> <slot>       # Sleeper draft
 .venv/bin/python scripts/calibrate.py <log.jsonl> [more.jsonl ...]   # pooled
 .venv/bin/python scripts/transcribe.py <league> [slot] [results.txt]
@@ -426,6 +434,14 @@ revised *during* that season. A revised projection scores brilliantly and means
 nothing. So a source must prove it was frozen before week 1 — a preseason
 projection gives nearly everyone a full slate, because it cannot know who gets
 hurt — and a source that fails is named and skipped, never scored.
+
+**`backtest_weekly.py`** is its weekly sibling, and it is why there is no
+matchup column: scored on 2024 and 2025, adjusting a projection by what the
+opposing defense has allowed made it *worse* at every position and every
+shrinkage level. It also checks provenance, and finds a subtler failure than
+`backtest.py` does — the weekly projections served for a past season are
+filtered to the players who actually played, so absolute weekly accuracy from
+them cannot be quoted while a two-arm comparison on the same rows still can.
 
 **`calibrate.py`** replays a completed draft and asks, at each of your turns,
 "will this player last to my next pick?", then buckets the answers by what the
@@ -465,7 +481,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 395 tests, no network, runs in ~0.6s
+.venv/bin/pytest          # 412 tests, no network, runs in ~0.6s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

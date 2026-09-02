@@ -20,9 +20,26 @@ real file.
 """
 import pytest
 
-from ffhelper import store
+from ffhelper import data, store
 
 
 @pytest.fixture(autouse=True)
 def _never_the_real_season_db(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DB_PATH", tmp_path / "test-season.db")
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """No test may reach the network. Autouse, for the same reason as above.
+
+    The suite's value is being sub-second and offline, and a test that quietly
+    starts fetching keeps passing -- it just gets slower, which nobody reads.
+    Found exactly that way: wiring nflverse's injury report into `lineup` sent
+    the whole suite to the network and the only symptom was 0.68s -> 4.78s.
+
+    Loaders that take a `fetcher` argument are unaffected; this closes the
+    default path, which is the one a new call site picks up by accident.
+    """
+    def refuse(url):
+        raise AssertionError(f"test reached the network: {url}")
+    monkeypatch.setattr(data, "_requests_get", refuse)
