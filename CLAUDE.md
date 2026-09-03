@@ -556,7 +556,7 @@ surviving cli.py mutations), `f024705` (Task 8a — the calendar fix wired into
 `.venv/bin/python -m ffhelper.cli trades --league sleeper-main` searches every
 opponent for the best 1-for-1 / 2-for-1 / 2-for-2 that clears the floor on
 BOTH sides, and prints the best offer per opponent. Real run tonight: **2:39
-wall clock, "17 weeks scored", one row league-wide** — `stephcody`, a 2-for-2
+wall clock, "17 weeks scored", one row league-wide** — one opponent, a 2-for-2
 (give Shakir+Watson, get Pickens+Chargers DEF), me +29.1 / them +12.8. That
 **reproduces the spec's own pre-build measurement, unchanged**: across 2475
 1-for-1 pairs zero clear the 12.7-point floor, 2-for-2 is where surplus lives
@@ -567,6 +567,13 @@ prints an empty board as a sentence, correctly, since none clears the floor for
 him. `--league yahoo-main` refuses, exit 1: the search needs every roster and
 Yahoo serves none. **This is one real league on one night, not a backtest** —
 the board has never been scored against an actual accepted trade.
+
+**The leaguemate's handle is redacted everywhere, 2026-09-03.** The repo is
+public. `README.md`'s sample was re-captured with the names endpoint forced to
+fail (the tool's own degradation path, so the output is still genuine); this
+file, `tests/test_cli.py` and the phase 5 spec/plan are hand-redacted to
+`leaguemate`, which is the one case where editing a spec/plan after the fact is
+right. **Git history still carries it** — rewriting that is the user's call.
 
 The board states on screen that it **cannot say whether anyone will accept**
 ("this league has never made a trade, so there is no history to rank managers

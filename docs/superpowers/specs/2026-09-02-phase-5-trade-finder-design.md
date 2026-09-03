@@ -66,7 +66,7 @@ position.
 TRADES -- sleeper-main (jaydenpg) -- week 1, 18 weeks left
   both sides must gain more than 12.7 pts; 1 of 11 teams qualify
 
-  stephcody        you + 34.3   them + 13.7   [2-for-2]
+  leaguemate       you + 34.3   them + 13.7   [2-for-2]
                    give Khalil Shakir (WR) + Christian Watson (WR)
                    get  George Pickens (WR) + Los Angeles Chargers (DEF)
 ```
@@ -369,7 +369,7 @@ Same discipline as 4a, 4b and 4c, for the same reasons.
 - `scripts/mutate.py` runs in the FOREGROUND, ALONE — no subagent may run its
   own concurrently, and the suite must be GREEN before the run is believed.
 - **Run against the real league before it is called done.** The board must
-  reproduce the single stephcody row, and `waivers` must be re-run and its
+  reproduce the single one-row board, and `waivers` must be re-run and its
   changed horizon checked, since this phase alters it.
 
 ## Out of scope, and the two deferred slices

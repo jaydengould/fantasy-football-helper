@@ -1274,9 +1274,9 @@ def test_render_trades_names_both_packages_and_both_gains():
                        get=(mk_player("b", "RB"),),
                        gain_me=34.3, gain_them=13.7, their_drop=None)
     out = cli.render_trades([p], week=1, last_week=17, league_name="L",
-                            owner="me", names={7: "stephcody"}, notes=[],
+                            owner="me", names={7: "leaguemate"}, notes=[],
                             weeks_scored=17, pinned=None)
-    assert "stephcody" in out and "34.3" in out and "13.7" in out
+    assert "leaguemate" in out and "34.3" in out and "13.7" in out
     assert "Pa" in out and "Pb" in out
 
 
@@ -1285,7 +1285,7 @@ def test_render_trades_names_the_forced_cut():
     p = trade.Proposal(opponent=7, give=(mk_player("a", "WR"), mk_player("c", "WR")),
                        get=(mk_player("b", "RB"),),
                        gain_me=20.0, gain_them=5.0, their_drop=mk_player("d", "TE"))
-    out = cli.render_trades([p], 1, 17, "L", "me", {7: "stephcody"}, [], 17, None)
+    out = cli.render_trades([p], 1, 17, "L", "me", {7: "leaguemate"}, [], 17, None)
     assert "Pd" in out
 ```
 
@@ -1307,7 +1307,7 @@ Pure, beside `render_waivers`. Target output:
 TRADES -- sleeper-main (jaydenpg) -- week 1, 17 weeks scored
   best offer per opponent; both sides must gain more than 12.4 pts
 
-  stephcody        you + 34.3   them + 13.7   [2-for-2]
+  leaguemate       you + 34.3   them + 13.7   [2-for-2]
                    give Khalil Shakir (WR) + Christian Watson (WR)
                    get  George Pickens (WR) + Los Angeles Chargers (DEF)
 
