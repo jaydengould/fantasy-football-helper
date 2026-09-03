@@ -490,21 +490,32 @@ def test_effective_weeks_is_the_sum_of_the_weights():
     assert season.effective_weeks(wbw, {1: 1.0, 2: 1.0, 3: 0.5}) == pytest.approx(2.5)
 
 
-def test_waiver_targets_floor_uses_effective_weeks_not_the_raw_count():
+def test_the_waiver_floor_scales_with_the_weights_not_the_week_count():
     """A down-weighted horizon is a smaller sample, so the bar must fall with
-    it. Using the raw count would keep a season-length bar over a horizon that
-    is effectively shorter, silencing real upgrades."""
-    roster = _roster_for_upgrade()
-    pool = _pool()
-    slots = _waiver_slots()
-    wbw = {w: {p.sleeper_id: 10.0 for p in roster + pool} for w in range(1, 5)}
+    it. Using the raw count keeps a season-length bar over a horizon that is
+    effectively one week long, which silences real upgrades.
+
+    Arithmetic, worked before implementing:
+      base   = 4 weeks x 0.25 x 10.0 (qb_good starts) = 10.0
+      after  = 4 weeks x 0.25 x 14.0 (qb_better starts, qb_bad cut) = 14.0
+      gain   = 4.0
+      effective weeks = 4 x 0.25 = 1.0 -> floor 3.0 * sqrt(1.0) = 3.0 -> PRINTS
+      raw week count  = 4          -> floor 3.0 * sqrt(4.0) = 6.0 -> would NOT
+    """
+    roster = [mk("qb_good", "QB"), mk("qb_bad", "QB")]
+    pool = [mk("qb_better", "QB")]
+    slots = {"QB": 1}
+    wbw = {w: {"qb_good": 10.0, "qb_bad": 0.0, "qb_better": 14.0}
+           for w in range(1, 5)}
     weights = {w: 0.25 for w in range(1, 5)}
-    # effective weeks 1.0 vs 4.0 -> floor 3.0 vs 6.0
-    assert (season.waiver_targets(roster, pool, slots, wbw, 3.0, weights=weights)
-            is not None)
+
+    out = season.waiver_targets(roster, pool, slots, wbw, 3.0, weights=weights)
+    assert [t.player.sleeper_id for t in out] == ["qb_better"]
+    assert out[0].gain == pytest.approx(4.0)
+    assert out[0].drop.sleeper_id == "qb_bad"
 ```
 
-Replace that last assertion with a real behavioural one once you have run the fixtures by hand — **compute the expected numbers before implementing, as the 4c plan's own instruction required and as the tie-fixture defect proved necessary.** The check must be that a candidate whose gain sits between `3.0 * sqrt(1.0)` and `3.0 * sqrt(4.0)` prints under the weighted horizon and not under the flat one.
+**Confirm that arithmetic by hand before implementing.** The 4c plan's tie fixture was wrong and its own "run the numbers first" instruction is what caught it. If the hand arithmetic disagrees with the assertion, fix the fixture — never loosen the assertion.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1210,7 +1221,13 @@ Claude-Session: https://claude.ai/code/session_01BpiX5tkxWxNuEvxf2uXM4t"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/test_cli.py`, following the shape of the existing `_waivers` tests — copy a neighbouring one's monkeypatching of `load_players`, `load_league_rosters`, `load_weekly_projections`, `load_nfl_state` and `resolve_settings` exactly rather than inventing a new stubbing style:
+In `tests/test_cli.py`, in a new `# --- Phase 5: the trade screen ---` section at the end of the file.
+
+**Reuse the existing 4c helpers rather than inventing a stubbing style:** `_stub_waiver_inputs(monkeypatch)` (stubs `load_players`, `load_league_rosters`, `load_weekly_projections`, `load_nfl_state`, `resolve_settings`), `_sleeper_league()`, and the `Player` construction shown in `_target` near line 3118. Read `test_waivers_refuses_on_yahoo_because_there_is_no_pool` (line 3233) and `test_waivers_never_offers_a_player_another_team_owns` (line 3244) and follow them exactly.
+
+`_stub_waiver_inputs` currently stubs settings **without** the playoff fields Task 1 added. Extend it so its `LeagueSettings` carries `playoff_week_start=15, playoff_teams=6, playoff_round_type=0, trade_deadline=11` — the existing 4c tests must still pass afterwards, and if any changes value, say so in the report rather than editing the assertion.
+
+Write `mk_player(pid, pos)` as a local helper in the new section returning `Player(sleeper_id=pid, name=f"P{pid}", position=pos, team="X")`.
 
 ```python
 def test_trades_refuses_yahoo_and_says_why(capsys, monkeypatch):
@@ -1226,17 +1243,27 @@ def test_trades_refuses_after_the_trade_deadline(capsys, monkeypatch):
     """trade_deadline is 11 in the real league. Printing proposals you are not
     allowed to make is worse than printing none -- and it exits 0, because a
     passed deadline is a legal state, not an error."""
-    ...  # stub settings with playoff fields + trade_deadline=11, state week 13
-    assert cli._trades(lg, Tunables()) == 0
-    assert "deadline" in capsys.readouterr().out.lower()
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    rc = cli._trades(_sleeper_league(), Tunables(), week=13)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "deadline" in out.lower() and "11" in out
 
 
 def test_trades_prints_an_empty_board_as_a_stated_result(capsys, monkeypatch):
     """Measured on the real league in week 1: one opponent qualifies, and on a
-    tighter floor none do. A blank screen reads as a failed fetch."""
-    ...  # stub rosters with no surplus
-    cli._trades(lg, Tunables())
+    tighter floor none do. A blank screen reads as a failed fetch, so silence
+    must be a sentence."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    # close_call_points high enough that nothing in the fixture can clear it.
+    rc = cli._trades(_sleeper_league(), replace(Tunables(), close_call_points=1e6),
+                     week=1)
     out = capsys.readouterr().out
+    assert rc == 0
     assert "no trade" in out.lower()
 
 
