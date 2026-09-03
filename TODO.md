@@ -231,8 +231,22 @@ item. The project is now a season-mode project.
    Spec and plan committed; **tasks 1-4 of 9 done and committed, 472 tests.
    RESUME AT TASK 5** — but read 7a FIRST, it is an open defect.
 
+   **HOW TO RESUME, in order — a cold session needs nothing else:**
+   1. `git checkout phase-5-trade-finder` (8 commits, tree clean, 472 tests green)
+   2. **Fix 7a below.** It is one guard in `roster_upgrade`, it blocks Task 5,
+      and it needs its own red-first test + mutation like any other change.
+   3. Invoke `superpowers:subagent-driven-development` with
+      `docs/superpowers/plans/2026-09-02-phase-5-trade-finder.md`. It reads the
+      ledger, sees tasks 1-4 marked `complete`, and resumes at Task 5.
+   4. Tasks 5-9 in order. **Task 9 is not optional paperwork** — it holds the
+      mutation run and the live re-run of `waivers`, both listed below.
+
    The SDD ledger at `.superpowers/sdd/2026-09-02-phase-5-trade-finder/progress.md`
-   is the authority on what is finished; task briefs 1-9 are extracted beside it.
+   is the authority on what is finished — a task with a `complete` line is done,
+   do not re-dispatch it. Task briefs 1-9 are already extracted beside it, so no
+   subagent ever needs to read the whole plan. The ledger also carries the four
+   rulings made this session and the deferred-minor list the final whole-branch
+   review must triage.
 
    | | |
    | --- | --- |
