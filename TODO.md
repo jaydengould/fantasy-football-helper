@@ -227,10 +227,14 @@ item. The project is now a season-mode project.
    re-introduces the feed dependency in the one path whose purpose is to survive
    a missing draft, and only helps when both values are set, which is the case
    that was already right.
-7. ~~**Phase 5 — trade finder.**~~ **DONE 2026-09-02, branch
-   `phase-5-trade-finder`, 494 tests, 202 mutations (1 documented equivalent
-   survivor), tree byte-identical before/after the run. Awaiting the user's
-   merge.** `trades --league sleeper-main` ran for real: 2:39 wall clock, one
+7. ~~**Phase 5 — trade finder.**~~ **DONE 2026-09-02, closed out 2026-09-03,
+   branch `phase-5-trade-finder`, 500 tests, 204 mutations (1 documented
+   equivalent survivor; 202 from the last full run plus 2 hand-verified in
+   `f15cd2e`). Awaiting the user's merge.** The final whole-branch review's fix
+   wave is `f15cd2e` (ranking-layer test coverage, the unbounded pin, the
+   opponent-roster degradation note, two undocumented tunables) and the
+   leaguemate handle it left in four other tracked files is redacted in
+   `7dbd401`. `trades --league sleeper-main` ran for real: 2:39 wall clock, one
    row league-wide (reproduces the pre-build measurement below exactly), "17
    weeks scored". `--player <name>` pins the search (12s). `--league
    yahoo-main` refuses, exit 1 (needs every roster; Yahoo serves none). Full

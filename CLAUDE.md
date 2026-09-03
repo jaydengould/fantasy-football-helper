@@ -470,7 +470,7 @@ fresh opinion.
 | 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4a-start-sit`, 377 tests / 153 mutations. Runs against both leagues. Awaiting the user's merge |
 | 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | **COMPLETE 2026-09-02** (branch `phase-4b-snapshot`). Snapshot table shipped; `backtest_weekly.py` shipped and it **closed the matchup ADJUSTMENT** — measured on 2024 and 2025, it loses — so what ships is a descriptive opponent RANK that nothing consumes (see Decisions). nflverse practice report shipped and joins 14/15; `injuries_2026.csv` is a 404 until ~Sept 10, so it prints its degraded line today |
 | 4c | Waivers — free-agent pool, ROS horizon, trending as the price signal | in-season | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4c-waivers`, 454 tests / 184 mutations. `waivers` prints an EMPTY board in week 1, which is the correct output, and the pipeline was proved separately by turning the floor off. Sleeper-only, labelled. **No FAAB bid** — see the correction in Decisions |
-| 5 | Trade finder (own spec) | in-season | **COMPLETE 2026-09-02**, branch `phase-5-trade-finder`, 494 tests / 202 mutations (1 documented equivalent survivor). `trades` runs against both leagues (refuses on Yahoo, exit 1); real-league board is ONE row and reproduces the pre-build measurement. Awaiting the user's merge |
+| 5 | Trade finder (own spec) | in-season | **COMPLETE 2026-09-02**, branch `phase-5-trade-finder`, 500 tests / 204 mutations (1 documented equivalent survivor). `trades` runs against both leagues (refuses on Yahoo, exit 1); real-league board is ONE row and reproduces the pre-build measurement. Awaiting the user's merge |
 
 Phase 1 builds against the Sleeper feed because it needs no auth and Sleeper
 mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
@@ -542,6 +542,31 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   may be committed to this public repo.
 
 ## Session log
+
+### 2026-09-03 — Phase 5 closed out. The final review's fix wave, and a handle that was in five files, not one.
+
+**State:** branch `phase-5-trade-finder`, **500 tests** (from 494), **204
+mutations** — 202 from the last full run plus the 2 added in `f15cd2e` and
+hand-verified to die there; **no full mutation run this session.** Tree clean.
+
+`f15cd2e` closed the whole-branch review: `_trades`' ranking layer had no test
+driving it to a NON-EMPTY board (so the best-per-opponent max/min swap and the
+pin-direction sort swap both survived), the pinned search was unbounded and
+`--limit` never reached `_trades`, an opponent roster's unresolvable ids
+silently understated their baseline, and `tunables.playoff_weight` /
+`close_call_points` were undocumented in both `config.toml` and `README.md`.
+
+**The leaguemate's handle was fixed in `README.md` and left in four other
+tracked files** — `CLAUDE.md`, `tests/test_cli.py`, and the phase 5 spec and
+plan. Same shape as the `LAST_REGULAR_WEEK` miss one session earlier: a real
+fix applied to the file the finding named rather than to every place the
+defect lived. The privacy argument never depended on which file it sat in.
+`README.md`'s sample was re-captured genuinely (names endpoint forced to fail,
+the tool's own degradation path); the rest are hand-redacted to `leaguemate`,
+and **git history still carries it across 5 commits** — the user's call, and
+they have declined it.
+
+**Phase 5 is finished. Merging is the user's.**
 
 ### 2026-09-02 (seventh block) — PHASE 5 SHIPPED. `trades` runs against the real league; eight of its defects were in the PLAN.
 
