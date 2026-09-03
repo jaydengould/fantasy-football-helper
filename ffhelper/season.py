@@ -6,10 +6,10 @@ fetch, the design is wrong -- put the loader in `data.py`.
 """
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from math import sqrt
+from math import ceil, log2, sqrt
 from statistics import fmean
 
-from ffhelper.data import Player, score_stats
+from ffhelper.data import LeagueSettings, Player, score_stats
 from ffhelper.value import FLEX_ELIGIBLE, lineup_value, optimal_lineup
 
 
@@ -42,6 +42,80 @@ def roster_player_ids(rosters: list[dict], roster_id: int) -> list[str]:
 # The 2026 regular season. Week 18 is the last one a fantasy roster can score
 # in; playoffs are league-configured and this tool does not model them.
 LAST_REGULAR_WEEK = 18
+
+
+def last_scoring_week(settings: LeagueSettings) -> tuple[int, str | None]:
+    """The last week this league actually scores, and a note if it was guessed.
+
+    LAST_REGULAR_WEEK is the NFL's last week, not the league's. With playoffs
+    starting week 15 and six teams (a three-round bracket) the fantasy season
+    ends at week 17 -- week 18 is played by nobody and contributes to no
+    outcome, so summing it pads every rest-of-season total by a week that
+    cannot be won. Measured on the real league 2026-09-02.
+
+    Returns the constant plus a NOTE rather than a confident wrong week when
+    the payload cannot answer: absent playoff fields (Yahoo hand-entered
+    settings), or multi-week rounds, which this tool does not model.
+
+    playoff_round_type None is read as 0 (one week per round), which is the
+    only shape hand-entered settings can mean.
+    """
+    start, teams = settings.playoff_week_start, settings.playoff_teams
+    if not start or not teams or teams < 2:
+        return LAST_REGULAR_WEEK, (
+            f"league playoff settings are absent, so the horizon runs to week "
+            f"{LAST_REGULAR_WEEK} and may include weeks nobody plays")
+    if settings.playoff_round_type not in (None, 0):
+        return LAST_REGULAR_WEEK, (
+            f"playoff_round_type {settings.playoff_round_type} means multi-week "
+            f"rounds, which this tool does not model -- the horizon runs to week "
+            f"{LAST_REGULAR_WEEK}")
+    return start + ceil(log2(teams)) - 1, None
+
+
+def week_weights(
+    settings: LeagueSettings, weeks, playoff_weight: float | None = None,
+) -> dict[int, float]:
+    """How much each week counts, as the probability you play it.
+
+    A point scored in a week you do not play is worth nothing. Under a uniform
+    prior over seeds, a regular-season week is played by everyone (1.0) and a
+    playoff week by whoever survives to it -- so a 6-of-12 bracket gives
+    4/12, 4/12, 2/12 across weeks 15-17.
+
+    THIS WEIGHTS PLAYOFF WEEKS DOWN, which is the opposite of the published
+    playoff-biasing work. That work argues conditional value -- points in the
+    final matter more BECAUSE the title is decided there -- which is only
+    reachable through a matchup win-probability model nobody here has
+    validated, and is exactly the hand-picked factor CLAUDE.md forbids. This
+    answers the question the tool can answer: expected points that count.
+
+    `playoff_weight` takes the other reading, replacing the derived weights on
+    playoff weeks only. It exists because the direction is contested; the
+    default refuses to smuggle a preference in as a fact.
+
+    The uniform-seed prior is itself an assumption, and it is the one the
+    deferred leverage slice replaces with real standings (TODO.md).
+    """
+    out = {int(w): 1.0 for w in weeks}
+    start, teams, num = (settings.playoff_week_start, settings.playoff_teams,
+                         settings.num_teams)
+    if not start or not teams or teams < 2 or not num:
+        return out
+    rounds = ceil(log2(teams))
+    bracket = 2 ** rounds
+    for i in range(1, rounds + 1):
+        wk = start + i - 1
+        if wk not in out:
+            continue
+        if playoff_weight is not None:
+            out[wk] = playoff_weight
+            continue
+        # Round 1 is played only by the teams without a bye; every later round
+        # halves the bracket.
+        playing = 2 * (teams - bracket // 2) if i == 1 else bracket // (2 ** (i - 1))
+        out[wk] = playing / num
+    return out
 
 
 def free_agent_pool(
@@ -125,15 +199,80 @@ def with_weekly_points(roster: list[Player], weekly: dict[str, float]) -> list[P
 def horizon_total(
     roster: list[Player], roster_slots: dict[str, int],
     weekly_by_week: dict[int, dict[str, float]],
+    weights: dict[int, float] | None = None,
 ) -> float:
-    """Points the optimal lineup scores across every week in the horizon."""
-    return sum(lineup_value(with_weekly_points(roster, wk), roster_slots)
-               for wk in weekly_by_week.values())
+    """Points the optimal lineup scores across every week in the horizon.
+
+    `weights` scales each week by how much it counts -- see `week_weights`. A
+    week absent from the vector counts FULLY (1.0), never zero: absent means
+    unspecified, and a vector built for a different horizon must not silently
+    delete a week.
+    """
+    return sum(
+        lineup_value(with_weekly_points(roster, wk), roster_slots)
+        * (1.0 if weights is None else weights.get(w, 1.0))
+        for w, wk in weekly_by_week.items()
+    )
+
+
+def effective_weeks(
+    weekly_by_week: dict[int, dict[str, float]],
+    weights: dict[int, float] | None = None,
+) -> float:
+    """The sample size a significance floor should be scaled against.
+
+    The floor grows as sqrt(n) because independent weekly errors partially
+    cancel. A week counted at 0.33 supplies a third of a week's independent
+    error, so the effective n is the SUM of the weights rather than the count.
+    Flat weights give back the plain count, which is why one expression serves
+    both and no second threshold exists.
+    """
+    if weights is None:
+        return float(len(weekly_by_week))
+    return sum(weights.get(w, 1.0) for w in weekly_by_week)
+
+
+def best_drop(
+    roster: list[Player], roster_slots: dict[str, int],
+    weekly_by_week: dict[int, dict[str, float]],
+    weights: dict[int, float] | None = None, drop_tie_points: float = 0.5,
+    keep: str | None = None,
+) -> tuple[float, Player]:
+    """(horizon total after the best single cut, the player cut).
+
+    Used two ways: by `roster_upgrade`, where the roster is already full and an
+    add IS an add-and-drop; and by the trade search, where a 2-for-1 leaves the
+    counterparty at 16 players and the league forces a cut. ONE rule, because
+    two would eventually disagree about what a trade costs.
+
+    Ties are real and must not be broken by list order -- in the real week-1
+    run five drops tied EXACTLY. Among cuts within `drop_tie_points` of the
+    best, take the one with the fewest points of his own; the id is the final
+    tie-break so the answer is deterministic across runs.
+
+    `keep` bars one id from being the cut. It is OPT-IN and off by default,
+    because the general rule is right: in a 2-for-1 a just-received player can
+    genuinely be the player you cut. Only `roster_upgrade` needs the narrower
+    contract -- "who do I cut to make room for this add" must never answer
+    "the add" -- so only it passes one.
+    """
+    scored = [(horizon_total([*roster[:i], *roster[i + 1:]], roster_slots,
+                             weekly_by_week, weights), p)
+              for i, p in enumerate(roster) if p.sleeper_id != keep]
+    own = {p.sleeper_id: sum(wk.get(p.sleeper_id, 0.0)
+                             * (1.0 if weights is None else weights.get(w, 1.0))
+                             for w, wk in weekly_by_week.items())
+           for p in roster}
+    best = max(t for t, _ in scored)
+    tied = [(own[p.sleeper_id], t, p) for t, p in scored if t >= best - drop_tie_points]
+    _, total, dropped = min(tied, key=lambda t: (t[0], t[2].sleeper_id))
+    return total, dropped
 
 
 def roster_upgrade(
     roster: list[Player], candidate: Player, roster_slots: dict[str, int],
     weekly_by_week: dict[int, dict[str, float]], drop_tie_points: float = 0.5,
+    weights: dict[int, float] | None = None,
 ) -> tuple[float, Player, int]:
     """(gain, drop, weeks_started) for adding `candidate` at the cost of one cut.
 
@@ -150,21 +289,10 @@ def roster_upgrade(
     Among drops within `drop_tie_points` of the best, the one with the fewest
     projected points of his own is taken, and the caller prints that rule.
     """
-    base = horizon_total(roster, roster_slots, weekly_by_week)
-    own = {p.sleeper_id: sum(wk.get(p.sleeper_id, 0.0) for wk in weekly_by_week.values())
-           for p in roster}
-
-    scored: list[tuple[float, Player]] = []
-    for i, dropped in enumerate(roster):
-        trial = [*roster[:i], *roster[i + 1:], candidate]
-        scored.append((horizon_total(trial, roster_slots, weekly_by_week) - base, dropped))
-
-    best_gain = max(g for g, _ in scored)
-    tied = [(own[p.sleeper_id], g, p) for g, p in scored
-            if g >= best_gain - drop_tie_points]
-    # The id is the final tie-break so the answer is deterministic across runs:
-    # a drop name that changes when nothing changed is a board nobody can trust.
-    _, gain, drop = min(tied, key=lambda t: (t[0], t[2].sleeper_id))
+    base = horizon_total(roster, roster_slots, weekly_by_week, weights)
+    total, drop = best_drop([*roster, candidate], roster_slots, weekly_by_week,
+                            weights, drop_tie_points, keep=candidate.sleeper_id)
+    gain = total - base
 
     kept = [p for p in roster if p.sleeper_id != drop.sleeper_id] + [candidate]
     weeks_started = sum(
@@ -188,7 +316,7 @@ class WaiverTarget:
 def waiver_targets(
     roster: list[Player], pool: list[Player], roster_slots: dict[str, int],
     weekly_by_week: dict[int, dict[str, float]], close_call_points: float,
-    limit: int = 10,
+    limit: int = 10, weights: dict[int, float] | None = None,
 ) -> list[WaiverTarget]:
     """Free agents whose upgrade clears the noise on this horizon, best first.
 
@@ -207,11 +335,11 @@ def waiver_targets(
     over-reaction the matchup adjustment already died on. The caller says so in
     a sentence.
     """
-    floor = close_call_points * sqrt(len(weekly_by_week))
+    floor = close_call_points * sqrt(effective_weeks(weekly_by_week, weights))
     out: list[WaiverTarget] = []
     for candidate in pool:
         gain, drop, weeks_started = roster_upgrade(
-            roster, candidate, roster_slots, weekly_by_week)
+            roster, candidate, roster_slots, weekly_by_week, weights=weights)
         if gain > floor:
             out.append(WaiverTarget(candidate, gain, drop, weeks_started))
     out.sort(key=lambda t: (-t.gain, t.player.sleeper_id))

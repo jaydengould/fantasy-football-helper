@@ -89,3 +89,17 @@ def test_close_call_points_override(tmp_path: Path):
     cfg.write_text("[tunables]\nclose_call_points = 5.0\n")
     _, tun = load_config(cfg)
     assert tun.close_call_points == 5.0
+
+
+def test_playoff_weight_defaults_to_none_and_loads_when_set(tmp_path):
+    """None means 'use the derived weights'. A float means the user has taken
+    the other reading of playoff value deliberately."""
+    p = tmp_path / "c.toml"
+    p.write_text('[[league]]\nname="x"\nplatform="sleeper"\nleague_id="1"\n')
+    _, tun = load_config(p)
+    assert tun.playoff_weight is None
+
+    p.write_text('[[league]]\nname="x"\nplatform="sleeper"\nleague_id="1"\n'
+                 '[tunables]\nplayoff_weight=1.5\n')
+    _, tun = load_config(p)
+    assert tun.playoff_weight == 1.5

@@ -266,6 +266,18 @@ class LeagueSettings:
     roster_slots: dict[str, int]   # e.g. {"QB":1,"RB":2,"WR":2,"TE":1,"FLEX":2,"K":1,"DEF":1}
     rounds: int
     draft_id: str | None = None
+    # The fantasy calendar, read from the league payload rather than assumed.
+    # `LAST_REGULAR_WEEK = 18` is the NFL's last week, not the league's: with
+    # playoffs starting week 15 and a three-round bracket the season ends at
+    # 17, and week 18 is played by nobody. None means the platform served no
+    # playoff block (Yahoo's hand-entered settings), and the caller degrades.
+    playoff_week_start: int | None = None
+    playoff_teams: int | None = None
+    playoff_round_type: int | None = None
+    # The last week a trade may be made. 11 in the real league. Task 8 refuses
+    # to print proposals past it -- offering a trade you are not allowed to
+    # make is worse than offering none.
+    trade_deadline: int | None = None
 
 
 def score_stats(stats: dict[str, float], scoring: dict[str, float]) -> float:
@@ -308,12 +320,17 @@ def load_sleeper_settings(
     for slot in positions:
         if slot != "BN":
             slots[slot] = slots.get(slot, 0) + 1
+    raw_settings = raw.get("settings") or {}
     return LeagueSettings(
         num_teams=raw.get("total_rosters", 12),
         scoring={k: float(v) for k, v in (raw.get("scoring_settings") or {}).items()},
         roster_slots=slots,
         rounds=len(positions),
         draft_id=raw.get("draft_id"),
+        playoff_week_start=raw_settings.get("playoff_week_start"),
+        playoff_teams=raw_settings.get("playoff_teams"),
+        playoff_round_type=raw_settings.get("playoff_round_type"),
+        trade_deadline=raw_settings.get("trade_deadline"),
     )
 
 

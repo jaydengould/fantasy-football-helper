@@ -71,6 +71,19 @@ class Tunables:
     # that is. 3.0 is a starting value, NOT a measured one -- it is expected to
     # move once backtest_weekly.py measures the real weekly projection error.
     close_call_points: float = 3.0
+    # How much a playoff week counts, overriding the derived weight.
+    #
+    # None (default) uses season.week_weights, which weights a week by the
+    # probability you play it -- so playoff weeks come out BELOW 1.0, because
+    # you may not be there. The published playoff-biasing work argues the
+    # opposite: weight weeks 15-17 UP, because the title is decided there.
+    # Both readings are coherent and they answer different questions; the
+    # derivation is defaulted because it is the one with a source behind it.
+    #
+    # Set a float (e.g. 1.5) to take the other reading. To justify it as a
+    # default, bring a backtest showing it picks better trades -- the same bar
+    # the matchup adjustment failed.
+    playoff_weight: float | None = None
 
 
 def load_config(path: Path) -> tuple[list[League], Tunables]:
@@ -90,6 +103,7 @@ def load_config(path: Path) -> tuple[list[League], Tunables]:
         flex_share=flex_share_merged,
         poll_seconds=poll_seconds_merged,
         close_call_points=tun_raw.get("close_call_points", defaults.close_call_points),
+        playoff_weight=tun_raw.get("playoff_weight", defaults.playoff_weight),
     )
     return leagues, tun
 

@@ -2,6 +2,14 @@
 tier_break_sigma = 1.0
 # Within-position rank gap that earns a flag. See Tunables in config.py.
 divergence_flag_slots = 10
+# How close two players/proposals must be to be worth printing (lineup.py,
+# waivers, trades). See Tunables in config.py.
+# close_call_points = 3.0
+# How much a playoff week counts, overriding season.week_weights' derived
+# weight (which discounts it by the chance you're still playing). Uncomment
+# and set a float to weight playoffs UP instead -- unproven either way, see
+# Tunables in config.py.
+# playoff_weight = 1.5
 
 [tunables.flex_share]
 RB = 0.5

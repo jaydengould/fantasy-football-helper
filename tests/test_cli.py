@@ -3,9 +3,12 @@ import json
 import logging
 import queue
 import time
+from dataclasses import replace
 
 import pytest
 
+import ffhelper.cli as cli
+from ffhelper import trade
 from ffhelper.cli import (
     MarkDrafted, NullFeed, _claims_overruled_by_feed, _combine_my_roster, _draft_log_path,
     _handle_command, _restore_marks, _split_commands, _wait_for_input,
@@ -3214,7 +3217,9 @@ def _stub_waiver_inputs(monkeypatch, fail_weeks=()):
                 {"player_id": "30", "stats": {"pass_td": 9}}]
 
     monkeypatch.setattr(cli, "resolve_settings",
-                        lambda lg: _lineup_settings(roster_slots={"QB": 1}))
+                        lambda lg: _lineup_settings(
+                            roster_slots={"QB": 1}, playoff_week_start=15,
+                            playoff_teams=6, playoff_round_type=0, trade_deadline=11))
     monkeypatch.setattr(cli, "load_players", lambda: players)
     monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 1, "season": "2026"})
     monkeypatch.setattr(cli, "load_weekly_projections", weekly)
@@ -3282,7 +3287,43 @@ def test_waivers_drops_a_week_whose_projections_fail_and_says_how_many_scored(
     out = capsys.readouterr().out
     assert rc == 0
     assert "1 week(s) of projections" in out and "could not be scored" in out
-    assert "covers 17 weeks, not 18" in out
+    # The horizon itself now stops at the league's last scoring week (17, from
+    # playoff_week_start=15 + a 6-team/three-round bracket in _stub_waiver_inputs),
+    # not the NFL's week 18 -- so a dropped week shrinks 17 down to 16.
+    assert "covers 16 weeks, not 17" in out
+
+
+def test_waivers_horizon_stops_at_the_leagues_last_scoring_week_not_the_nfls(
+        monkeypatch, capsys):
+    # playoff_week_start=15 with playoff_teams=6 (from _stub_waiver_inputs) is a
+    # three-round bracket, so the fantasy season ends week 17. Week 18 is played
+    # by nobody and must not appear anywhere in the horizon this command names.
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    rc = cli._waivers(_sleeper_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "weeks 1-17" in out
+    assert "1-18" not in out
+
+
+def test_waivers_prints_the_note_when_the_calendar_read_is_degraded(
+        monkeypatch, capsys):
+    # A LeagueSettings with no playoff block (Yahoo's hand-entered shape, or a
+    # config that never got the fields) cannot answer the question, and
+    # `last_scoring_week` says so via its note. The note must reach the screen,
+    # never be swallowed -- a degraded read that looks identical to a clean one
+    # is exactly the silent wrongness this project keeps finding.
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    monkeypatch.setattr(cli, "resolve_settings",
+                        lambda lg: _lineup_settings(roster_slots={"QB": 1}))
+    rc = cli._waivers(_sleeper_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "playoff settings are absent" in out
 
 
 def test_main_dispatches_waivers_with_the_week_and_limit_it_was_given(monkeypatch):
@@ -3297,3 +3338,221 @@ def test_main_dispatches_waivers_with_the_week_and_limit_it_was_given(monkeypatc
     rc = main(["waivers", "--league", "sleeper-main", "--week", "4", "--limit", "3"])
     assert rc == 7
     assert seen["args"] == ("sleeper-main", 4, 3)
+
+
+# --- Phase 5: the trade screen ----------------------------------------------
+
+
+def mk_player(pid, pos):
+    return Player(sleeper_id=pid, name=f"P{pid}", position=pos, team="X")
+
+
+def test_trades_refuses_yahoo_and_says_why(capsys, monkeypatch):
+    """Not a fallback and not a bug: the search needs EVERY roster to know what
+    the other eleven teams hold, and Yahoo serves none."""
+    lg = League(name="yahoo-main", platform="yahoo", league_id="1")
+    assert cli._trades(lg, Tunables()) == 1
+    out = capsys.readouterr().out
+    assert "sleeper" in out.lower() and "yahoo" in out.lower()
+
+
+def test_trades_refuses_after_the_trade_deadline(capsys, monkeypatch):
+    """trade_deadline is 11 in the real league. Printing proposals you are not
+    allowed to make is worse than printing none -- and it exits 0, because a
+    passed deadline is a legal state, not an error."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    rc = cli._trades(_sleeper_league(), Tunables(), week=13)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "deadline" in out.lower() and "11" in out
+
+
+def test_trades_prints_an_empty_board_as_a_stated_result(capsys, monkeypatch):
+    """Measured on the real league in week 1: one opponent qualifies, and on a
+    tighter floor none do. A blank screen reads as a failed fetch, so silence
+    must be a sentence."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    # close_call_points high enough that nothing in the fixture can clear it.
+    rc = cli._trades(_sleeper_league(), replace(Tunables(), close_call_points=1e6),
+                     week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no trade" in out.lower()
+
+
+def test_render_trades_names_both_packages_and_both_gains():
+    """Pure render, no network. Every row is an argument you send to a human,
+    so it must carry what each side gets and what each side gains."""
+    p = trade.Proposal(opponent=7, give=(mk_player("a", "WR"),),
+                       get=(mk_player("b", "RB"),),
+                       gain_me=34.3, gain_them=13.7, their_drop=None)
+    out = cli.render_trades([p], week=1, league_name="L",
+                            owner="me", names={7: "leaguemate"}, notes=[],
+                            weeks_scored=17, pinned=None)
+    assert "leaguemate" in out and "34.3" in out and "13.7" in out
+    assert "Pa" in out and "Pb" in out
+
+
+def test_render_trades_names_the_forced_cut():
+    """It is part of the offer and they will notice it before you do."""
+    p = trade.Proposal(opponent=7, give=(mk_player("a", "WR"), mk_player("c", "WR")),
+                       get=(mk_player("b", "RB"),),
+                       gain_me=20.0, gain_them=5.0, their_drop=mk_player("d", "TE"))
+    out = cli.render_trades([p], 1, "L", "me", {7: "leaguemate"}, [], 17, None)
+    assert "Pd" in out
+
+
+def test_trades_refuses_an_ambiguous_player_pin(capsys, monkeypatch):
+    """Never guess -- two ATL running backs are both named Robinson, and
+    picking one silently would search for a trade nobody asked for."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    players = {
+        "10": Player("10", "Rostered QB", "QB", "BUF"),
+        "40": Player("40", "Bijan Robinson", "RB", "ATL"),
+        "41": Player("41", "Brian Robinson", "RB", "WAS"),
+    }
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    rc = cli._trades(_sleeper_league(), Tunables(), week=1, player="robinson")
+    out = capsys.readouterr().out
+    assert rc == 1
+    # Never guess: both matches are named, and no proposal is searched for.
+    assert "Bijan Robinson" in out and "Brian Robinson" in out
+
+
+def test_trades_horizon_stops_at_the_leagues_last_week_not_the_nfls(capsys, monkeypatch):
+    """last_scoring_week says this league's season ends week 17 (15 + a
+    three-round bracket - 1). Summing week 18 -- a week nobody plays -- pads
+    the horizon and must never happen, even though the fixture's stub weekly
+    loader would happily also serve week 18 if asked."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    rc = cli._trades(_sleeper_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "17 weeks scored" in out
+    assert "18 weeks scored" not in out
+
+
+def test_trades_picks_the_best_offer_per_opponent_not_the_worst(monkeypatch, capsys):
+    """Mode 1's entire premise: one row per opponent, and it is their BEST
+    qualifying offer, not their worst. A `max` silently swapped for `min`
+    still returns a full, healthy-looking board -- nothing else in the suite
+    would notice."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    worse = trade.Proposal(opponent=5, give=(mk_player("worse", "WR"),),
+                           get=(mk_player("x", "RB"),), gain_me=1.0, gain_them=5.0)
+    better = trade.Proposal(opponent=5, give=(mk_player("better", "WR"),),
+                            get=(mk_player("y", "RB"),), gain_me=99.0, gain_them=5.0)
+    monkeypatch.setattr(cli.trade_mod, "trade_options",
+                        lambda *a, **k: [worse, better])
+
+    rc = cli._trades(_sleeper_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Pbetter" in out
+    assert "Pworse" not in out
+
+
+def test_trades_pin_mode_sorts_by_my_gain_when_the_pin_is_mine(monkeypatch, capsys):
+    """Mode 2's other decision: shopping MY player, the board leads with the
+    package that pays ME most -- not the one that happens to help THEM most.
+    A swapped sort key still renders a full, plausible-looking board."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    low_me = trade.Proposal(opponent=5, give=(mk_player("lo", "WR"),),
+                            get=(mk_player("a", "RB"),), gain_me=10.0, gain_them=90.0)
+    high_me = trade.Proposal(opponent=5, give=(mk_player("hi", "WR"),),
+                             get=(mk_player("b", "RB"),), gain_me=50.0, gain_them=1.0)
+    monkeypatch.setattr(cli.trade_mod, "trade_options",
+                        lambda *a, **k: [low_me, high_me])
+
+    # "Rostered QB" (id 10) sits on roster 3, which is mine.
+    rc = cli._trades(_sleeper_league(), Tunables(), week=1, player="rostered")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.index("Phi") < out.index("Plo")
+
+
+def test_trades_pin_mode_sorts_by_their_gain_when_the_pin_is_theirs(monkeypatch, capsys):
+    """The other half of the same decision: pinning an opponent's player must
+    sort by THEIR gain, not mine."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    low_them = trade.Proposal(opponent=5, give=(mk_player("lo", "WR"),),
+                              get=(mk_player("a", "RB"),), gain_me=90.0, gain_them=10.0)
+    high_them = trade.Proposal(opponent=5, give=(mk_player("hi", "WR"),),
+                               get=(mk_player("b", "RB"),), gain_me=1.0, gain_them=50.0)
+    monkeypatch.setattr(cli.trade_mod, "trade_options",
+                        lambda *a, **k: [low_them, high_them])
+
+    # "Other Teams QB" (id 30) sits on roster 5, which is not mine.
+    rc = cli._trades(_sleeper_league(), Tunables(), week=1, player="other")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.index("Phi") < out.index("Plo")
+
+
+def test_trades_pinned_search_is_capped_at_the_limit(monkeypatch, capsys):
+    """A pin enumerates roughly 1,695 shapes against a single opponent at real
+    scale, with no per-opponent collapse to bound it the way Mode 1 has by
+    construction. `--limit` must reach the pinned path or a mid-season run
+    (a shrinking floor) prints hundreds of near-duplicate rows."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    many = [trade.Proposal(opponent=5, give=(mk_player(f"g{i}", "WR"),),
+                           get=(mk_player(f"r{i}", "RB"),),
+                           gain_me=float(i), gain_them=10.0)
+            for i in range(30)]
+    monkeypatch.setattr(cli.trade_mod, "trade_options", lambda *a, **k: many)
+
+    rc = cli._trades(_sleeper_league(), Tunables(), week=1, player="rostered", limit=5)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.count("give ") == 5
+
+
+def test_main_dispatches_trades_with_the_week_player_and_limit_it_was_given(monkeypatch):
+    seen = {}
+
+    def fake(lg, tun, week, player, limit):
+        seen["args"] = (lg.name, week, player, limit)
+        return 7
+    league = _sleeper_league()
+    monkeypatch.setattr("ffhelper.cli.load_config", lambda path: ([league], Tunables()))
+    monkeypatch.setattr("ffhelper.cli._trades", fake)
+    rc = main(["trades", "--league", "sleeper-main", "--week", "4",
+              "--player", "mahomes", "--limit", "3"])
+    assert rc == 7
+    assert seen["args"] == ("sleeper-main", 4, "mahomes", 3)
+
+
+def test_trades_notes_when_an_opponent_roster_id_is_not_in_the_player_pool(
+        monkeypatch, capsys):
+    """The same degradation `_resolve_my_roster` already prints for MY
+    roster, applied to an opponent's: a silently shortened opponent roster
+    understates their baseline and can make a trade look better for them
+    than it is."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    monkeypatch.setattr(cli, "load_league_rosters", lambda lid: [
+        {"roster_id": 3, "owner_id": "u1", "players": ["10"]},
+        {"roster_id": 5, "owner_id": "u2", "players": ["30", "999"]},
+    ])
+    rc = cli._trades(_sleeper_league(), replace(Tunables(), close_call_points=1e6),
+                     week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "not in the player pool" in out and "999" in out

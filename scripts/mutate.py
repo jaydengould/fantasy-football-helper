@@ -300,6 +300,48 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "            except ZeroDivisionError as exc:              "
          "# noqa: BLE001 - degrade, never fabricate\n"
          "                # The last unguarded fetch in this function"),
+        ("the trade deadline is ignored, so it offers trades you cannot make",
+         "if deadline is not None and week > deadline:",
+         "if deadline is not None and week > 999:"),
+        ("trades' horizon runs to the NFL's last week instead of the league's",
+         "print(\"no roster resolved, so there is nothing to trade -- \"\n"
+         "              + \"; \".join(notes))\n"
+         "        return 1\n"
+         "\n"
+         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
+         "    failed: list[int] = []\n"
+         "    for w in range(week, last_week + 1):",
+         "print(\"no roster resolved, so there is nothing to trade -- \"\n"
+         "              + \"; \".join(notes))\n"
+         "        return 1\n"
+         "\n"
+         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
+         "    failed: list[int] = []\n"
+         "    for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
+        ("an ambiguous --player silently takes the first match",
+         "        if len(matches) > 1:",
+         "        if len(matches) > 99:"),
+        ("waivers' horizon runs to the NFL's last week instead of the league's",
+         "print(\"no roster resolved, so there is nothing to upgrade -- \"\n"
+         "              + \"; \".join(notes))\n"
+         "        return 1\n"
+         "\n"
+         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
+         "    failed: list[int] = []\n"
+         "    for w in range(week, last_week + 1):",
+         "print(\"no roster resolved, so there is nothing to upgrade -- \"\n"
+         "              + \"; \".join(notes))\n"
+         "        return 1\n"
+         "\n"
+         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
+         "    failed: list[int] = []\n"
+         "    for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
+        ("trades' best-per-opponent row is their WORST qualifying offer, not their best",
+         "best.append(max(options, key=lambda p: p.gain_me))",
+         "best.append(min(options, key=lambda p: p.gain_me))"),
+        ("a pinned trade search sorts by the wrong side's gain",
+         "best.sort(key=lambda p: -p.gain_me if mine else -p.gain_them)",
+         "best.sort(key=lambda p: -p.gain_them if mine else -p.gain_me)"),
     ],
     "store.py": [
         ("snapshot write never committed, so the record dies with the process",
@@ -497,14 +539,35 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("free agent pool skips the projection filter",
          "if pid not in rostered and pid in projected_ids", "if pid not in rostered"),
         ("waiver floor does not scale with the horizon",
-         "floor = close_call_points * sqrt(len(weekly_by_week))",
+         "floor = close_call_points * sqrt(effective_weeks(weekly_by_week, weights))",
          "floor = close_call_points"),
         ("drop chosen on one week instead of the horizon",
-         "scored.append((horizon_total(trial, roster_slots, weekly_by_week) - base, dropped))",
-         "scored.append((lineup_value(with_weekly_points(trial, next(iter(weekly_by_week.values()))), roster_slots) - base, dropped))"),
+         "    scored = [(horizon_total([*roster[:i], *roster[i + 1:]], roster_slots,\n"
+         "                             weekly_by_week, weights), p)\n"
+         "              for i, p in enumerate(roster) if p.sleeper_id != keep]",
+         "    scored = [(lineup_value(with_weekly_points([*roster[:i], *roster[i + 1:]],\n"
+         "                             next(iter(weekly_by_week.values()))), roster_slots), p)\n"
+         "              for i, p in enumerate(roster) if p.sleeper_id != keep]"),
+        ("roster_upgrade lets best_drop cut the player it is adding",
+         "weights, drop_tie_points, keep=candidate.sleeper_id)",
+         "weights, drop_tie_points)"),
+        ("horizon_total ignores the weight vector",
+         "        lineup_value(with_weekly_points(roster, wk), roster_slots)\n"
+         "        * (1.0 if weights is None else weights.get(w, 1.0))",
+         "        lineup_value(with_weekly_points(roster, wk), roster_slots)\n"
+         "        * 1.0"),
+        ("a week absent from the weights is dropped instead of counted fully",
+         "    return sum(weights.get(w, 1.0) for w in weekly_by_week)",
+         "    return sum(weights.get(w, 0.0) for w in weekly_by_week)"),
+        ("the waiver floor uses the raw week count instead of the effective one",
+         "floor = close_call_points * sqrt(effective_weeks(weekly_by_week, weights))",
+         "floor = close_call_points * sqrt(len(weekly_by_week))"),
         ("drop tie broken by list order",
-         "_, gain, drop = min(tied, key=lambda t: (t[0], t[2].sleeper_id))",
-         "_, gain, drop = tied[0]"),
+         "_, total, dropped = min(tied, key=lambda t: (t[0], t[2].sleeper_id))",
+         "_, total, dropped = tied[0]"),
+        ("the drop tie-break ignores the player's own points",
+         "_, total, dropped = min(tied, key=lambda t: (t[0], t[2].sleeper_id))",
+         "_, total, dropped = min(tied, key=lambda t: t[2].sleeper_id)"),
         ("weeks_started counts weeks with no row for the candidate",
          "if candidate.sleeper_id in wk", "if True"),
         ("weekly projection guard stops rejecting a null stats row",
@@ -576,6 +639,37 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("a contradictory draft picks the first roster_id instead of refusing",
          "return found.pop() if len(found) == 1 else None",
          "return found.pop() if found else None"),
+        ("the bracket length is ignored, so the horizon ends on the first playoff week",
+         "return start + ceil(log2(teams)) - 1, None",
+         "return start, None"),
+        ("every week weighs the same, so the playoff bracket is ignored",
+         "playing = 2 * (teams - bracket // 2) if i == 1 else bracket // (2 ** (i - 1))",
+         "playing = num"),
+        ("the playoff_weight override leaks onto regular-season weeks",
+         "        if wk not in out:\n            continue",
+         "        if wk not in out:\n            pass"),
+    ],
+
+    "ffhelper/trade.py": [
+        ("the floor is checked on my side only, so their side can lose",
+         "        if gain_them <= floor:\n            return",
+         "        if gain_them <= -1e9:\n            return"),
+        ("results are ordered by list position instead of deterministically",
+         "    out.sort(key=lambda p: (-p.gain_me, len(p.give) + len(p.get),\n"
+         "                            _ids(p.give), _ids(p.get)))",
+         "    pass"),
+        ("the counterparty keeps 16 players, so their forced cut is free",
+         "            total_them, drop = best_drop(after, roster_slots, weekly_by_week, weights)",
+         "            total_them, drop = ros(after), None"),
+        ("the counterparty's forced cut can land on a player they just sent",
+         "        after = [*_without(theirs, get), *give]",
+         "        after = [*theirs, *give]"),
+        ("2-for-2 is not searched, so the shape carrying the surplus is missed",
+         "    for pair in combinations(mine, 2):\n        for other in combinations(theirs, 2):\n            consider(list(pair), list(other))",
+         "    for pair in combinations(mine, 2):\n        for other in combinations(theirs, 2):\n            pass"),
+        ("the pin is matched against the wrong side of the offer",
+         "        return any(p.sleeper_id == pin.sleeper_id for p in give)",
+         "        return any(p.sleeper_id == pin.sleeper_id for p in get)"),
     ],
 
 }

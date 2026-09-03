@@ -697,6 +697,72 @@ _WK = {
 }
 
 
+# --- Phase 5: week_weights reaches horizon_total and the waiver floor --------
+
+
+def test_horizon_total_scales_each_week_by_its_weight():
+    """A half-weighted week contributes half its lineup value. Without this the
+    weight vector is inert and every downstream number ignores the calendar."""
+    roster = [mk("a", "QB", 0.0)]
+    slots = {"QB": 1}
+    wbw = {1: {"a": 10.0}, 2: {"a": 10.0}}
+    assert season.horizon_total(roster, slots, wbw) == pytest.approx(20.0)
+    assert season.horizon_total(roster, slots, wbw, {1: 1.0, 2: 0.5}) == pytest.approx(15.0)
+
+
+def test_horizon_total_treats_a_week_missing_from_the_weights_as_full():
+    """A weight vector built for a different horizon must not silently zero a
+    week -- absent means 'not specified', which is 1.0, never 0.0."""
+    roster = [mk("a", "QB", 0.0)]
+    wbw = {1: {"a": 10.0}, 2: {"a": 10.0}}
+    assert season.horizon_total(roster, {"QB": 1}, wbw, {1: 1.0}) == pytest.approx(20.0)
+
+
+def test_effective_weeks_is_the_sum_of_the_weights():
+    """The floor grows as sqrt(n) because independent weekly errors partially
+    cancel. A week counted at 0.33 contributes a third of a week's worth of
+    error, so the effective sample size is the SUM of the weights, not the
+    count. With flat weights this reduces to 4c's rule exactly."""
+    wbw = {1: {}, 2: {}, 3: {}}
+    assert season.effective_weeks(wbw) == pytest.approx(3.0)
+    assert season.effective_weeks(wbw, {1: 1.0, 2: 1.0, 3: 0.5}) == pytest.approx(2.5)
+
+
+def test_effective_weeks_counts_a_week_absent_from_the_weights_as_full():
+    """Same contract horizon_total already honours: a weights vector built for
+    a different horizon must not silently zero a week it never mentions.
+    Week 3 has no entry here, so it must contribute a full 1.0, not 0.0 --
+    dropping it would shrink the sample size and lower the significance floor,
+    admitting noise as a real upgrade."""
+    wbw = {1: {}, 2: {}, 3: {}}
+    assert season.effective_weeks(wbw, {1: 1.0, 2: 0.5}) == pytest.approx(2.5)
+
+
+def test_the_waiver_floor_scales_with_the_weights_not_the_week_count():
+    """A down-weighted horizon is a smaller sample, so the bar must fall with
+    it. Using the raw count keeps a season-length bar over a horizon that is
+    effectively one week long, which silences real upgrades.
+
+    Arithmetic, worked before implementing:
+      base   = 4 weeks x 0.25 x 10.0 (qb_good starts) = 10.0
+      after  = 4 weeks x 0.25 x 14.0 (qb_better starts, qb_bad cut) = 14.0
+      gain   = 4.0
+      effective weeks = 4 x 0.25 = 1.0 -> floor 3.0 * sqrt(1.0) = 3.0 -> PRINTS
+      raw week count  = 4          -> floor 3.0 * sqrt(4.0) = 6.0 -> would NOT
+    """
+    roster = [mk("qb_good", "QB"), mk("qb_bad", "QB")]
+    pool = [mk("qb_better", "QB")]
+    slots = {"QB": 1}
+    wbw = {w: {"qb_good": 10.0, "qb_bad": 0.0, "qb_better": 14.0}
+           for w in range(1, 5)}
+    weights = {w: 0.25 for w in range(1, 5)}
+
+    out = season.waiver_targets(roster, pool, slots, wbw, 3.0, weights=weights)
+    assert [t.player.sleeper_id for t in out] == ["qb_better"]
+    assert out[0].gain == pytest.approx(4.0)
+    assert out[0].drop.sleeper_id == "qb_bad"
+
+
 def test_roster_upgrade_pays_for_the_add_with_a_drop():
     roster = _roster_for_upgrade()
     cand = Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU")
@@ -763,6 +829,34 @@ def test_roster_upgrade_breaks_a_drop_tie_on_the_droppeds_own_points():
     assert drop.sleeper_id == "DEN"
 
 
+def test_best_drop_takes_the_lowest_scorer_among_tied_cuts():
+    """Ties are real -- in the real week-1 run five drops tied EXACTLY -- and
+    naming an arbitrary member of a tie is fabrication: a name presented as
+    computed when it was positional. Among cuts within drop_tie_points of the
+    best, take the one with the fewest points of his own, then the id."""
+    # Two bench players who never start: cutting either costs the lineup
+    # nothing, so the totals tie exactly and only their own points separate them.
+    roster = [mk("qb", "QB"), mk("rb1", "RB"), mk("rb2", "RB"),
+              mk("bench_hi", "RB"), mk("bench_lo", "RB")]
+    slots = {"QB": 1, "RB": 2}
+    wbw = {1: {"qb": 20.0, "rb1": 15.0, "rb2": 14.0,
+               "bench_hi": 9.0, "bench_lo": 1.0}}
+    total, dropped = season.best_drop(roster, slots, wbw)
+    assert dropped.sleeper_id == "bench_lo"
+    assert total == pytest.approx(20.0 + 15.0 + 14.0)
+
+
+def test_best_drop_will_cut_a_starter_when_that_is_genuinely_best():
+    """The rule is not 'cut a bench player' -- it is 'maximise what remains'.
+    A roster whose only cut is a starter must still return one."""
+    roster = [mk("qb", "QB"), mk("qb2", "QB")]
+    slots = {"QB": 1}
+    wbw = {1: {"qb": 20.0, "qb2": 3.0}}
+    total, dropped = season.best_drop(roster, slots, wbw)
+    assert dropped.sleeper_id == "qb2"
+    assert total == pytest.approx(20.0)
+
+
 # --- Phase 4c: the ranking and the significance floor ------------------------
 
 
@@ -821,3 +915,117 @@ def test_waiver_targets_returns_empty_when_nothing_clears_and_that_is_a_result()
     weekly = {w: {**_WK, "0001": 1.0} for w in range(1, 19)}
     assert season.waiver_targets(roster, pool, _waiver_slots(), weekly,
                                  close_call_points=3.0) == []
+
+
+def test_week_weights_are_one_for_every_regular_season_week():
+    w = season.week_weights(_settings(), range(1, 15))
+    assert set(w.values()) == {1.0}
+
+
+def test_week_weights_derive_playoff_weeks_from_the_bracket():
+    """6 of 12 teams make it, top two seeded on a bye. So week 15 is played by
+    the four unseeded qualifiers, week 16 by four, week 17 by two -- and the
+    weight is the share of the league that plays it. Derived from the payload,
+    NOT a picked multiplier: a hand-chosen number is what CLAUDE.md forbids."""
+    w = season.week_weights(_settings(), range(15, 18))
+    assert w[15] == pytest.approx(4 / 12)
+    assert w[16] == pytest.approx(4 / 12)
+    assert w[17] == pytest.approx(2 / 12)
+
+
+def test_week_weights_shrink_the_bracket_for_a_four_team_playoff():
+    """Two rounds, not three. The round sizes must follow playoff_teams."""
+    w = season.week_weights(_settings(playoff_teams=4), range(15, 17))
+    assert w[15] == pytest.approx(4 / 12)
+    assert w[16] == pytest.approx(2 / 12)
+
+
+def test_playoff_weight_overrides_the_derivation_for_playoff_weeks_only():
+    """The knob exists because the direction is contested -- the literature
+    weights playoff weeks UP. Setting it must not touch weeks 1-14."""
+    w = season.week_weights(_settings(), range(13, 18), playoff_weight=2.0)
+    assert w[13] == 1.0 and w[14] == 1.0
+    assert w[15] == 2.0 and w[16] == 2.0 and w[17] == 2.0
+
+
+def test_week_weights_are_flat_when_the_league_serves_no_playoff_block():
+    """Degrade to flat, never to a guessed bracket."""
+    w = season.week_weights(_settings(playoff_week_start=None, playoff_teams=None),
+                            range(1, 19))
+    assert set(w.values()) == {1.0}
+
+
+def _settings(**kw):
+    """A LeagueSettings with the real sleeper-main shape, overridable per test."""
+    from ffhelper.data import LeagueSettings
+    base = dict(
+        num_teams=12,
+        scoring={"rec": 1.0, "rec_yd": 0.1, "rec_td": 6.0},
+        roster_slots={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1},
+        rounds=15,
+        playoff_week_start=15,
+        playoff_teams=6,
+        playoff_round_type=0,
+    )
+    base.update(kw)
+    return LeagueSettings(**base)
+
+
+def test_last_scoring_week_is_the_final_playoff_week_not_week_18():
+    """6 teams is a 3-round bracket, so 15 -> 17. Week 18 is played by nobody
+    and contributes to no fantasy outcome; summing it silently pads every
+    rest-of-season total with a week that cannot be won."""
+    week, note = season.last_scoring_week(_settings())
+    assert week == 17
+    assert note is None
+
+
+def test_last_scoring_week_handles_a_four_team_bracket():
+    """ceil(log2(4)) = 2 rounds, so 15 -> 16. The arithmetic must follow the
+    bracket, not a constant offset."""
+    week, note = season.last_scoring_week(_settings(playoff_teams=4))
+    assert week == 16
+    assert note is None
+
+
+def test_last_scoring_week_refuses_multi_week_rounds_and_says_so():
+    """playoff_round_type != 0 means a round spans two weeks, which this tool
+    does not model. Fall back to the constant and NAME the reason -- computing
+    a confident wrong last week is the fabrication this project forbids."""
+    week, note = season.last_scoring_week(_settings(playoff_round_type=1))
+    assert week == season.LAST_REGULAR_WEEK
+    assert note is not None and "round" in note
+
+
+def test_last_scoring_week_falls_back_when_the_league_serves_no_playoff_fields():
+    """Yahoo's hand-entered settings carry no playoff block at all. Degrade to
+    the constant with a note, never to a guessed bracket."""
+    week, note = season.last_scoring_week(
+        _settings(playoff_week_start=None, playoff_teams=None, playoff_round_type=None))
+    assert week == season.LAST_REGULAR_WEEK
+    assert note is not None
+
+
+def test_roster_upgrade_never_cuts_the_player_it_is_adding():
+    """"Cut the player you were trying to add" is not an answer to "who do I cut
+    to make room for him". `best_drop` is correctly GENERAL -- in a real 2-for-1
+    a just-received player can genuinely be the right cut -- so the restriction
+    belongs to this caller, whose contract is narrower.
+
+    Arithmetic, worked before implementing (QB:1, so one starter):
+      cut qb_bad (the candidate) -> qb_good starts -> 10.0   <- ties, own 1.0
+      cut qb_bench               -> qb_good starts -> 10.0   <- ties, own 5.0
+      cut qb_good                -> qb_bench starts ->  5.0
+    Both cuts tie at 10.0 and the tie-break takes the lowest own points, which
+    is the candidate himself. Left alone the answer is "add him, then cut him",
+    a gain of 0.0 by construction, and `kept` then filters nothing so
+    `weeks_started` is computed against a roster one player too large.
+    """
+    roster = [mk("qb_good", "QB"), mk("qb_bench", "QB")]
+    cand = mk("qb_bad", "QB")
+    weekly = {1: {"qb_good": 10.0, "qb_bench": 5.0, "qb_bad": 1.0}}
+
+    gain, drop, weeks_started = season.roster_upgrade(roster, cand, {"QB": 1}, weekly)
+    assert drop.sleeper_id == "qb_bench"
+    assert gain == pytest.approx(0.0)
+    assert weeks_started == 0
