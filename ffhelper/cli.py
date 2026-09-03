@@ -1553,86 +1553,14 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
 def _waivers(league: League, tunables: Tunables, week: int | None = None,
              limit: int = 10) -> int:
     """Rank the free-agent pool. One shot -- no loop, no polling."""
-    if league.platform != "sleeper":
-        # Not a fallback and not a bug: the pool is the full player list minus
-        # the union of EVERY roster, and Yahoo serves no rosters without API
-        # access. A pool built from one hand-entered roster would be silently
-        # wrong, which is worse than absent.
-        print(f"waivers needs every team's roster to know who is free, and "
-              f"{league.platform} has no API access -- so this command is "
-              f"Sleeper-only. `lineup` still works for {league.name}.")
+    from ffhelper.pipeline import build_waivers
+    view = build_waivers(league, tunables, week, limit)
+    if view.error:
+        print(view.error)
         return 1
-
-    settings = resolve_settings(league)
-    week, season_str, notes, _state_week = _resolve_week(week)
-    if week is None:
-        print("no NFL week available: /state/nfl is unreachable and --week "
-              "was not given -- pass e.g. '--week 1' to run without it")
-        return 1
-
-    last_week, cal_note = season_mod.last_scoring_week(settings)
-    if cal_note is not None:
-        notes.append(cal_note)
-
-    players = load_players()
-    roster, owner, notes_r, rosters, rid = _resolve_my_roster(league, settings, players)
-    notes += notes_r
-    if not roster:
-        print("no roster resolved, so there is nothing to upgrade -- "
-              + "; ".join(notes))
-        return 1
-
-    weekly_by_week: dict[int, dict[str, float]] = {}
-    failed: list[int] = []
-    for w in range(week, last_week + 1):
-        try:
-            rows = load_weekly_projections(season_str, w)
-        except Exception:                             # noqa: BLE001 - degrade, never fabricate
-            failed.append(w)
-            continue
-        weekly_by_week[w] = season_mod.weekly_points(rows, settings.scoring)
-    if not weekly_by_week:
-        print("no weekly projections could be fetched -- nothing can be ranked")
-        return 1
-    if failed:
-        # A shorter horizon is a smaller total, and a total that shrank for an
-        # unexplained reason is the kind of silent wrongness this project keeps
-        # finding. Say which weeks are missing.
-        notes.append(f"{len(failed)} week(s) of projections could not be scored "
-                     f"({', '.join(str(w) for w in failed)}) -- the rest-of-season "
-                     f"total covers {len(weekly_by_week)} weeks, not "
-                     f"{last_week - week + 1}")
-
-    weights = season_mod.week_weights(settings, weekly_by_week, tunables.playoff_weight)
-
-    projected = set().union(*(set(wk) for wk in weekly_by_week.values()))
-    pool = season_mod.free_agent_pool(players, rosters, projected)
-
-    # `this_week` is not a bet on an uncertain future week -- it is the week
-    # already in front of you, being asked about right now, so it is scored
-    # unweighted. Passing `weights` here would raise its own significance floor
-    # on exactly the weeks (playoffs) where an immediate one-week call matters
-    # most, discounting a week that is, from where you stand, certain.
-    this_week_horizon = {week: weekly_by_week[week]} if week in weekly_by_week else {}
-    this_week = season_mod.waiver_targets(
-        roster, pool, settings.roster_slots, this_week_horizon,
-        tunables.close_call_points, limit) if this_week_horizon else []
-    ros = season_mod.waiver_targets(
-        roster, pool, settings.roster_slots, weekly_by_week,
-        tunables.close_call_points, limit, weights=weights)
-
-    try:
-        trending = load_trending("add")
-    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
-        trending = {}
-        notes.append(f"could not reach Sleeper's trending endpoint ({exc}) -- "
-                     f"the trending column is absent")
-
-    position, teams = season_mod.waiver_position(rosters, rid) if rid else (None, 0)
-
-    print(render_waivers(this_week, ros, week, last_week,
-                         league.name, owner, position, teams, trending, notes,
-                         len(weekly_by_week)))
+    print(render_waivers(view.this_week, view.ros, view.week, view.last_week,
+                         view.league_name, view.owner, view.position, view.teams,
+                         view.trending, view.notes, view.weeks_scored))
     return 0
 
 

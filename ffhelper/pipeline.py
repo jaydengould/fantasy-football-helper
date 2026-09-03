@@ -90,3 +90,121 @@ def build_lineup(league: League, tunables: Tunables,
         matchup_line=matchup_line, practice_line=practice_line,
         projected_ids=set(weekly),
     )
+
+
+def platform_refusal(league: League, command: str, needs: str) -> str:
+    """The one wording for 'this command needs rosters this platform will not serve'.
+
+    Shared by waivers and trades so the two cannot drift into two explanations
+    of one limitation -- the same reason `_resolve_my_roster` was extracted.
+    """
+    return (f"{command} needs {needs}, and {league.platform} has no API access "
+            f"-- so this command is Sleeper-only. `lineup` still works for "
+            f"{league.name}.")
+
+
+def _horizon(season_str: str, week: int, last_week: int,
+             settings) -> tuple[dict[int, dict[str, float]], list[int]]:
+    """Weekly league-scored points for every week from `week` to `last_week`.
+
+    Returns the weeks that could be scored and the weeks that could not. A
+    shorter horizon is a smaller total, and a total that shrank for an
+    unexplained reason is exactly the silent wrongness this project keeps
+    finding -- so the failures are returned, never swallowed.
+    """
+    scored: dict[int, dict[str, float]] = {}
+    failed: list[int] = []
+    for w in range(week, last_week + 1):
+        try:
+            rows = cli.load_weekly_projections(season_str, w)
+        except Exception:                     # noqa: BLE001 - degrade, never fabricate
+            failed.append(w)
+            continue
+        scored[w] = season_mod.weekly_points(rows, settings.scoring)
+    return scored, failed
+
+
+def _horizon_note(failed: list[int], scored: dict, week: int, last_week: int,
+                  label: str) -> str:
+    return (f"{len(failed)} week(s) of projections could not be scored "
+            f"({', '.join(str(w) for w in failed)}) -- the {label} total covers "
+            f"{len(scored)} weeks, not {last_week - week + 1}")
+
+
+@dataclass(frozen=True)
+class WaiverView:
+    league_name: str
+    error: str | None = None
+    this_week: list = field(default_factory=list)
+    ros: list = field(default_factory=list)
+    week: int | None = None
+    last_week: int | None = None
+    owner: str | None = None
+    position: int | None = None
+    teams: int = 0
+    trending: dict = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+    weeks_scored: int = 0
+
+
+def build_waivers(league: League, tunables: Tunables, week: int | None = None,
+                  limit: int = 10) -> WaiverView:
+    """Rank the free-agent pool. No printing, no DB write."""
+    if league.platform != "sleeper":
+        return WaiverView(league_name=league.name, error=platform_refusal(
+            league, "waivers", "every team's roster to know who is free"))
+
+    settings = cli.resolve_settings(league)
+    week, season_str, notes, _state_week = cli._resolve_week(week)
+    if week is None:
+        return WaiverView(league_name=league.name, error=NO_WEEK)
+
+    last_week, cal_note = season_mod.last_scoring_week(settings)
+    if cal_note is not None:
+        notes.append(cal_note)
+
+    players = cli.load_players()
+    roster, owner, notes_r, rosters, rid = cli._resolve_my_roster(league, settings, players)
+    notes += notes_r
+    if not roster:
+        return WaiverView(league_name=league.name, notes=notes,
+                          error="no roster resolved, so there is nothing to "
+                                "upgrade -- " + "; ".join(notes))
+
+    weekly_by_week, failed = _horizon(season_str, week, last_week, settings)
+    if not weekly_by_week:
+        return WaiverView(league_name=league.name, notes=notes,
+                          error="no weekly projections could be fetched "
+                                "-- nothing can be ranked")
+    if failed:
+        notes.append(_horizon_note(failed, weekly_by_week, week, last_week,
+                                   "rest-of-season"))
+
+    weights = season_mod.week_weights(settings, weekly_by_week, tunables.playoff_weight)
+    projected = set().union(*(set(wk) for wk in weekly_by_week.values()))
+    pool = season_mod.free_agent_pool(players, rosters, projected)
+
+    # `this_week` is the week already in front of you, so it is scored
+    # unweighted -- passing `weights` would raise its own significance floor on
+    # exactly the playoff weeks where an immediate one-week call matters most.
+    this_week_horizon = {week: weekly_by_week[week]} if week in weekly_by_week else {}
+    this_week = season_mod.waiver_targets(
+        roster, pool, settings.roster_slots, this_week_horizon,
+        tunables.close_call_points, limit) if this_week_horizon else []
+    ros = season_mod.waiver_targets(
+        roster, pool, settings.roster_slots, weekly_by_week,
+        tunables.close_call_points, limit, weights=weights)
+
+    try:
+        trending = cli.load_trending("add")
+    except Exception as exc:                  # noqa: BLE001 - degrade, never fabricate
+        trending = {}
+        notes.append(f"could not reach Sleeper's trending endpoint ({exc}) -- "
+                     f"the trending column is absent")
+
+    position, teams = season_mod.waiver_position(rosters, rid) if rid else (None, 0)
+    return WaiverView(
+        league_name=league.name, this_week=this_week, ros=ros, week=week,
+        last_week=last_week, owner=owner, position=position, teams=teams,
+        trending=trending, notes=notes, weeks_scored=len(weekly_by_week),
+    )

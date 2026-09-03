@@ -23,3 +23,17 @@ def test_build_lineup_reports_error_when_week_unresolvable(monkeypatch):
     assert view.error is not None
     assert "--week" in view.error
     assert view.state is None
+
+
+def test_build_waivers_refuses_non_sleeper_platform():
+    """Yahoo serves no rosters, so the free-agent pool cannot be built.
+
+    A pool derived from one hand-entered roster would be silently wrong, which
+    is worse than absent -- so this is a refusal, not a degradation.
+    """
+    league = League(name="yahoo-main", platform="yahoo", league_id="9")
+    view = pipeline.build_waivers(league, Tunables())
+    assert view.error is not None
+    assert "yahoo" in view.error
+    assert "Sleeper-only" in view.error
+    assert view.this_week == []
