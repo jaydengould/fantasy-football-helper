@@ -336,6 +336,20 @@ fresh opinion.
   print a probability now rests on a measurement rather than a judgement.
   **Reopen in November if the league has by then actually traded**;
   `load_league_transactions` (cut in 4c) is what it would need.
+  **Shipped 2026-09-02 in Phase 5's `trades` command**, which prints this on
+  screen verbatim rather than a number. The real-league board is one row
+  (league-wide, one manager holds a pairing surplus) and has never been
+  scored against an actual accepted trade — it is one night's measurement,
+  not a validated system.
+- **The trade finder has no prefilter and enumerates every shape (1-for-1,
+  2-for-1, 2-for-2) in full.** A prefilter that looks sound — drop incoming
+  players who can't crack my lineup — is only sound for 1-for-1: measured
+  before being added, it silently dropped 22 of 49 real trades, because
+  giving away two players can open a slot the pruned player then fills. The
+  industry's dominant approach (a single consensus trade-value number per
+  player, FantasyPros/dynasty charts) is barred outright by non-negotiable
+  #2 — a consensus ranking is PRICE, and folding it into the value axis is
+  the blend that rule forbids, the same reason §18 closed ECR.
 - **Sleeper's picks endpoint is CDN-cached and the poll must defeat it.** It is
   served `public, s-maxage=86400, stale-while-revalidate=300` behind Cloudflare,
   so a plain poll is answered from the edge and never reaches origin. Measured on
@@ -456,7 +470,7 @@ fresh opinion.
 | 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4a-start-sit`, 377 tests / 153 mutations. Runs against both leagues. Awaiting the user's merge |
 | 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | **COMPLETE 2026-09-02** (branch `phase-4b-snapshot`). Snapshot table shipped; `backtest_weekly.py` shipped and it **closed the matchup ADJUSTMENT** — measured on 2024 and 2025, it loses — so what ships is a descriptive opponent RANK that nothing consumes (see Decisions). nflverse practice report shipped and joins 14/15; `injuries_2026.csv` is a 404 until ~Sept 10, so it prints its degraded line today |
 | 4c | Waivers — free-agent pool, ROS horizon, trending as the price signal | in-season | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4c-waivers`, 454 tests / 184 mutations. `waivers` prints an EMPTY board in week 1, which is the correct output, and the pipeline was proved separately by turning the floor off. Sleeper-only, labelled. **No FAAB bid** — see the correction in Decisions |
-| 5 | Trade finder (own spec) | in-season | **IN PROGRESS** — branch `phase-5-trade-finder`, **tasks 1-4 of 9 done, 472 tests. RESUME AT TASK 5 after fixing `TODO.md` 7a.** `trades` does not exist yet; what is built is the arithmetic under it. **No mutation run yet** — Task 9's step |
+| 5 | Trade finder (own spec) | in-season | **COMPLETE 2026-09-02**, branch `phase-5-trade-finder`, 494 tests / 202 mutations (1 documented equivalent survivor). `trades` runs against both leagues (refuses on Yahoo, exit 1); real-league board is ONE row and reproduces the pre-build measurement. Awaiting the user's merge |
 
 Phase 1 builds against the Sleeper feed because it needs no auth and Sleeper
 mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
@@ -529,86 +543,117 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
 
 ## Session log
 
-### 2026-09-02 (seventh block) — PHASE 5 specced, planned, half built. Four of its defects were in the PLAN.
+### 2026-09-02 (seventh block) — PHASE 5 SHIPPED. `trades` runs against the real league; eight of its defects were in the PLAN.
 
-**State:** branch `phase-5-trade-finder`, 6 commits, **472 tests** (from 454),
-**tasks 1-4 of 9 done and committed. RESUME AT TASK 5, after fixing the open
-defect in `TODO.md` 7a.** No mutation run yet — that is Task 9's step.
+**State:** branch `phase-5-trade-finder`, **494 tests** (from 454), **202
+mutations, 1 needing a look** (the documented `value.py` equivalent mutant,
+sole survivor since August), tree byte-identical before and after the run.
+Key commits: `2dbeca6` (1-for-1), `687f016` (2-for-1), `844e9d9` (2-for-2 +
+pin), `68bf8dd` (the `trades` command), `d64b536` (fix round closing two
+surviving cli.py mutations), `f024705` (Task 8a — the calendar fix wired into
+`waivers` too), `e89cf31` (closed the one mutation the run turned up).
 
-`trades` does not exist yet. What exists is the arithmetic under it: the
-playoff calendar, week weights, a weighted `horizon_total`, and `best_drop`.
+`.venv/bin/python -m ffhelper.cli trades --league sleeper-main` searches every
+opponent for the best 1-for-1 / 2-for-1 / 2-for-2 that clears the floor on
+BOTH sides, and prints the best offer per opponent. Real run tonight: **2:39
+wall clock, "17 weeks scored", one row league-wide** — `stephcody`, a 2-for-2
+(give Shakir+Watson, get Pickens+Chargers DEF), me +29.1 / them +12.8. That
+**reproduces the spec's own pre-build measurement, unchanged**: across 2475
+1-for-1 pairs zero clear the 12.7-point floor, 2-for-2 is where surplus lives
+(49 clear both floors across three opponents in the pre-build probe), and only
+one manager in twelve holds a surplus that pairs with ours. `--player
+"smith-njigba"` runs in **12s** (13x faster — pinning narrows the search) and
+prints an empty board as a sentence, correctly, since none clears the floor for
+him. `--league yahoo-main` refuses, exit 1: the search needs every roster and
+Yahoo serves none. **This is one real league on one night, not a backtest** —
+the board has never been scored against an actual accepted trade.
 
-#### Everything below was measured against the live league BEFORE designing
+The board states on screen that it **cannot say whether anyone will accept**
+("this league has never made a trade, so there is no history to rank managers
+by") — the shipped confirmation of the dead acceptance prior recorded below.
 
-- **1-for-1 trades are empty.** 2475 pairs across 11 opponents; 11 help both
-  teams at all and **zero clear the 12.7-point floor**. The shape everyone
-  imagines is the one that produces nothing.
-- **2-for-2 is where the surplus lives** — 49 clear both floors across three
-  opponents alone. Only a multi-player swap changes how many bodies a side
-  carries at a position, and that is what creates surplus.
-- **The whole-league board is ONE row.** Best-per-opponent across all three
-  shapes, 330s: one manager in twelve holds a surplus that pairs with ours.
-- **The user chose 2-for-2 over my recommendation and was right.** I proposed
-  1-for-1 only; they asked for the full search including 2-for-2, which I had
-  flagged as having no supporting evidence. Measuring it showed it carries
-  essentially all the value. **Recorded because the correction ran against me.**
+#### `LAST_REGULAR_WEEK = 18` was wrong, and the fix reached only half the code until a controller catch
 
-#### THE ACCEPTANCE PRIOR IS DEAD, and this file is what was wrong
-
-Decisions said to rank proposals by a transaction-history prior. **Measured: 3
-transactions all season, all free-agent moves, ZERO trades, and
-`previous_league_id` is None** — no prior season either. The sample is empty,
-and fitting a manager model to it would be the FAAB bid by a new route. The
-board ranks by my own gain and says on screen it cannot predict acceptance.
-
-#### `LAST_REGULAR_WEEK = 18` is wrong for this league, and `waivers` shipped it
-
-`playoff_week_start: 15` with `playoff_teams: 6` is a three-round bracket, so
-the season ends **week 17**. Week 18 is played by nobody, and shipped `waivers`
-has been summing it into every rest-of-season total — ~5% of the horizon.
-`trade_deadline: 11` was read the same way. **Same shape as the one-RB-slot and
-FAAB errors: a league rule assumed rather than read off the payload. Third
-time.** Consequence not yet discharged: `waivers` output MOVES, and Task 9
-re-runs it before merge.
+`playoff_week_start: 15` + `playoff_teams: 6` is a three-round bracket, so the
+season ends **week 17**, not 18 — the **third** time a league rule was
+inferred from an API default instead of read off the payload (after the Yahoo
+one-RB-slot error and the FAAB/rolling-priority error). Tasks 1-3 built
+`last_scoring_week` and weighted `week_weights` and wired them into `trades`
+— but not into `waivers`, which kept reading `LAST_REGULAR_WEEK` (=18) with
+flat weights, so the very bug the phase exists to fix stayed live in the
+command the user runs every week. **No task brief covered changing
+`_waivers`; the plan built the fix and applied it only to the new command.**
+Caught by the controller reading the plan against the diff, not by any test
+or reviewer, and closed as Task 8a before Task 9 ran: `waivers` and `trades`
+now both call `last_scoring_week`/`week_weights` identically, confirmed by
+grepping `LAST_REGULAR_WEEK` out of `cli.py` entirely. Tonight's cache mtimes
+confirm it live — `wk17` fetches from tonight, `wk18` untouched.
 
 #### Week weights point the OPPOSITE way to the literature, deliberately
 
 A point scored in a week you do not play is worth nothing, so a week's weight
-is the probability you play it: 1.0 through week 14, then 4/12, 4/12, 2/12 on a
-6-of-12 bracket. **That weights the playoffs DOWN**, where the published
+is the probability you play it: 1.0 through week 14, then 4/12, 4/12, 2/12 on
+a 6-of-12 bracket. **That weights the playoffs DOWN**, where the published
 playoff-biasing work weights them up. Theirs is conditional value, reachable
 only through a matchup win-probability model nobody has validated — the
 hand-picked factor §15 forbids. `tunables.playoff_weight` takes the other
 reading; the default is the one with a derivation behind it.
 
-#### Four of Phase 5's defects were in the PLAN, and three were caught before code
+#### Eight of Phase 5's defects were in the PLAN, not the implementations
 
-The 4a lesson arriving again, but earlier, because the preflight scan is now a
-step rather than a hope:
+Three caught by the preflight scan before dispatch (a vacuous
+`assert ... is not None` mandated for the significance floor; three `...`
+test-body placeholders; `trade_deadline` added to `LeagueSettings` in two
+tasks). Five more surfaced during execution:
 
-1. **A vacuous test the plan MANDATED** — `assert waiver_targets(...) is not
-   None`, in the task covering the significance floor.
-2. **Three `...` placeholders** in Task 8's test bodies.
-3. **`trade_deadline` added to `LeagueSettings` in two different tasks.**
-4. **The plan's mutation target for `horizon_total` matched TWO places** in
-   `season.py` — found by an implementer, not the scan. Left alone,
-   `mutate.py` takes the first and reports "killed" for a function the label
-   does not name. **Fourth time this project has hit the
-   check-reports-success-while-checking-something-else shape**, and the first
-   time the tool's own AMBIGUOUS guard caught it. The guard worked.
+1. **A fixture mathematically incapable of passing its own test.** Task 5's
+   brief gave both sides exactly 7 players against a 7-slot lineup, so every
+   player always starts and a 1-for-1 trade's `gain_me` and `gain_them` are
+   identically `-(each other)` — the brief's own first assertion ("a mutually
+   beneficial one-for-one is found") cannot pass against the brief's own
+   fixture. Found by the implementer, fixed with a bench slot per side and
+   verified against all 64 1-for-1 combinations.
+2. **The plan's own sample output couldn't be produced by its own function
+   signature** — Task 8's target header names a floor value `render_trades`
+   was never given one to print. Resolved by matching the shipped
+   `render_waivers` precedent, which doesn't print its floor either.
+3. **Two mutations the plan mandated, its own tests could not kill** —
+   an ambiguous `--player` pin silently taking the first match, and the
+   horizon running to the NFL's last week instead of the league's — because
+   no test drove `_trades` with `player=` at all, and the one test reaching
+   the fetch loop set the floor to 1e6 so the board was empty regardless of
+   which week count was used. One fix round, both closed.
+4. **`horizon_total`'s mutation target matched TWO places** in `season.py` —
+   found by an implementer, not the scan. Left alone, `mutate.py` takes the
+   first and reports "killed" for a function the label doesn't name. The
+   AMBIGUOUS guard caught it.
+5. **The plan built a fix and applied it to only one of the two commands
+   that had the bug** — the `LAST_REGULAR_WEEK` case above.
 
-#### The reviewer found a defect the plan mandated, in the riskiest task
+**Same recurring shape as 4a: a plan detailed enough to transcribe is detailed
+enough to transcribe a defect.** None of these were implementer carelessness;
+every one was built exactly as briefed.
 
-Task 4 extracted `best_drop` so the waiver path and the trade search share one
-rule for which player a team cuts. The refactor is correct and its equivalence
-proof held — `roster_upgrade`'s existing tests pass untouched, 28 insertions
-and 0 deletions in the test diff. **But the brief's own prescribed call lets
-`best_drop` return the CANDIDATE as the drop** — "cut the player you were
-trying to add" — with a 0.0 gain and a `weeks_started` computed against a
-12-player superset. Not reachable in shipped `waivers` (a 0.0 gain cannot clear
-the floor); **reachable the moment the trade search calls `best_drop` directly,
-with no floor in front of it.** Parked with a ruling in `TODO.md` 7a: fix in
-`roster_upgrade` only, never in `best_drop`, which is correctly general.
+#### `roster_upgrade`'s `best_drop` seam, parked mid-phase and closed before Task 5
+
+Task 4 extracted `best_drop` so `waivers` and the trade search share one rule
+for which player a team cuts. The refactor's equivalence held (28 test
+insertions, 0 deletions), but the brief's own prescribed call let `best_drop`
+return the just-added CANDIDATE as the drop — unreachable in shipped
+`waivers` (0.0 gain can't clear a floor) but reachable the instant the trade
+search calls it with no floor in front. Fixed with an opt-in `keep` parameter
+that only `roster_upgrade` passes, leaving `best_drop`'s general default
+untouched — which the trade search needed, since a just-received player can
+legitimately be the right cut in a real 2-for-1 (confirmed live in Task 6's
+fixture).
+
+#### No prefilter, ever — measured, not assumed
+
+Pruning incoming players who can't crack my lineup is sound for 1-for-1 and
+unsound here: giving away two players opens a slot the pruned player then
+fills. Measured before it could be added: **it silently dropped 22 of 49 real
+trades.** The search stays a full enumeration — 15v15 rosters run ~141,075
+shapes per league, order of minutes, which is what tonight's 2:39 measured.
 
 #### Industry research, and why it changed nothing
 

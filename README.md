@@ -12,7 +12,7 @@ running backs score higher.
 
 Draft mode is complete and has been exercised end to end against a full 180-pick
 live draft, which is where most of its bugs came from. Season mode's weekly
-lineup and waiver commands work end to end; the trade finder is not built yet.
+lineup, waiver, and trade-finder commands all work end to end.
 
 | Capability | State |
 | --- | --- |
@@ -29,7 +29,7 @@ lineup and waiver commands work end to end; the trade finder is not built yet.
 | Official practice report (nflverse) | working — the file appears once week 1 is played |
 | Opponent matchup context | working — a rank, not an adjustment: adjusting lost to plain projections on 2024 and 2025 |
 | Waivers (`waivers`) | working — Sleeper only: the pool needs every team's roster |
-| Trade finder | planned |
+| Trade finder (`trades`) | working — Sleeper only: the search needs every team's roster |
 
 ## Requirements
 
@@ -351,6 +351,44 @@ platform with no API cannot say who is owned. Trending adds are printed beside a
 target when Sleeper has a count, labelled as national — they say nothing about
 what your own leaguemates want.
 
+### Trade finder (season mode)
+
+```bash
+.venv/bin/python -m ffhelper.cli trades --league my-sleeper-league
+.venv/bin/python -m ffhelper.cli trades --league my-sleeper-league --player "some player"
+```
+
+Searches every opponent's roster for the best 1-for-1, 2-for-1, and 2-for-2
+that clears a floor on **both sides** — a trade only you gain from is not a
+trade — and prints the best offer per opponent. `--player` pins the search to
+trades involving one player, either direction, which runs far faster.
+
+Real output against a live 12-team league, week 1 (~2.5 minutes to search
+every opponent):
+
+```
+TRADES -- sleeper-main (jaydenpg) -- week 1, 17 weeks scored
+  best offer per opponent
+
+  stephcody        you + 29.1   them + 12.8   [2-for-2]
+                   give Khalil Shakir (WR) + Christian Watson (WR)
+                   get  George Pickens (WR) + Los Angeles Chargers (DEF)
+
+  it cannot tell you whether they will accept -- this league has never
+  made a trade, so there is no history to rank managers by.
+  preseason projections barely move week to week, so a September board is
+  close to a restatement of season-long consensus.
+```
+
+One row across the whole league is a real result, not a bug: most pairs of
+rosters have nothing to trade, and the board says so rather than manufacturing
+a marginal offer to fill space. It never estimates whether the other manager
+would say yes — acceptance depends on attention and stubbornness the data
+cannot see, and inventing a percentage would dress up a guess as a number.
+
+Sleeper only, for the same reason as `waivers`: the search needs every
+opponent's roster.
+
 ## Reading the board
 
 A real board, 12-team full PPR, on the clock at pick 45, holding
@@ -529,7 +567,7 @@ has caught several tests that passed against deliberately broken code.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 454 tests, no network, runs in ~0.7s
+.venv/bin/pytest          # 494 tests, no network, runs in ~1.5s
 ```
 
 `ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire

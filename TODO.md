@@ -227,99 +227,72 @@ item. The project is now a season-mode project.
    re-introduces the feed dependency in the one path whose purpose is to survive
    a missing draft, and only helps when both values are set, which is the case
    that was already right.
-7. **Phase 5 — trade finder. IN PROGRESS, branch `phase-5-trade-finder`.**
-   Spec and plan committed; **tasks 1-4 of 9 done and committed, 472 tests.
-   RESUME AT TASK 5.** 7a is fixed (2026-09-02).
+7. ~~**Phase 5 — trade finder.**~~ **DONE 2026-09-02, branch
+   `phase-5-trade-finder`, 494 tests, 202 mutations (1 documented equivalent
+   survivor), tree byte-identical before/after the run. Awaiting the user's
+   merge.** `trades --league sleeper-main` ran for real: 2:39 wall clock, one
+   row league-wide (reproduces the pre-build measurement below exactly), "17
+   weeks scored". `--player <name>` pins the search (12s). `--league
+   yahoo-main` refuses, exit 1 (needs every roster; Yahoo serves none). Full
+   detail in `CLAUDE.md`'s session log and Decisions.
+   `.superpowers/sdd/2026-09-02-phase-5-trade-finder/progress.md` is the full
+   ledger if the specifics of any task are ever needed again.
 
-   **HOW TO RESUME, in order — a cold session needs nothing else:**
-   1. `git checkout phase-5-trade-finder` (8 commits, tree clean, 472 tests green)
-   2. ~~Fix 7a below.~~ **DONE 2026-09-02, commit `5b1e86b`** — 473 tests.
-   3. Invoke `superpowers:subagent-driven-development` with
-      `docs/superpowers/plans/2026-09-02-phase-5-trade-finder.md`. It reads the
-      ledger, sees tasks 1-4 marked `complete`, and resumes at Task 5.
-   4. Tasks 5-9 in order. **Task 9 is not optional paperwork** — it holds the
-      mutation run and the live re-run of `waivers`, both listed below.
-
-   The SDD ledger at `.superpowers/sdd/2026-09-02-phase-5-trade-finder/progress.md`
-   is the authority on what is finished — a task with a `complete` line is done,
-   do not re-dispatch it. Task briefs 1-9 are already extracted beside it, so no
-   subagent ever needs to read the whole plan. The ledger also carries the four
-   rulings made this session and the deferred-minor list the final whole-branch
-   review must triage.
-
-   | | |
-   | --- | --- |
-   | spec | `docs/superpowers/specs/2026-09-02-phase-5-trade-finder-design.md` |
-   | plan | `docs/superpowers/plans/2026-09-02-phase-5-trade-finder.md` (9 tasks) |
-   | done | 1 playoff calendar, 2 `week_weights`, 3 weighted `horizon_total`, 4 `best_drop` |
-   | left | 5-7 `trade.py` (1-for-1, 2-for-1, 2-for-2 + pin), 8 the `trades` command, 9 acceptance + docs |
-
-   **Nothing is half-finished** — every task ends at a commit and the suite is
-   green (472 passed; the 1 warning predates this branch, confirmed against
-   `main`).
-
-   **The mutation run has NOT been done for tasks 1-4.** It is Task 9 step 3,
-   deliberately, because `mutate.py` rewrites source in place and must run alone
-   on a green suite. 37 `season.py` targets are staged, each verified to match
-   exactly once — but a static uniqueness check is weaker evidence than a run,
-   and this project has been bitten four times by mutation tooling reporting
-   success while checking something else.
-
-   **Shipped behaviour CHANGED and has not been re-run live:** `waivers` now
-   sums to week 17 rather than 18 and applies week weights, so its numbers move.
-   Task 9 re-runs it. **Do not merge before that.**
-
-7a. **FIXED 2026-09-02, commit `5b1e86b`. 473 tests.** Kept for the ruling and
-   the deviation from it. The fix is an OPT-IN `keep` parameter on `best_drop`
-   that only `roster_upgrade` passes, not the post-hoc re-run the ruling
-   prescribed: "re-run restricted to `roster`" computes the horizon of a roster
-   WITHOUT the candidate, which is the wrong quantity — he has to still be on
-   the team after the swap. `best_drop`'s default behaviour is untouched, so
-   the trade search still gets the general rule. Test verified red first; two
-   mutations added, both hand-verified killed; one existing mutation target was
-   stale against the new line and was updated.
-
-   **The defect, as found —**
-   Found by Task 4's reviewer, Important, and it was mandated by the plan:
-   `roster_upgrade` calls `best_drop([*roster, candidate])`, so **`best_drop` can
-   return the CANDIDATE HIMSELF as the drop** — "cut the player you were trying
-   to add", which is not a coherent recommendation. Two consequences:
-   - `gain` is then exactly 0.0 by construction (the roster is unchanged), and
-     the tie-break prefers the candidate whenever his own points are lowest.
-   - `kept` at `season.py:290` then filters nothing, so `weeks_started` is
-     computed against a 12-player superset rather than the 11-player post-swap
-     roster. Wrong, not merely cosmetic.
-
-   **Not reachable in shipped `waivers` under default config** — a 0.0 gain can
-   never clear `close_call_points * sqrt(weeks) >= 3.0` — which is why it is
-   parked rather than treated as live breakage. **It becomes reachable the
-   moment Task 5 lands**, because the trade search calls `best_drop` DIRECTLY
-   with no floor in front of it.
-
-   **Ruling: fix in `roster_upgrade` only, never in `best_drop`.** `best_drop`
-   is correctly general — in a real 2-for-1 a just-received player genuinely can
-   be the right cut — but `roster_upgrade`'s contract is "who do I cut to make
-   room for this add" and it must never answer "the add". After the call, if
-   `drop.sleeper_id == candidate.sleeper_id`, re-run restricted to `roster`.
-   Cost if wrong: the guard is unnecessary and costs `len(roster)` extra lineup
-   evaluations on a path that already does 15 of them.
-
-7b. **What Phase 5's probes established, before any code** (measured 2026-09-02
-   against the live league; all of it is in the spec):
-   - **1-for-1 trades are empty.** 2475 pairs across 11 opponents, 11 help both
-     teams at all, and **zero clear the 12.7-point floor.**
-   - **2-for-2 is where the surplus is** — 49 clear both floors across three
-     opponents. Only a multi-player swap changes how many bodies a side carries
-     at a position, which is what creates the surplus.
-   - **The whole-league board is ONE row** (best-per-opponent, all shapes, 330s).
-   - **THE ACCEPTANCE PRIOR IS DEAD.** `CLAUDE.md` said to rank by a
-     transaction-history prior. The league has made **3 transactions all season,
-     zero trades, and has no previous season.** Nothing replaces it.
-   - **A prefilter that looked provable is unsound** — it silently dropped
-     **22 of 49 real trades**. Sound for 1-for-1 only. Do not reintroduce it.
-   - **`LAST_REGULAR_WEEK = 18` was wrong for this league** and shipped that way
-     in `waivers`. `playoff_week_start: 15` + `playoff_teams: 6` ends the season
-     at week 17. `trade_deadline: 11`, also read rather than assumed.
+7a. **CLOSED 2026-09-02, commit `5b1e86b`.** `best_drop` could return the
+   just-added candidate himself as the drop (0.0 gain by construction, a
+   12-player superset feeding `weeks_started`) — not reachable in shipped
+   `waivers` (0.0 can't clear the floor) but live the moment the trade search
+   calls `best_drop` directly with no floor. Fixed with an opt-in `keep`
+   parameter that only `roster_upgrade` passes; `best_drop`'s general default
+   (a just-received player CAN legitimately be the right cut) is untouched —
+   confirmed live in Task 6's fixture.
+7b. **CLOSED 2026-09-02 — folded into Phase 5's build.** What the pre-build
+   probes established now lives in `CLAUDE.md`'s Decisions and session log:
+   1-for-1 trades are empty against the real league (zero of 2475 pairs clear
+   the floor), 2-for-2 is where the surplus is, the whole-league board is one
+   row, the acceptance prior is dead (3 transactions all season, zero trades,
+   no prior season), the prefilter is unsound (drops 22 of 49 real trades),
+   and `LAST_REGULAR_WEEK = 18` was wrong (season ends week 17).
+7c. **Two slices deferred out of Phase 5's spec, not started, each gated on a
+   missing prerequisite:**
+   - **Leverage weighting** — weight playoff weeks UP by win probability
+     instead of down by play probability, the reading the published
+     literature uses. Needs a playoff-odds simulation over the remaining
+     schedule. Data confirmed available: 11 distinct pairings across weeks
+     1-14, and Sleeper rosters carry `wins`/`losses`/`fpts` to seed it. Live
+     window to build and validate it against real standings is **weeks 8-11**
+     — before that the schedule sample is too thin, after it the playoff
+     picture is largely decided and the feature answers a question already
+     settled.
+   - **Win-probability lineups** — optimise for win probability (high floor
+     favoured, high ceiling as underdog) rather than points. Needs a
+     per-player weekly score VARIANCE this project has never estimated — the
+     same missing ingredient leverage weighting needs. Gate: run
+     `scripts/backtest_weekly.py` on 2024 AND 2025 first, the same standard
+     the matchup adjustment was held to and failed; do not build the variance
+     model until it clears that bar out of sample.
+7d. **Deferred minors from Phase 5, triaged as non-blocking, not as
+   non-existent** — pick up if touching the same code:
+   - Two near-duplicate `last_scoring_week` fallback note strings; templatize
+     if a third case appears.
+   - `playoff_round_type` 0/multi-week semantics live in a comment, not a
+     named constant.
+   - `week_weights`'s `weeks` param lacks the `Iterable[int]` type hint the
+     brief specified.
+   - Weighting ternary was briefly duplicated between `horizon_total` and the
+     `own` dict; Task 4 folded it into `best_drop`, so this is closed but the
+     pattern (a brief time-boxing a duplication) is worth watching for.
+   - `effective_weeks`' all-zero-weight and out-of-horizon-key behaviour is
+     sane by inspection; the out-of-horizon case now has a mutation-driven
+     test (closed 2026-09-02, commit `e89cf31`), the all-zero case does not.
+   - Pinned-mode empty board prints the generic "trade search for X" header
+     rather than a return/cost-specific one — cosmetic, a `render_trades`
+     signature gap, surfaces only on a genuine no-trade-found pin.
+   - `load_league_users` fetches twice per `trades` call (owner name +
+     opponent-name map); both cache-guarded, YAGNI to unify for one command.
+   - Printing the trade/waiver FLOOR value on an empty board (making the
+     "nothing clears it" claim checkable) is a cross-cutting call for both
+     commands together, not a Phase 5 defect — decide once or not at all.
 8. **Phase 3.7 — the `DataTable` swap** (§19). Offseason. Carries a decision to
    take FIRST: `html.Table` or `dash-ag-grid`. **It is also the trigger for the
    deferred `board.py` fold** — 3.7 is the point where a board change would
@@ -418,11 +391,9 @@ left:
 - **Phase 4** — season mode via `nflreadpy`. **Without the waiver notify-bot** —
   the league uses FAAB with scheduled batch processing, so claims resolve
   simultaneously and a same-day alert gives no timing edge.
-- **Phase 5** — trade finder. IN PROGRESS, see item 7 in the queue above.
-  `lineup_value()` was built standalone specifically so this inherits it.
-  Will not output an acceptance probability, and **the transaction-history
-  prior that was to replace it is dead** — measured 2026-09-02, the league has
-  made zero trades ever and has no previous season. Ranks by my own gain.
+- ~~**Phase 5** — trade finder.~~ **DONE 2026-09-02**, see item 7 above. The two
+  slices left out of its spec (leverage weighting, win-probability lineups)
+  are item 7c above, not here — they were deferred, not unstarted scope.
 
 ---
 
