@@ -199,15 +199,43 @@ def with_weekly_points(roster: list[Player], weekly: dict[str, float]) -> list[P
 def horizon_total(
     roster: list[Player], roster_slots: dict[str, int],
     weekly_by_week: dict[int, dict[str, float]],
+    weights: dict[int, float] | None = None,
 ) -> float:
-    """Points the optimal lineup scores across every week in the horizon."""
-    return sum(lineup_value(with_weekly_points(roster, wk), roster_slots)
-               for wk in weekly_by_week.values())
+    """Points the optimal lineup scores across every week in the horizon.
+
+    `weights` scales each week by how much it counts -- see `week_weights`. A
+    week absent from the vector counts FULLY (1.0), never zero: absent means
+    unspecified, and a vector built for a different horizon must not silently
+    delete a week.
+    """
+    return sum(
+        lineup_value(with_weekly_points(roster, wk), roster_slots)
+        * (1.0 if weights is None else weights.get(w, 1.0))
+        for w, wk in weekly_by_week.items()
+    )
+
+
+def effective_weeks(
+    weekly_by_week: dict[int, dict[str, float]],
+    weights: dict[int, float] | None = None,
+) -> float:
+    """The sample size a significance floor should be scaled against.
+
+    The floor grows as sqrt(n) because independent weekly errors partially
+    cancel. A week counted at 0.33 supplies a third of a week's independent
+    error, so the effective n is the SUM of the weights rather than the count.
+    Flat weights give back the plain count, which is why one expression serves
+    both and no second threshold exists.
+    """
+    if weights is None:
+        return float(len(weekly_by_week))
+    return sum(weights.get(w, 1.0) for w in weekly_by_week)
 
 
 def roster_upgrade(
     roster: list[Player], candidate: Player, roster_slots: dict[str, int],
     weekly_by_week: dict[int, dict[str, float]], drop_tie_points: float = 0.5,
+    weights: dict[int, float] | None = None,
 ) -> tuple[float, Player, int]:
     """(gain, drop, weeks_started) for adding `candidate` at the cost of one cut.
 
@@ -224,14 +252,16 @@ def roster_upgrade(
     Among drops within `drop_tie_points` of the best, the one with the fewest
     projected points of his own is taken, and the caller prints that rule.
     """
-    base = horizon_total(roster, roster_slots, weekly_by_week)
-    own = {p.sleeper_id: sum(wk.get(p.sleeper_id, 0.0) for wk in weekly_by_week.values())
+    base = horizon_total(roster, roster_slots, weekly_by_week, weights)
+    own = {p.sleeper_id: sum(wk.get(p.sleeper_id, 0.0)
+                             * (1.0 if weights is None else weights.get(w, 1.0))
+                             for w, wk in weekly_by_week.items())
            for p in roster}
 
     scored: list[tuple[float, Player]] = []
     for i, dropped in enumerate(roster):
         trial = [*roster[:i], *roster[i + 1:], candidate]
-        scored.append((horizon_total(trial, roster_slots, weekly_by_week) - base, dropped))
+        scored.append((horizon_total(trial, roster_slots, weekly_by_week, weights) - base, dropped))
 
     best_gain = max(g for g, _ in scored)
     tied = [(own[p.sleeper_id], g, p) for g, p in scored
@@ -262,7 +292,7 @@ class WaiverTarget:
 def waiver_targets(
     roster: list[Player], pool: list[Player], roster_slots: dict[str, int],
     weekly_by_week: dict[int, dict[str, float]], close_call_points: float,
-    limit: int = 10,
+    limit: int = 10, weights: dict[int, float] | None = None,
 ) -> list[WaiverTarget]:
     """Free agents whose upgrade clears the noise on this horizon, best first.
 
@@ -281,11 +311,11 @@ def waiver_targets(
     over-reaction the matchup adjustment already died on. The caller says so in
     a sentence.
     """
-    floor = close_call_points * sqrt(len(weekly_by_week))
+    floor = close_call_points * sqrt(effective_weeks(weekly_by_week, weights))
     out: list[WaiverTarget] = []
     for candidate in pool:
         gain, drop, weeks_started = roster_upgrade(
-            roster, candidate, roster_slots, weekly_by_week)
+            roster, candidate, roster_slots, weekly_by_week, weights=weights)
         if gain > floor:
             out.append(WaiverTarget(candidate, gain, drop, weeks_started))
     out.sort(key=lambda t: (-t.gain, t.player.sleeper_id))

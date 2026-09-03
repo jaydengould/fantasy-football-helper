@@ -697,6 +697,62 @@ _WK = {
 }
 
 
+# --- Phase 5: week_weights reaches horizon_total and the waiver floor --------
+
+
+def test_horizon_total_scales_each_week_by_its_weight():
+    """A half-weighted week contributes half its lineup value. Without this the
+    weight vector is inert and every downstream number ignores the calendar."""
+    roster = [mk("a", "QB", 0.0)]
+    slots = {"QB": 1}
+    wbw = {1: {"a": 10.0}, 2: {"a": 10.0}}
+    assert season.horizon_total(roster, slots, wbw) == pytest.approx(20.0)
+    assert season.horizon_total(roster, slots, wbw, {1: 1.0, 2: 0.5}) == pytest.approx(15.0)
+
+
+def test_horizon_total_treats_a_week_missing_from_the_weights_as_full():
+    """A weight vector built for a different horizon must not silently zero a
+    week -- absent means 'not specified', which is 1.0, never 0.0."""
+    roster = [mk("a", "QB", 0.0)]
+    wbw = {1: {"a": 10.0}, 2: {"a": 10.0}}
+    assert season.horizon_total(roster, {"QB": 1}, wbw, {1: 1.0}) == pytest.approx(20.0)
+
+
+def test_effective_weeks_is_the_sum_of_the_weights():
+    """The floor grows as sqrt(n) because independent weekly errors partially
+    cancel. A week counted at 0.33 contributes a third of a week's worth of
+    error, so the effective sample size is the SUM of the weights, not the
+    count. With flat weights this reduces to 4c's rule exactly."""
+    wbw = {1: {}, 2: {}, 3: {}}
+    assert season.effective_weeks(wbw) == pytest.approx(3.0)
+    assert season.effective_weeks(wbw, {1: 1.0, 2: 1.0, 3: 0.5}) == pytest.approx(2.5)
+
+
+def test_the_waiver_floor_scales_with_the_weights_not_the_week_count():
+    """A down-weighted horizon is a smaller sample, so the bar must fall with
+    it. Using the raw count keeps a season-length bar over a horizon that is
+    effectively one week long, which silences real upgrades.
+
+    Arithmetic, worked before implementing:
+      base   = 4 weeks x 0.25 x 10.0 (qb_good starts) = 10.0
+      after  = 4 weeks x 0.25 x 14.0 (qb_better starts, qb_bad cut) = 14.0
+      gain   = 4.0
+      effective weeks = 4 x 0.25 = 1.0 -> floor 3.0 * sqrt(1.0) = 3.0 -> PRINTS
+      raw week count  = 4          -> floor 3.0 * sqrt(4.0) = 6.0 -> would NOT
+    """
+    roster = [mk("qb_good", "QB"), mk("qb_bad", "QB")]
+    pool = [mk("qb_better", "QB")]
+    slots = {"QB": 1}
+    wbw = {w: {"qb_good": 10.0, "qb_bad": 0.0, "qb_better": 14.0}
+           for w in range(1, 5)}
+    weights = {w: 0.25 for w in range(1, 5)}
+
+    out = season.waiver_targets(roster, pool, slots, wbw, 3.0, weights=weights)
+    assert [t.player.sleeper_id for t in out] == ["qb_better"]
+    assert out[0].gain == pytest.approx(4.0)
+    assert out[0].drop.sleeper_id == "qb_bad"
+
+
 def test_roster_upgrade_pays_for_the_add_with_a_drop():
     roster = _roster_for_upgrade()
     cand = Player(sleeper_id="6790", name="Dalton Schultz", position="TE", team="HOU")
