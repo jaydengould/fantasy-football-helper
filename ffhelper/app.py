@@ -14,20 +14,22 @@ import argparse
 import logging
 import sys
 import time
-from urllib.parse import parse_qs, urlencode
+from pathlib import Path
+from urllib.parse import parse_qs
 
 import dash
 from dash import Input, Output, dash_table, dcc, html
 
+from ffhelper import store
 from ffhelper.board import (
     BoardState, auto_mine, board_state, explicit_not_mine, marks_in_entry_order,
 )
 from ffhelper.cli import (
-    DRAFT_LOG_DIR, ROOT, _draft_log_path, _restore_marks, _select_feed,
-    load_board_inputs,
+    DRAFT_LOG_DIR, ROOT, ROSTER_DIR, SEASON, _draft_log_path, _restore_marks,
+    _select_feed, load_board_inputs,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
-from ffhelper.data import Player
+from ffhelper.data import Player, load_nfl_state
 from ffhelper.value import FLEX_ELIGIBLE, is_bench_only, next_pick_number, optimal_lineup
 
 log = logging.getLogger(__name__)
@@ -350,30 +352,33 @@ ROUTES = [("/", "home"), ("/draft", "draft"), ("/lineup", "lineup"),
           ("/waivers", "waivers"), ("/trades", "trades")]
 
 
-def league_from_search(search: str, names: list[str], default: str) -> str:
-    """The league named in `?league=`, or the default.
+def _resolve_league(value: str, names: list[str], default: str) -> str:
+    """A candidate league name, or the default when it is unknown.
 
-    Falls back rather than raising: the query string is user-editable and a
-    typo must not 500 the page. Falls back rather than fuzzy-matching, too --
-    silently advising on the wrong league is the failure this refuses.
+    The one place the fallback rule lives: unknown, empty, or malformed input
+    means the default, never a raise -- a typo or a stray edit to the URL must
+    not 500 the page, and never fuzzy-matches, either, which would silently
+    advise on the wrong league.
     """
+    return value if value in names else default
+
+
+def league_from_search(search: str, names: list[str], default: str) -> str:
+    """The league named in `?league=`, or the default. See `_resolve_league`."""
     got = parse_qs((search or "").lstrip("?")).get("league", [""])[0]
-    return got if got in names else default
+    return _resolve_league(got, names, default)
 
 
 def league_from_kwargs(kw: dict, names: list[str], default: str) -> str:
-    """`league_from_search`, wired for how Dash actually calls a page layout.
+    """`_resolve_league`, wired for how Dash actually calls a page layout.
 
     A registered page's layout callable is invoked with the URL's query
     parameters already parsed into individual kwargs (e.g. `league="x"`), not
-    with the raw "?league=x" string -- so passing `kw.get("league", "")`
-    straight into `league_from_search` would feed it a bare value with no "="
-    in it, which `parse_qs` silently turns into nothing and every page would
-    read as the default league regardless of the URL. Re-encoding `kw` back
-    into a query string keeps `league_from_search` as the one place the
-    fallback rule lives, instead of a second copy of it here.
+    with the raw "?league=x" string, so the bare value is handed straight to
+    the shared fallback rule instead of round-tripping it back through a query
+    string just to have `league_from_search` decode it again.
     """
-    return league_from_search("?" + urlencode(kw), names, default)
+    return _resolve_league(kw.get("league", ""), names, default)
 
 
 def nav(active: str, league: str) -> html.Div:
@@ -386,9 +391,90 @@ def nav(active: str, league: str) -> html.Div:
     ], style={"padding": "12px 0"})
 
 
+def snapshot_recorded(conn, league: str, season: str, week: int) -> bool | None:
+    """Whether this week is in the snapshot table. None means 'could not check'.
+
+    Three-valued on purpose. False is a measurement -- the table was read and
+    the week is not in it, so a snapshot is due. None is the absence of a
+    measurement, and the caller must omit the line rather than print False's
+    wording. Non-negotiable #7: degrade to absent, never to a fabricated value.
+    """
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM snapshot WHERE league=? AND season=? AND week=? LIMIT 1",
+            (league, season, week)).fetchone()
+    except Exception:                        # noqa: BLE001 - absent, not fabricated
+        return None
+    return row is not None
+
+
+def roster_file_age(path) -> str | None:
+    """How old the hand-entered Yahoo roster is, or None if there is no file.
+
+    TODO item 3: there is no Yahoo API, so this file is the roster and it goes
+    stale silently after every add/drop. `lineup` and `preflight` both print
+    its age for exactly this reason; the homepage is the third place a human
+    will actually look.
+    """
+    try:
+        days = (time.time() - Path(path).stat().st_mtime) / 86400
+    except OSError:
+        return None
+    return f"{days:.0f}d old"
+
+
+def status_strip(league: str) -> html.Div:
+    """Homepage line-per-fact summary: NFL week, snapshot status, roster age.
+
+    Every fact degrades independently and by OMISSION, never a fabricated
+    substitute -- non-negotiable #7. `snapshot_recorded`'s None is the reason
+    this exists: an unreadable database drops the line instead of claiming the
+    week is missing.
+
+    ponytail: "Yahoo league" is read off roster-file existence rather than a
+    platform lookup. No `League` config object reaches this page -- `build_app`
+    only ever carries league NAMES -- and `.roster/<league>.txt` is written by
+    nothing in this codebase; `cli.py` only READS it, and only on the
+    non-sleeper branch. So the file's mere presence already implies the
+    platform, without a config load this page has no other reason to do.
+    """
+    lines = []
+    week = season = None
+    try:
+        state = load_nfl_state()
+        week = state.get("week")
+        season = str(state.get("season") or SEASON)
+        lines.append(f"nfl week {week} ({season} {state.get('season_type')})")
+    except Exception:                          # noqa: BLE001 - degrade, never fabricate
+        lines.append("week unavailable")
+
+    if week is not None:
+        conn = None
+        try:
+            conn = store.connect()
+            recorded = snapshot_recorded(conn, league, season, week)
+        except Exception:                      # noqa: BLE001 - degrade, never fabricate
+            recorded = None
+        finally:
+            if conn is not None:
+                conn.close()
+        if recorded is True:
+            lines.append(f"snapshot recorded for week {week}")
+        elif recorded is False:
+            lines.append(f"snapshot NOT recorded for week {week} -- run a snapshot")
+        # recorded is None: could not check, so the line is omitted entirely.
+
+    age = roster_file_age(ROSTER_DIR / f"{league}.txt")
+    if age is not None:
+        lines.append(f"roster file: {age}")
+
+    return html.Div([html.P(line, style={"margin": "4px 0"}) for line in lines],
+                    style={"fontFamily": _SANS, "fontSize": "13px", "padding": "8px 0"})
+
+
 def home_layout(league: str, league_names: list[str]) -> html.Div:
-    """Stub -- Task 5 fills this in. Nav only, so the route is real today."""
-    return html.Div(nav("home", league))
+    """Nav plus the status strip: current week, snapshot status, roster age."""
+    return html.Div([nav("home", league), status_strip(league)])
 
 
 def _season_layout_for(name: str, league_names: list[str], default_league: str):

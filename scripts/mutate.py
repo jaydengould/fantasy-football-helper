@@ -532,6 +532,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "        pass"),
         ("bench picks hidden -- you cannot see your own bench",
          '    out += [("BN", p.name) for p in remaining]', "    pass"),
+        ("snapshot_recorded returns False instead of None when unreadable",
+         "        return None\n    return row is not None",
+         "        return False\n    return row is not None"),
     ],
     "season.py": [
         ("free agent pool subtracts only my roster",

@@ -932,10 +932,10 @@ def test_build_app_registers_all_five_routes_and_keeps_the_board_key():
 def test_season_page_layout_resolves_the_league_from_the_url_not_the_default():
     # Dash calls a registered page's layout with the query string ALREADY
     # parsed into kwargs (e.g. league="b"), not the raw "?league=b" string.
-    # league_from_kwargs re-encodes that back into a query string before
-    # handing it to league_from_search -- without it, every season page would
-    # silently ignore ?league= and always show the default league, which would
-    # defeat the entire point of carrying the league in the URL.
+    # league_from_kwargs hands that bare value straight to the shared
+    # _resolve_league fallback -- without it, every season page would silently
+    # ignore ?league= and always show the default league, which would defeat
+    # the entire point of carrying the league in the URL.
     import dash
     app.build_app(["a", "b"], "a", poll_ms=1000)
     layout = dash.page_registry["lineup"]["layout"]
@@ -965,3 +965,83 @@ def test_draft_page_shows_the_local_only_notice():
 
     walk(layout)
     assert app.DRAFT_NOTICE in texts
+
+
+# --- homepage status strip ---
+
+import sqlite3
+
+from ffhelper.app import roster_file_age, snapshot_recorded, status_strip
+from ffhelper import store
+
+
+def test_snapshot_recorded_true_when_rows_exist():
+    conn = store.connect(":memory:")
+    conn.execute(
+        "INSERT INTO snapshot (league, season, week, player_id, taken_at, started)"
+        " VALUES ('sleeper-main','2026',3,'4046','2026-09-20T11:00:00',1)")
+    conn.commit()
+    assert snapshot_recorded(conn, "sleeper-main", "2026", 3) is True
+
+
+def test_snapshot_recorded_false_when_week_empty():
+    conn = store.connect(":memory:")
+    assert snapshot_recorded(conn, "sleeper-main", "2026", 3) is False
+
+
+def test_snapshot_recorded_none_when_unreadable():
+    """None, not False. 'Could not check' is a different fact from 'no rows'.
+
+    The strip omits the line on None. Reporting 'not recorded' for a database
+    it cannot read is a fabricated value where a measured one is expected --
+    non-negotiable #7. This is the case a suite skips because nothing happens.
+    """
+    class Broken:
+        def execute(self, *a, **k):
+            raise sqlite3.OperationalError("no such table: snapshot")
+    assert snapshot_recorded(Broken(), "sleeper-main", "2026", 3) is None
+
+
+def test_roster_file_age_none_when_absent(tmp_path):
+    assert roster_file_age(tmp_path / "no-such-league.txt") is None
+
+
+def test_roster_file_age_reports_days_old(tmp_path):
+    # An mtime nudged three days into the past, rather than sleeping for real
+    # days -- the function only reads stat().st_mtime, so backdating it is a
+    # faithful test of the same code path.
+    path = tmp_path / "yahoo-main.txt"
+    path.write_text("Bijan Robinson\n")
+    three_days_ago = time.time() - 3 * 86400
+    import os
+    os.utime(path, (three_days_ago, three_days_ago))
+    assert roster_file_age(path) == "3d old"
+
+
+def test_status_strip_omits_the_snapshot_line_when_the_week_is_unavailable(monkeypatch):
+    # load_nfl_state down means there is no week to check the table against --
+    # printing a snapshot line at all here would be a claim built on nothing.
+    def broken(*a, **k):
+        raise RuntimeError("state fetch failed")
+    monkeypatch.setattr(app, "load_nfl_state", broken)
+    rendered = str(status_strip("sleeper-main"))
+    assert "week unavailable" in rendered
+    assert "snapshot" not in rendered
+
+
+def test_status_strip_reports_snapshot_not_recorded_for_an_empty_table(monkeypatch):
+    # store.DB_PATH is redirected to a fresh, empty per-test file by
+    # tests/conftest.py, so an ordinary call reads a real, table-having, but
+    # row-less database -- exactly the False case, not the None case.
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    rendered = str(status_strip("sleeper-main"))
+    assert "snapshot NOT recorded for week 3" in rendered
+
+
+def test_status_strip_shows_roster_age_only_when_the_file_exists(monkeypatch, tmp_path):
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    assert "roster file" not in str(status_strip("yahoo-main"))
+
+    (tmp_path / "yahoo-main.txt").write_text("Bijan Robinson\n")
+    assert "roster file" in str(status_strip("yahoo-main"))
