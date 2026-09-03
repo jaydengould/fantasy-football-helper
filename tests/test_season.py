@@ -819,6 +819,34 @@ def test_roster_upgrade_breaks_a_drop_tie_on_the_droppeds_own_points():
     assert drop.sleeper_id == "DEN"
 
 
+def test_best_drop_takes_the_lowest_scorer_among_tied_cuts():
+    """Ties are real -- in the real week-1 run five drops tied EXACTLY -- and
+    naming an arbitrary member of a tie is fabrication: a name presented as
+    computed when it was positional. Among cuts within drop_tie_points of the
+    best, take the one with the fewest points of his own, then the id."""
+    # Two bench players who never start: cutting either costs the lineup
+    # nothing, so the totals tie exactly and only their own points separate them.
+    roster = [mk("qb", "QB"), mk("rb1", "RB"), mk("rb2", "RB"),
+              mk("bench_hi", "RB"), mk("bench_lo", "RB")]
+    slots = {"QB": 1, "RB": 2}
+    wbw = {1: {"qb": 20.0, "rb1": 15.0, "rb2": 14.0,
+               "bench_hi": 9.0, "bench_lo": 1.0}}
+    total, dropped = season.best_drop(roster, slots, wbw)
+    assert dropped.sleeper_id == "bench_lo"
+    assert total == pytest.approx(20.0 + 15.0 + 14.0)
+
+
+def test_best_drop_will_cut_a_starter_when_that_is_genuinely_best():
+    """The rule is not 'cut a bench player' -- it is 'maximise what remains'.
+    A roster whose only cut is a starter must still return one."""
+    roster = [mk("qb", "QB"), mk("qb2", "QB")]
+    slots = {"QB": 1}
+    wbw = {1: {"qb": 20.0, "qb2": 3.0}}
+    total, dropped = season.best_drop(roster, slots, wbw)
+    assert dropped.sleeper_id == "qb2"
+    assert total == pytest.approx(20.0)
+
+
 # --- Phase 4c: the ranking and the significance floor ------------------------
 
 

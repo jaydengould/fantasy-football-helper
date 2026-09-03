@@ -500,8 +500,12 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "floor = close_call_points * sqrt(effective_weeks(weekly_by_week, weights))",
          "floor = close_call_points"),
         ("drop chosen on one week instead of the horizon",
-         "scored.append((horizon_total(trial, roster_slots, weekly_by_week, weights) - base, dropped))",
-         "scored.append((lineup_value(with_weekly_points(trial, next(iter(weekly_by_week.values()))), roster_slots) - base, dropped))"),
+         "    scored = [(horizon_total([*roster[:i], *roster[i + 1:]], roster_slots,\n"
+         "                             weekly_by_week, weights), p)\n"
+         "              for i, p in enumerate(roster)]",
+         "    scored = [(lineup_value(with_weekly_points([*roster[:i], *roster[i + 1:]],\n"
+         "                             next(iter(weekly_by_week.values()))), roster_slots), p)\n"
+         "              for i, p in enumerate(roster)]"),
         ("horizon_total ignores the weight vector",
          "        lineup_value(with_weekly_points(roster, wk), roster_slots)\n"
          "        * (1.0 if weights is None else weights.get(w, 1.0))",
@@ -514,8 +518,11 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "floor = close_call_points * sqrt(effective_weeks(weekly_by_week, weights))",
          "floor = close_call_points * sqrt(len(weekly_by_week))"),
         ("drop tie broken by list order",
-         "_, gain, drop = min(tied, key=lambda t: (t[0], t[2].sleeper_id))",
-         "_, gain, drop = tied[0]"),
+         "_, total, dropped = min(tied, key=lambda t: (t[0], t[2].sleeper_id))",
+         "_, total, dropped = tied[0]"),
+        ("the drop tie-break ignores the player's own points",
+         "_, total, dropped = min(tied, key=lambda t: (t[0], t[2].sleeper_id))",
+         "_, total, dropped = min(tied, key=lambda t: t[2].sleeper_id)"),
         ("weeks_started counts weeks with no row for the candidate",
          "if candidate.sleeper_id in wk", "if True"),
         ("weekly projection guard stops rejecting a null stats row",

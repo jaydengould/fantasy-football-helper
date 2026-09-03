@@ -232,6 +232,36 @@ def effective_weeks(
     return sum(weights.get(w, 1.0) for w in weekly_by_week)
 
 
+def best_drop(
+    roster: list[Player], roster_slots: dict[str, int],
+    weekly_by_week: dict[int, dict[str, float]],
+    weights: dict[int, float] | None = None, drop_tie_points: float = 0.5,
+) -> tuple[float, Player]:
+    """(horizon total after the best single cut, the player cut).
+
+    Used two ways: by `roster_upgrade`, where the roster is already full and an
+    add IS an add-and-drop; and by the trade search, where a 2-for-1 leaves the
+    counterparty at 16 players and the league forces a cut. ONE rule, because
+    two would eventually disagree about what a trade costs.
+
+    Ties are real and must not be broken by list order -- in the real week-1
+    run five drops tied EXACTLY. Among cuts within `drop_tie_points` of the
+    best, take the one with the fewest points of his own; the id is the final
+    tie-break so the answer is deterministic across runs.
+    """
+    scored = [(horizon_total([*roster[:i], *roster[i + 1:]], roster_slots,
+                             weekly_by_week, weights), p)
+              for i, p in enumerate(roster)]
+    own = {p.sleeper_id: sum(wk.get(p.sleeper_id, 0.0)
+                             * (1.0 if weights is None else weights.get(w, 1.0))
+                             for w, wk in weekly_by_week.items())
+           for p in roster}
+    best = max(t for t, _ in scored)
+    tied = [(own[p.sleeper_id], t, p) for t, p in scored if t >= best - drop_tie_points]
+    _, total, dropped = min(tied, key=lambda t: (t[0], t[2].sleeper_id))
+    return total, dropped
+
+
 def roster_upgrade(
     roster: list[Player], candidate: Player, roster_slots: dict[str, int],
     weekly_by_week: dict[int, dict[str, float]], drop_tie_points: float = 0.5,
@@ -253,22 +283,9 @@ def roster_upgrade(
     projected points of his own is taken, and the caller prints that rule.
     """
     base = horizon_total(roster, roster_slots, weekly_by_week, weights)
-    own = {p.sleeper_id: sum(wk.get(p.sleeper_id, 0.0)
-                             * (1.0 if weights is None else weights.get(w, 1.0))
-                             for w, wk in weekly_by_week.items())
-           for p in roster}
-
-    scored: list[tuple[float, Player]] = []
-    for i, dropped in enumerate(roster):
-        trial = [*roster[:i], *roster[i + 1:], candidate]
-        scored.append((horizon_total(trial, roster_slots, weekly_by_week, weights) - base, dropped))
-
-    best_gain = max(g for g, _ in scored)
-    tied = [(own[p.sleeper_id], g, p) for g, p in scored
-            if g >= best_gain - drop_tie_points]
-    # The id is the final tie-break so the answer is deterministic across runs:
-    # a drop name that changes when nothing changed is a board nobody can trust.
-    _, gain, drop = min(tied, key=lambda t: (t[0], t[2].sleeper_id))
+    total, drop = best_drop([*roster, candidate], roster_slots, weekly_by_week,
+                            weights, drop_tie_points)
+    gain = total - base
 
     kept = [p for p in roster if p.sleeper_id != drop.sleeper_id] + [candidate]
     weeks_started = sum(
