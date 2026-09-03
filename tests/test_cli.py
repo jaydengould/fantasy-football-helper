@@ -3287,7 +3287,43 @@ def test_waivers_drops_a_week_whose_projections_fail_and_says_how_many_scored(
     out = capsys.readouterr().out
     assert rc == 0
     assert "1 week(s) of projections" in out and "could not be scored" in out
-    assert "covers 17 weeks, not 18" in out
+    # The horizon itself now stops at the league's last scoring week (17, from
+    # playoff_week_start=15 + a 6-team/three-round bracket in _stub_waiver_inputs),
+    # not the NFL's week 18 -- so a dropped week shrinks 17 down to 16.
+    assert "covers 16 weeks, not 17" in out
+
+
+def test_waivers_horizon_stops_at_the_leagues_last_scoring_week_not_the_nfls(
+        monkeypatch, capsys):
+    # playoff_week_start=15 with playoff_teams=6 (from _stub_waiver_inputs) is a
+    # three-round bracket, so the fantasy season ends week 17. Week 18 is played
+    # by nobody and must not appear anywhere in the horizon this command names.
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    rc = cli._waivers(_sleeper_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "weeks 1-17" in out
+    assert "1-18" not in out
+
+
+def test_waivers_prints_the_note_when_the_calendar_read_is_degraded(
+        monkeypatch, capsys):
+    # A LeagueSettings with no playoff block (Yahoo's hand-entered shape, or a
+    # config that never got the fields) cannot answer the question, and
+    # `last_scoring_week` says so via its note. The note must reach the screen,
+    # never be swallowed -- a degraded read that looks identical to a clean one
+    # is exactly the silent wrongness this project keeps finding.
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    monkeypatch.setattr(cli, "resolve_settings",
+                        lambda lg: _lineup_settings(roster_slots={"QB": 1}))
+    rc = cli._waivers(_sleeper_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "playoff settings are absent" in out
 
 
 def test_main_dispatches_waivers_with_the_week_and_limit_it_was_given(monkeypatch):

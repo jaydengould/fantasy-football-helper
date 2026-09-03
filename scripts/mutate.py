@@ -303,12 +303,39 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("the trade deadline is ignored, so it offers trades you cannot make",
          "if deadline is not None and week > deadline:",
          "if deadline is not None and week > 999:"),
-        ("the horizon runs to the NFL's last week instead of the league's",
-         "for w in range(week, last_week + 1):",
-         "for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
+        ("trades' horizon runs to the NFL's last week instead of the league's",
+         "print(\"no roster resolved, so there is nothing to trade -- \"\n"
+         "              + \"; \".join(notes))\n"
+         "        return 1\n"
+         "\n"
+         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
+         "    failed: list[int] = []\n"
+         "    for w in range(week, last_week + 1):",
+         "print(\"no roster resolved, so there is nothing to trade -- \"\n"
+         "              + \"; \".join(notes))\n"
+         "        return 1\n"
+         "\n"
+         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
+         "    failed: list[int] = []\n"
+         "    for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
         ("an ambiguous --player silently takes the first match",
          "        if len(matches) > 1:",
          "        if len(matches) > 99:"),
+        ("waivers' horizon runs to the NFL's last week instead of the league's",
+         "print(\"no roster resolved, so there is nothing to upgrade -- \"\n"
+         "              + \"; \".join(notes))\n"
+         "        return 1\n"
+         "\n"
+         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
+         "    failed: list[int] = []\n"
+         "    for w in range(week, last_week + 1):",
+         "print(\"no roster resolved, so there is nothing to upgrade -- \"\n"
+         "              + \"; \".join(notes))\n"
+         "        return 1\n"
+         "\n"
+         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
+         "    failed: list[int] = []\n"
+         "    for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
     ],
     "store.py": [
         ("snapshot write never committed, so the record dies with the process",
