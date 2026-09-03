@@ -37,3 +37,28 @@ def test_build_waivers_refuses_non_sleeper_platform():
     assert "yahoo" in view.error
     assert "Sleeper-only" in view.error
     assert view.this_week == []
+
+
+def test_build_trades_past_deadline_is_not_an_error(monkeypatch):
+    """A passed deadline is a legal state: exit 0, not 1.
+
+    Printing proposals you are not allowed to make is worse than printing none,
+    but it is not a failure -- and the CLI's exit code must stay 0.
+
+    Patched on `cli`, not `pipeline`: `build_trades` calls both names through
+    the `cli` module object (see the module docstring), so patching bare names
+    on `pipeline` would silently miss and fall through to the real network
+    call, which conftest's `_no_network` guard would then trip.
+    """
+    class S:
+        trade_deadline = 5
+        roster_slots = {"QB": 1}
+        scoring = {}
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: S())
+    monkeypatch.setattr(cli, "_resolve_week", lambda w: (9, "2026", [], 9))
+    league = League(name="sleeper-main", platform="sleeper", league_id="1")
+    view = pipeline.build_trades(league, Tunables(), week=9)
+    assert view.deadline_passed is True
+    assert view.error is not None
+    assert "week 5" in view.error
+    assert view.best == []

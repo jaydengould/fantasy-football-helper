@@ -18,10 +18,14 @@ copies whichever pattern is already in the file, and only one of the two is
 actually patchable, so pick the pattern that always works.
 """
 from dataclasses import dataclass, field
+from math import sqrt
+from typing import Callable
 
 from ffhelper import cli
 from ffhelper import season as season_mod
+from ffhelper import trade as trade_mod
 from ffhelper.config import League, Tunables
+from ffhelper.data import Player
 
 NO_WEEK = ("no NFL week available: /state/nfl is unreachable and --week "
            "was not given -- pass e.g. '--week 1' to run without it")
@@ -208,3 +212,146 @@ def build_waivers(league: League, tunables: Tunables, week: int | None = None,
         last_week=last_week, owner=owner, position=position, teams=teams,
         trending=trending, notes=notes, weeks_scored=len(weekly_by_week),
     )
+
+
+@dataclass(frozen=True)
+class TradeView:
+    league_name: str
+    error: str | None = None
+    deadline_passed: bool = False
+    best: list = field(default_factory=list)
+    week: int | None = None
+    owner: str | None = None
+    names: dict = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+    weeks_scored: int = 0
+    pinned: "Player | None" = None
+
+
+def build_trades(league: League, tunables: Tunables, week: int | None = None,
+                 player: str | None = None, limit: int = 20,
+                 progress: "Callable[[str], None] | None" = None) -> TradeView:
+    """Search every opponent for a mutually-beneficial trade. No printing.
+
+    `progress` exists because the full sweep is ~330s and the CLI's only sign
+    of life is a per-opponent line. The web passes None: a page cannot consume
+    a stream, and printing from a request handler is the wrong place for it.
+    """
+    if league.platform != "sleeper":
+        # Same reasoning as `waivers`: the search needs to know what all
+        # eleven other rosters hold, and Yahoo serves no rosters at all.
+        return TradeView(league_name=league.name, error=platform_refusal(
+            league, "trades", "every team's roster to know what they hold"))
+
+    settings = cli.resolve_settings(league)
+    week, season_str, notes, _state_week = cli._resolve_week(week)
+    if week is None:
+        return TradeView(league_name=league.name, error=NO_WEEK)
+
+    deadline = settings.trade_deadline
+    if deadline is not None and week > deadline:
+        # A legal state, not an error: printing proposals you are not allowed
+        # to make is worse than printing none.
+        return TradeView(
+            league_name=league.name, week=week, deadline_passed=True,
+            error=(f"the trade deadline for {league.name} passed in week "
+                   f"{deadline} -- no proposal can be made now"))
+    if deadline is None:
+        notes.append("trade_deadline is unknown for this league -- proceeding "
+                     "without one")
+
+    last_week, cal_note = season_mod.last_scoring_week(settings)
+    if cal_note is not None:
+        notes.append(cal_note)
+
+    players = cli.load_players()
+    roster, owner, notes_r, rosters, rid = cli._resolve_my_roster(league, settings, players)
+    notes += notes_r
+    if not roster:
+        return TradeView(league_name=league.name, notes=notes,
+                         error="no roster resolved, so there is nothing to "
+                               "trade -- " + "; ".join(notes))
+
+    weekly_by_week, failed = _horizon(season_str, week, last_week, settings)
+    if not weekly_by_week:
+        return TradeView(league_name=league.name, notes=notes,
+                         error="no weekly projections could be fetched -- "
+                               "nothing can be ranked")
+    if failed:
+        notes.append(_horizon_note(failed, weekly_by_week, week, last_week, "horizon"))
+
+    weights = season_mod.week_weights(settings, weekly_by_week, tunables.playoff_weight)
+    floor = tunables.close_call_points * sqrt(season_mod.effective_weeks(weekly_by_week, weights))
+
+    pin: Player | None = None
+    if player:
+        matches = cli.find_players(players, player)
+        if not matches:
+            return TradeView(league_name=league.name, notes=notes,
+                             error=f"no player matches '{player}'")
+        if len(matches) > 1:
+            # Never guess -- Bijan and Brian Robinson are both ATL RBs, and
+            # picking one silently would search for a trade nobody asked for.
+            return TradeView(
+                league_name=league.name, notes=notes,
+                error=f"'{player}' is ambiguous -- matches: "
+                      + ", ".join(f"{p.name} ({p.position} {p.team})" for p in matches))
+        pin = matches[0]
+
+    try:
+        users = {u["user_id"]: u.get("display_name")
+                 for u in cli.load_league_users(league.league_id)}
+    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+        # The exact sibling a previous fix wave missed on the happy path: this
+        # is the last unguarded fetch, and the cheapest thing to lose is a name.
+        users = {}
+        notes.append(f"could not reach Sleeper's league users endpoint ({exc}) -- "
+                     f"opponent names are unavailable")
+    names = {r.get("roster_id"): users.get(r.get("owner_id"))
+                                 or f"roster {r.get('roster_id')}"
+             for r in rosters}
+
+    best: list[trade_mod.Proposal] = []
+    # ponytail: the full sweep is ~330s (11 opponents x three shapes) because
+    # 2-for-1 searches the counterparty's forced cut. Accepted: a weekly
+    # one-shot command may be slow, and the alternative is pruning, which was
+    # measured dropping 22 of 49 real trades. If this ever needs to be fast,
+    # memoise horizon_total on a frozenset of player ids -- do NOT prefilter.
+    for r in rosters:
+        opp_rid = r.get("roster_id")
+        if opp_rid is None or opp_rid == rid:
+            continue
+        their_ids = r.get("players") or []
+        theirs = [players[i] for i in their_ids if i in players]
+        missing = [i for i in their_ids if i not in players]
+        if missing:
+            # Same degradation `_resolve_my_roster` already prints for MY
+            # roster -- an opponent roster shortened by an unresolvable id
+            # understates their baseline and can make a trade look better for
+            # them than it is.
+            notes.append(f"{len(missing)} of {names[opp_rid]}'s rostered players are "
+                         f"not in the player pool: {', '.join(missing)}")
+        if progress:
+            progress(f"  scanning {names[opp_rid]}...")
+        options = trade_mod.trade_options(roster, theirs, opp_rid, settings.roster_slots,
+                                          weekly_by_week, floor, weights, pin)
+        if pin is not None:
+            best.extend(options)
+        elif options:
+            best.append(max(options, key=lambda p: p.gain_me))
+
+    if pin is not None:
+        mine = any(p.sleeper_id == pin.sleeper_id for p in roster)
+        best.sort(key=lambda p: -p.gain_me if mine else -p.gain_them)
+        # Unlike Mode 1 (one row per opponent, bounded by construction), a
+        # pin enumerates every qualifying shape against every opponent --
+        # ~1,695 per opponent at real scale. The spec gives Mode 2 no
+        # collapse rule of its own, so cap rather than invent a diversity
+        # heuristic.
+        best = best[:limit]
+    else:
+        best.sort(key=lambda p: -p.gain_me)
+
+    return TradeView(league_name=league.name, best=best, week=week, owner=owner,
+                     names=names, notes=notes, weeks_scored=len(weekly_by_week),
+                     pinned=pin)
