@@ -127,6 +127,8 @@ syncing with no config change.
 [tunables]
 tier_break_sigma = 1.0        # higher = fewer, coarser tiers
 divergence_flag_slots = 10    # WITHIN-POSITION rank gap that earns a flag
+close_call_points = 3.0       # how big a gain must be to print (lineup/waivers/trades)
+# playoff_weight = 1.5        # uncomment to weight playoff weeks UP instead of down
 
 [tunables.flex_share]         # how flex slots split across positions
 RB = 0.5
@@ -364,13 +366,18 @@ trade — and prints the best offer per opponent. `--player` pins the search to
 trades involving one player, either direction, which runs far faster.
 
 Real output against a live 12-team league, week 1 (~2.5 minutes to search
-every opponent):
+every opponent). The opponent-names endpoint was disabled for this one
+capture so the sample doesn't print a leaguemate's real handle in a public
+repo — the tool's own documented degradation path (see `_trades`'s handling
+of `load_league_users`), not a hand edit; every gain, package, and the
+one-row result are exactly what the engine returned:
 
 ```
 TRADES -- sleeper-main (jaydenpg) -- week 1, 17 weeks scored
+  !! could not reach Sleeper's league users endpoint (...) -- opponent names are unavailable
   best offer per opponent
 
-  stephcody        you + 29.1   them + 12.8   [2-for-2]
+  roster 1         you + 29.1   them + 12.8   [2-for-2]
                    give Khalil Shakir (WR) + Christian Watson (WR)
                    get  George Pickens (WR) + Los Angeles Chargers (DEF)
 

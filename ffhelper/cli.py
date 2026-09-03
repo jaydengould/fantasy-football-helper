@@ -1298,7 +1298,7 @@ def _package(players: tuple[Player, ...]) -> str:
 
 
 def render_trades(
-    best: list["trade_mod.Proposal"], week: int, last_week: int, league_name: str,
+    best: list["trade_mod.Proposal"], week: int, league_name: str,
     owner: str | None, names: dict[int, str], notes: list[str], weeks_scored: int,
     pinned: Player | None,
 ) -> str:
@@ -1667,7 +1667,7 @@ def _waivers(league: League, tunables: Tunables, week: int | None = None,
 
 
 def _trades(league: League, tunables: Tunables, week: int | None = None,
-            player: str | None = None) -> int:
+            player: str | None = None, limit: int = 20) -> int:
     """Search every opponent for a mutually-beneficial trade. One shot.
 
     Mirrors `_waivers`: same platform guard, same week/roster/horizon
@@ -1770,7 +1770,16 @@ def _trades(league: League, tunables: Tunables, week: int | None = None,
         opp_rid = r.get("roster_id")
         if opp_rid is None or opp_rid == rid:
             continue
-        theirs = [players[i] for i in (r.get("players") or []) if i in players]
+        their_ids = r.get("players") or []
+        theirs = [players[i] for i in their_ids if i in players]
+        missing = [i for i in their_ids if i not in players]
+        if missing:
+            # Same degradation `_resolve_my_roster` already prints for MY
+            # roster -- an opponent roster shortened by an unresolvable id
+            # understates their baseline and can make a trade look better for
+            # them than it is.
+            notes.append(f"{len(missing)} of {names[opp_rid]}'s rostered players are "
+                         f"not in the player pool: {', '.join(missing)}")
         print(f"  scanning {names[opp_rid]}...", file=sys.stderr)
         options = trade_mod.trade_options(roster, theirs, opp_rid, settings.roster_slots,
                                           weekly_by_week, floor, weights, pin)
@@ -1782,10 +1791,16 @@ def _trades(league: League, tunables: Tunables, week: int | None = None,
     if pin is not None:
         mine = any(p.sleeper_id == pin.sleeper_id for p in roster)
         best.sort(key=lambda p: -p.gain_me if mine else -p.gain_them)
+        # Unlike Mode 1 (one row per opponent, bounded by construction), a
+        # pin enumerates every qualifying shape against every opponent --
+        # ~1,695 per opponent at real scale. The spec gives Mode 2 no
+        # collapse rule of its own, so cap rather than invent a diversity
+        # heuristic.
+        best = best[:limit]
     else:
         best.sort(key=lambda p: -p.gain_me)
 
-    print(render_trades(best, week, last_week, league.name, owner, names, notes,
+    print(render_trades(best, week, league.name, owner, names, notes,
                         len(weekly_by_week), pin))
     return 0
 
@@ -1817,7 +1832,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "waivers":
         return _waivers(league, tunables, args.week, args.limit)
     if args.command == "trades":
-        return _trades(league, tunables, args.week, args.player)
+        return _trades(league, tunables, args.week, args.player, args.limit)
     try:
         return _run(league, tunables, args.limit)
     except KeyboardInterrupt:

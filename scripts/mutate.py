@@ -336,6 +336,12 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
          "    failed: list[int] = []\n"
          "    for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
+        ("trades' best-per-opponent row is their WORST qualifying offer, not their best",
+         "best.append(max(options, key=lambda p: p.gain_me))",
+         "best.append(min(options, key=lambda p: p.gain_me))"),
+        ("a pinned trade search sorts by the wrong side's gain",
+         "best.sort(key=lambda p: -p.gain_me if mine else -p.gain_them)",
+         "best.sort(key=lambda p: -p.gain_them if mine else -p.gain_me)"),
     ],
     "store.py": [
         ("snapshot write never committed, so the record dies with the process",
