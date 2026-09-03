@@ -29,16 +29,23 @@ Asked and answered 2026-09-03. The user wants:
 1. **Phone access in-season.** Check lineup/waivers/trades without a terminal.
 2. **A guaranteed weekly snapshot.** TODO item 2: nothing schedules it today.
 3. **One surface instead of five commands.**
+4. **To be told, on the phone, when the lineup needs attention** — a starter
+   ruled out, or a lineup left unset — without having to remember to look.
+   Added later the same day; see "Alerting".
 
 And explicitly does **not** want:
 
-4. **Sharing with leaguemates.** No public URL, no other readers.
+5. **Sharing with leaguemates.** No public URL, no other readers.
 
-Item 4's absence is the single most load-bearing fact in this document. **No
+Item 5's absence is the single most load-bearing fact in this document. **No
 authentication is required**, and with it goes login, session handling, a hardened
 config surface, and any question about leaking the tool's edge. The Phase 3 spec
 listed authentication first among "what hosting would newly require"; that
 requirement is now void, and it was the expensive one.
+
+Item 4 is the one want that is **not** served by the website at all. A push
+notification is delivered by the scheduled job, which is why alerting is
+specified here alongside the snapshot rather than as a page.
 
 ## Item 2 does not need a website
 
@@ -133,6 +140,9 @@ the computed state (`StartSit`, `list[WaiverTarget]`, trade proposals), plus
 resolved week and season, owner, notes, matchup context and practice line. No
 printing. No database write. No dash import.
 
+`LineupView` additionally carries the **submitted** lineup (see Alerting), so
+all three consumers — text, HTML and the alert — read one computation.
+
 `fetcher` stays an explicit argument, matching the existing loader convention,
 so every builder is testable without the network.
 
@@ -180,11 +190,32 @@ correctly refused to fake with a dead `server` global. The comment at the foot
 of `app.py` describing that refusal should be replaced, not deleted — it records
 a real correction.
 
+### `ffhelper/notify.py` — new
+
+One function, `notify(text) -> bool`, POSTing to a Discord webhook URL read from
+`.env`. `requests` is already a dependency; no bot, no token, no gateway, no
+library. Kept as its own module and its own function precisely because the user
+is choosing between transports without having lived with either — swapping
+Discord for `smtplib` later is then one function body, not a hunt through the
+scheduler.
+
+A failed POST is logged and returns `False`. It never raises into the caller:
+an unreachable webhook must not cost the snapshot write, which is the one part
+of the run that cannot be redone.
+
+### Changed, minimally
+
+- **`season.py`** gains `roster_starter_ids()` beside the existing
+  `roster_player_ids()`, and the pure predicate that decides whether a lineup
+  difference is worth alerting about. Both are logic, both stay pure, both
+  test without a database or a network.
+- **`data.py`** gains a text-returning sibling to `fetch_json` for RSS.
+
 ### Unchanged
 
-`season.py`, `value.py`, `store.py`, `data.py`, `board.py`, `trade.py`,
-`feeds.py`, `config.py`. If any of them needs to change, the design is wrong and
-this spec should be revisited before the change is made.
+`value.py`, `store.py`, `board.py`, `trade.py`, `feeds.py`, `config.py`. If any
+of them needs to change, the design is wrong and this spec should be revisited
+before the change is made.
 
 ## Two decisions taken in the design
 
@@ -247,12 +278,28 @@ never a silently empty box — the same rule as non-negotiable #3 and #7.
 
 ## Scheduling the snapshot
 
-Two `launchd` plists with `StartCalendarInterval`:
+`launchd` plists with `StartCalendarInterval`:
 
 | Run | Time (ET) | Purpose |
 | --- | --- | --- |
 | Thursday | 19:00 | Redundancy |
-| Sunday | 11:30 | The record — ~90 min before the 1pm slate |
+| Sunday | 10:00, 10:30, 11:00, 11:30, 12:00, 12:30, 12:45 | Alerting; last write is the record |
+
+**Why the Sunday window rather than one run.** The original design set a single
+run at 11:30. That is wrong for two reasons found during the alerting
+discussion. First, **official inactives are released 90 minutes before
+kickoff — 11:30 ET for the 1pm slate** — so a run at 11:30 races the release it
+exists to catch. Second, a scratch announced at 12:15 is exactly the event the
+user asked to be told about, and a single earlier run cannot see it.
+
+Repeated runs are affordable **only because alerts are silent when clean** (see
+Alerting). Without that property this window would be six notifications a
+Sunday and the feature would be dead inside a month.
+
+Repeated runs also make the snapshot *better*, not worse: `INSERT OR REPLACE`
+means the last write before kickoff wins, and the documented semantics are
+already "the LAST look taken before kickoff". The 12:45 run is a closer record
+than 11:30 would have been.
 
 **The Thursday run is redundancy, not Thursday fidelity.** This correction was
 made during design, after the schedule was chosen. Because the primary key is
@@ -272,6 +319,86 @@ wakes, but a wake after kickoff produces a post-hoc record with no value.
 It cannot help a machine that is off or elsewhere; that residual risk is the
 same one that argues for a paid always-on host, and it is accepted for now.
 
+## Alerting
+
+**Verified 2026-09-03 against the live Sleeper payload**, not assumed: the
+roster object returned by `load_league_rosters()` carries `starters` (10 ids)
+alongside `players` (15). Nothing in the codebase reads it —
+`roster_player_ids()` takes `players`. **The tool has never known what the user
+actually submitted, and the data to know it has been arriving all along.**
+
+### The design principle
+
+**Silent unless actionable.** An alert that arrives on every run regardless of
+content is one that stops being read, and then the week it matters it is
+dismissed with the rest. That failure is the reason this feature is usually not
+worth building, and avoiding it is the whole design.
+
+### Triggers
+
+An alert is sent when either holds for the user's own roster:
+
+1. **A submitted starter is OUT, DOUBTFUL, or not practising.** Already carried
+   on `Player` — `injury_status` plus the nflverse practice status wired in
+   during 4a. No new source.
+2. **The submitted lineup differs from `optimal_lineup()` by more than
+   `close_call_points`.** This is "you forgot to set your lineup", stated in
+   points.
+
+**The threshold is not a new number.** `close_call_points` is an existing
+tunable already doing exactly this job — deciding whether a gap is worth
+mentioning — in `lineup`, `waivers` and `trades`. Non-negotiable #8 bars
+inventing a discount or weight; reusing the knob that already answers this
+question is the compliant move, and a raw diff would not be: optimal-per-
+projection almost never equals a human's choices, so an ungated comparison
+fires every week and rebuilds the fatigue problem through the back door.
+
+### Deduplication — required, not a refinement
+
+Seven Sunday runs against one unresolved problem is seven identical
+notifications. That is the same alert fatigue arriving by a different route, and
+it would have shipped unnoticed.
+
+**Send only when the alert's content changes.** Hash the rendered alert text
+(`hashlib`, stdlib), store the digest at `.cache/alert-<league>-<season>-<week>`,
+and skip the POST when it matches. Roughly five lines. A resolved problem
+followed by a new one produces a new digest and a new alert, which is correct.
+
+`.cache/` is the right home: losing the digest costs one duplicate
+notification, which is precisely the severity that belongs in a cache and not in
+`season.db`.
+
+### Transport
+
+Discord webhook. `requests.post(url, json={"content": text})` — the URL lives in
+`.env` beside the other secrets and is **never committed**; the repo is public.
+Chosen over `ntfy.sh` on three grounds: ntfy topics are public, so anyone
+guessing the name could both read the alerts and post to them; ntfy keeps no
+history; and Discord renders markdown, so a lineup difference can be a code
+block rather than mangled plaintext. Chosen over email because a Discord push
+lands on a phone through an app the user already runs.
+
+**Setup note that decides whether this works at all:** the target channel must
+be set to *All Messages*. Discord's default batching would deliver a 12:15
+scratch late, which for this purpose is identical to not delivering it.
+
+### Freshness
+
+The alert is only as good as the data behind it. `load_league_rosters` already
+caches for 300s, which is right for a 30-minute cadence. **The injury and
+practice loaders' TTLs have not been checked against this cadence** — if either
+is cached for an hour, a Sunday-morning ruling is invisible until after
+kickoff and the feature silently does nothing. `load_weekly_actuals`'s docstring
+already establishes the pattern of passing a shorter `ttl_seconds` on live-game
+paths. Resolving this is an implementation task, and it is listed in Testing
+because a wrong answer here fails silently and looks healthy.
+
+### Scope
+
+**Sleeper only.** Yahoo has no API, so there is no `starters` array and no way
+to know what was submitted. The roster file records who is owned, never who is
+started. `yahoo-main` gets no alerts, and the spec does not pretend otherwise.
+
 ## Degradation
 
 - **`yahoo-main` has no API.** `/waivers` and `/trades` render the same explicit
@@ -287,17 +414,24 @@ same one that argues for a paid always-on host, and it is accepted for now.
 
 Each step is independently shippable and independently useful.
 
-1. **`launchd` snapshot job.** Closes TODO item 2. No app changes.
-2. **Extract `pipeline.py`;** `cli.py` renders from it. **The existing text
+1. **`launchd` snapshot job.** Closes TODO item 2. No app changes. Thursday
+   plus the Sunday window; no alerting yet, so it is silent by construction.
+2. **Alerting.** `roster_starter_ids()`, the threshold predicate, `notify.py`,
+   the dedupe digest. Rides on step 1's job and needs none of the web work —
+   which is why it comes second rather than last, despite being specified late.
+3. **Extract `pipeline.py`;** `cli.py` renders from it. **The existing text
    renderer tests must pass unchanged** — that is the evidence the extraction
    altered no behaviour, and it is the only evidence that counts.
-3. **Multi-page shell,** homepage with status strip, season pages as
+4. **Multi-page shell,** homepage with status strip, season pages as
    `html.Pre(<existing text renderer>)`. Usable from a phone at the end of this
    step, with horizontal scrolling.
-4. **Upgrade `/lineup`, `/waivers`, `/trades` to real HTML,** one page per
+5. **Upgrade `/lineup`, `/waivers`, `/trades` to real HTML,** one page per
    commit. The text renderers remain as the CLI's output and as a fallback.
-5. **Headlines and trending panels.**
-6. **Hosting**, decided with the app in hand.
+6. **Headlines and trending panels.**
+7. **Hosting**, decided with the app in hand.
+
+Steps 1 and 2 deliver want 4 — arguably the highest-value want on the list —
+before any of the web work begins.
 
 ## Testing
 
@@ -315,6 +449,30 @@ Each step is independently shippable and independently useful.
 - **The status strip's "recorded?" logic must be tested against `:memory:`**,
   including the week-with-no-rows case, which is the case that matters.
 
+### Alerting specifically
+
+Every one of these fails silently and looks healthy, which is why they are
+enumerated rather than left to judgement.
+
+- **The clean case must be tested: no alert is sent.** This is the property the
+  entire design rests on, and it is the one a suite naturally omits because
+  nothing happens. A test that only proves alerts fire would pass against code
+  that alerts every run.
+- **The dedupe must be tested across two runs with unchanged input** — one
+  POST, not two. Also across two runs where the problem *changes*, which must
+  produce two.
+- **The threshold must be tested on both sides of `close_call_points`**, since
+  a comparison written with the wrong sign or a `>=` for a `>` produces a
+  feature that either never fires or always does.
+- **`notify()` must be tested for the failure path**: a rejected POST returns
+  `False`, logs, and does not raise. The snapshot write must still happen. No
+  test may reach Discord — the transport takes an injectable poster, the same
+  convention as `fetcher`.
+- **The injury and practice TTLs must be confirmed against the 30-minute
+  cadence** and the finding written down. If a loader caches for an hour, the
+  alert cannot see a Sunday-morning ruling, and every test above still passes.
+- **Mutations** for the threshold comparison and the dedupe predicate.
+
 ## Out of scope
 
 - **Hosting the draft board.** Both drafts finished 2026-09-01; the next is
@@ -328,6 +486,12 @@ Each step is independently shippable and independently useful.
 - **Authentication.** Not required, per fact 4. Revisit only if sharing is ever
   wanted, and treat it as a new spec rather than an addition.
 - **Bluesky or any social feed.** Offered, declined.
+- **Alerts on waivers or trades.** Neither is time-critical in the way a
+  kickoff is, and both would be advisory pushes with no deadline — the exact
+  shape of notification that trains you to ignore the channel.
+- **X/Twitter alerts or any second transport.** `notify()` is one function so a
+  swap stays cheap; a fallback chain is not built until one transport has
+  actually failed.
 - **The Phase 3.7 `DataTable` swap.** This spec produces evidence for it and
   does not perform it.
 
@@ -342,3 +506,10 @@ Each step is independently shippable and independently useful.
 3. **Whether the status strip should also surface `preflight`'s other checks.**
    The strip carries two of them; `preflight` carries more. Deliberately left
    until the strip has been lived with.
+4. **What the injury and practice loader TTLs actually are**, and whether the
+   alert path needs shorter ones. Listed as an open question rather than
+   answered from memory. See Testing.
+5. **Whether the Sunday window should extend to the late slate** (4:05/4:25 ET
+   kickoffs). The current window covers the 1pm games only. Left until one
+   Sunday has been observed, because the answer depends on how many of the
+   user's starters play late — a fact about this roster, not about the design.
