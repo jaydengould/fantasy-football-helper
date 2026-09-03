@@ -608,6 +608,15 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "        if wk not in out:\n            pass"),
     ],
 
+    "ffhelper/trade.py": [
+        ("the floor is checked on my side only, so their side can lose",
+         "        if gain_them <= floor:\n            return",
+         "        if gain_them <= -1e9:\n            return"),
+        ("results are ordered by list position instead of deterministically",
+         "    out.sort(key=lambda p: (-p.gain_me, _ids(p.give), _ids(p.get)))",
+         "    pass"),
+    ],
+
 }
 
 
