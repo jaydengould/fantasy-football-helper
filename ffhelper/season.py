@@ -236,6 +236,7 @@ def best_drop(
     roster: list[Player], roster_slots: dict[str, int],
     weekly_by_week: dict[int, dict[str, float]],
     weights: dict[int, float] | None = None, drop_tie_points: float = 0.5,
+    keep: str | None = None,
 ) -> tuple[float, Player]:
     """(horizon total after the best single cut, the player cut).
 
@@ -248,10 +249,16 @@ def best_drop(
     run five drops tied EXACTLY. Among cuts within `drop_tie_points` of the
     best, take the one with the fewest points of his own; the id is the final
     tie-break so the answer is deterministic across runs.
+
+    `keep` bars one id from being the cut. It is OPT-IN and off by default,
+    because the general rule is right: in a 2-for-1 a just-received player can
+    genuinely be the player you cut. Only `roster_upgrade` needs the narrower
+    contract -- "who do I cut to make room for this add" must never answer
+    "the add" -- so only it passes one.
     """
     scored = [(horizon_total([*roster[:i], *roster[i + 1:]], roster_slots,
                              weekly_by_week, weights), p)
-              for i, p in enumerate(roster)]
+              for i, p in enumerate(roster) if p.sleeper_id != keep]
     own = {p.sleeper_id: sum(wk.get(p.sleeper_id, 0.0)
                              * (1.0 if weights is None else weights.get(w, 1.0))
                              for w, wk in weekly_by_week.items())
@@ -284,7 +291,7 @@ def roster_upgrade(
     """
     base = horizon_total(roster, roster_slots, weekly_by_week, weights)
     total, drop = best_drop([*roster, candidate], roster_slots, weekly_by_week,
-                            weights, drop_tie_points)
+                            weights, drop_tie_points, keep=candidate.sleeper_id)
     gain = total - base
 
     kept = [p for p in roster if p.sleeper_id != drop.sleeper_id] + [candidate]

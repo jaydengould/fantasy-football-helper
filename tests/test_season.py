@@ -994,3 +994,28 @@ def test_last_scoring_week_falls_back_when_the_league_serves_no_playoff_fields()
         _settings(playoff_week_start=None, playoff_teams=None, playoff_round_type=None))
     assert week == season.LAST_REGULAR_WEEK
     assert note is not None
+
+
+def test_roster_upgrade_never_cuts_the_player_it_is_adding():
+    """"Cut the player you were trying to add" is not an answer to "who do I cut
+    to make room for him". `best_drop` is correctly GENERAL -- in a real 2-for-1
+    a just-received player can genuinely be the right cut -- so the restriction
+    belongs to this caller, whose contract is narrower.
+
+    Arithmetic, worked before implementing (QB:1, so one starter):
+      cut qb_bad (the candidate) -> qb_good starts -> 10.0   <- ties, own 1.0
+      cut qb_bench               -> qb_good starts -> 10.0   <- ties, own 5.0
+      cut qb_good                -> qb_bench starts ->  5.0
+    Both cuts tie at 10.0 and the tie-break takes the lowest own points, which
+    is the candidate himself. Left alone the answer is "add him, then cut him",
+    a gain of 0.0 by construction, and `kept` then filters nothing so
+    `weeks_started` is computed against a roster one player too large.
+    """
+    roster = [mk("qb_good", "QB"), mk("qb_bench", "QB")]
+    cand = mk("qb_bad", "QB")
+    weekly = {1: {"qb_good": 10.0, "qb_bench": 5.0, "qb_bad": 1.0}}
+
+    gain, drop, weeks_started = season.roster_upgrade(roster, cand, {"QB": 1}, weekly)
+    assert drop.sleeper_id == "qb_bench"
+    assert gain == pytest.approx(0.0)
+    assert weeks_started == 0

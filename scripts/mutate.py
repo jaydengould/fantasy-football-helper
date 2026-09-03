@@ -502,10 +502,13 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("drop chosen on one week instead of the horizon",
          "    scored = [(horizon_total([*roster[:i], *roster[i + 1:]], roster_slots,\n"
          "                             weekly_by_week, weights), p)\n"
-         "              for i, p in enumerate(roster)]",
+         "              for i, p in enumerate(roster) if p.sleeper_id != keep]",
          "    scored = [(lineup_value(with_weekly_points([*roster[:i], *roster[i + 1:]],\n"
          "                             next(iter(weekly_by_week.values()))), roster_slots), p)\n"
-         "              for i, p in enumerate(roster)]"),
+         "              for i, p in enumerate(roster) if p.sleeper_id != keep]"),
+        ("roster_upgrade lets best_drop cut the player it is adding",
+         "weights, drop_tie_points, keep=candidate.sleeper_id)",
+         "weights, drop_tie_points)"),
         ("horizon_total ignores the weight vector",
          "        lineup_value(with_weekly_points(roster, wk), roster_slots)\n"
          "        * (1.0 if weights is None else weights.get(w, 1.0))",
