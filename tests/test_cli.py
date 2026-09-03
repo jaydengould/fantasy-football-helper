@@ -3368,3 +3368,37 @@ def test_render_trades_names_the_forced_cut():
                        gain_me=20.0, gain_them=5.0, their_drop=mk_player("d", "TE"))
     out = cli.render_trades([p], 1, 17, "L", "me", {7: "stephcody"}, [], 17, None)
     assert "Pd" in out
+
+
+def test_trades_refuses_an_ambiguous_player_pin(capsys, monkeypatch):
+    """Never guess -- two ATL running backs are both named Robinson, and
+    picking one silently would search for a trade nobody asked for."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    players = {
+        "10": Player("10", "Rostered QB", "QB", "BUF"),
+        "40": Player("40", "Bijan Robinson", "RB", "ATL"),
+        "41": Player("41", "Brian Robinson", "RB", "WAS"),
+    }
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    rc = cli._trades(_sleeper_league(), Tunables(), week=1, player="robinson")
+    out = capsys.readouterr().out
+    assert rc == 1
+    # Never guess: both matches are named, and no proposal is searched for.
+    assert "Bijan Robinson" in out and "Brian Robinson" in out
+
+
+def test_trades_horizon_stops_at_the_leagues_last_week_not_the_nfls(capsys, monkeypatch):
+    """last_scoring_week says this league's season ends week 17 (15 + a
+    three-round bracket - 1). Summing week 18 -- a week nobody plays -- pads
+    the horizon and must never happen, even though the fixture's stub weekly
+    loader would happily also serve week 18 if asked."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    rc = cli._trades(_sleeper_league(), Tunables(), week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "17 weeks scored" in out
+    assert "18 weeks scored" not in out
