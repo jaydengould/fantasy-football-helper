@@ -29,6 +29,12 @@ season commands, reachable from a phone.
 | `/waivers` | `ffhelper waivers` as a web page |
 | `/trades` | `ffhelper trades` as a web page |
 
+**It is launched from the terminal**, `python -m ffhelper.app`, exactly as the
+draft board is today, and it binds to localhost. **No hosting, no Tailscale, no
+`0.0.0.0` in this phase** — those are a later decision, and the evaluation
+recorded under "Hosting" is reference material for making it, not work to be
+done here.
+
 ## What this is for — recorded, because it bounds everything
 
 Asked and answered 2026-09-03. The user wants:
@@ -114,10 +120,15 @@ imposes a `pages/` directory convention and app-level configuration to solve a
 problem five routes do not have.
 
 The app is constructed at import time, with league selection coming from the URL
-rather than `argv`. This is exactly the retrofit the Phase 3 spec identified and
-correctly refused to fake with a dead `server` global. The comment at the foot
-of `app.py` describing that refusal should be replaced, not deleted — it records
-a real correction.
+rather than `argv`.
+
+**This is not hosting work done early.** League-in-the-URL is what multi-page
+routing requires anyway, and once league selection is out of `argv` the `app =
+Dash(...)` line has no reason to sit inside `main()` — it is the same number of
+lines either way. That it also happens to be the retrofit the Phase 3 spec
+identified for hosting is a consequence, not a motivation. The comment at the
+foot of `app.py` refusing to fake that retrofit with a dead `server` global
+should be replaced, not deleted — it records a real correction.
 
 ### Changed, minimally
 
@@ -188,7 +199,10 @@ and nothing else. The panels are visually separate and labelled as headlines,
 and an unreachable feed renders "feed unavailable" rather than a silently empty
 box — non-negotiables #3 and #7.
 
-## Hosting
+## Hosting — reference only, decided in a later phase
+
+Nothing in this section is built here. It is recorded so the decision, whenever
+it is taken, does not have to be researched again.
 
 ### The finding
 
@@ -278,7 +292,10 @@ Each step is independently shippable.
 3. **Upgrade `/lineup`, `/waivers`, `/trades` to real HTML,** one page per
    commit. The text renderers remain as the CLI's output and as a fallback.
 4. **Headlines and trending panels.**
-5. **Hosting**, decided with the app in hand.
+
+**Hosting is not a step.** The app runs from the terminal on localhost when
+step 4 lands, which is the whole deliverable. Deciding where else it might run
+happens later, with the app in hand and a season's use behind it.
 
 ## Testing
 
