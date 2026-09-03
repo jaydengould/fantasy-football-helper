@@ -728,6 +728,16 @@ def test_effective_weeks_is_the_sum_of_the_weights():
     assert season.effective_weeks(wbw, {1: 1.0, 2: 1.0, 3: 0.5}) == pytest.approx(2.5)
 
 
+def test_effective_weeks_counts_a_week_absent_from_the_weights_as_full():
+    """Same contract horizon_total already honours: a weights vector built for
+    a different horizon must not silently zero a week it never mentions.
+    Week 3 has no entry here, so it must contribute a full 1.0, not 0.0 --
+    dropping it would shrink the sample size and lower the significance floor,
+    admitting noise as a real upgrade."""
+    wbw = {1: {}, 2: {}, 3: {}}
+    assert season.effective_weeks(wbw, {1: 1.0, 2: 0.5}) == pytest.approx(2.5)
+
+
 def test_the_waiver_floor_scales_with_the_weights_not_the_week_count():
     """A down-weighted horizon is a smaller sample, so the bar must fall with
     it. Using the raw count keeps a season-length bar over a horizon that is
