@@ -65,12 +65,18 @@ def test_a_mutually_beneficial_one_for_one_is_found():
     benched RB3 (13.0) upgrades my weaker required RB slot -- each of us
     unlocks a STARTING-slot improvement from a player who was contributing
     nothing, which is why both gain. Numbers computed by hand and checked
-    exhaustively before implementing (see `_swap_case`'s docstring)."""
+    exhaustively before implementing (see `_swap_case`'s docstring).
+
+    Found by SHAPE, not by rank: once Task 7 adds 2-for-2, a 2-for-2 (te+wr2
+    for trb3+tte, gain_me 15.6) legitimately outranks this 14.0 1-for-1 -- that
+    is 2-for-2 doing exactly what it is for, not a regression. `out[0]` was
+    Task 5's assumption before a bigger shape existed to compete with it."""
     mine, theirs, wbw = _swap_case()
     out = trade.trade_options(mine, theirs, opponent=7, roster_slots=SLOTS,
                               weekly_by_week=wbw, floor=1.0)
-    assert out, "the surplus case must produce at least one proposal"
-    best = out[0]
+    one_for_one = [p for p in out if len(p.give) == 1 and len(p.get) == 1]
+    assert one_for_one, "the surplus case must produce at least one 1-for-1 proposal"
+    best = one_for_one[0]
     assert {p.sleeper_id for p in best.give} == {"wr3"}
     assert {p.sleeper_id for p in best.get} == {"trb3"}
     assert best.gain_me > 1.0 and best.gain_them > 1.0
@@ -134,3 +140,62 @@ def test_my_fourteen_man_roster_is_not_refilled_from_the_wire():
             expected = season.horizon_total([*kept, *p.get], SLOTS, wbw) \
                 - season.horizon_total(mine, SLOTS, wbw)
             assert p.gain_me == pytest.approx(expected)
+
+
+def test_two_for_two_is_searched_and_is_roster_neutral():
+    """The shape that carries the surplus. Measured on the real league: 1-for-1
+    clears the floor zero times, 2-for-2 clears it 49 times across three
+    opponents, because only a multi-player swap can change how many bodies each
+    side carries at a position."""
+    mine, theirs, wbw = _swap_case()
+    out = trade.trade_options(mine, theirs, 7, SLOTS, wbw, floor=0.5)
+    two_two = [p for p in out if len(p.give) == 2 and len(p.get) == 2]
+    assert two_two
+    assert all(p.their_drop is None for p in two_two), "nobody is cut, both stay at 7"
+
+
+def test_pinning_a_player_of_mine_keeps_only_offers_that_send_him():
+    """'What is the best return for X?' -- so every row must send X."""
+    mine, theirs, wbw = _swap_case()
+    pin = next(p for p in mine if p.sleeper_id == "wr3")
+    out = trade.trade_options(mine, theirs, 7, SLOTS, wbw, floor=0.5, pin=pin)
+    assert out
+    assert all("wr3" in {g.sleeper_id for g in p.give} for p in out)
+
+
+def test_pinning_a_player_of_theirs_keeps_only_offers_that_acquire_him():
+    """'What would it take to get Y?' -- so every row must receive Y. The side
+    is chosen by roster MEMBERSHIP, not by an argument the caller passes: two
+    sources of truth for one fact disagree eventually."""
+    mine, theirs, wbw = _swap_case()
+    pin = next(p for p in theirs if p.sleeper_id == "trb3")
+    out = trade.trade_options(mine, theirs, 7, SLOTS, wbw, floor=0.5, pin=pin)
+    assert out
+    assert all("trb3" in {g.sleeper_id for g in p.get} for p in out)
+
+
+def test_pinning_still_requires_both_sides_to_clear_the_floor():
+    """Pinning narrows the search; it does not lower the bar."""
+    mine, theirs, wbw = _swap_case()
+    pin = next(p for p in mine if p.sleeper_id == "wr3")
+    out = trade.trade_options(mine, theirs, 7, SLOTS, wbw, floor=100.0, pin=pin)
+    assert out == []
+
+
+def test_their_drop_is_computed_after_stripping_the_players_they_sent():
+    """`their_drop.sleeper_id not in get` (above) is structurally guaranteed
+    whatever best_drop does, because `_without` already removes every `get`
+    player from `theirs` before best_drop ever runs -- proven by mutating that
+    strip away and finding the assertion still passes. This proves the strip
+    directly, by recomputing the counterparty's post-trade total the same way
+    `consider` should and checking it against what came out."""
+    mine, theirs, wbw = _swap_case()
+    out = trade.trade_options(mine, theirs, 7, SLOTS, wbw, floor=0.5)
+    two_for_one = [p for p in out if len(p.give) == 2 and len(p.get) == 1]
+    assert two_for_one
+    base_them = season.horizon_total(theirs, SLOTS, wbw)
+    for p in two_for_one:
+        after = [*trade._without(theirs, p.get), *p.give]
+        expected_total, expected_drop = season.best_drop(after, SLOTS, wbw)
+        assert p.gain_them == pytest.approx(expected_total - base_them)
+        assert p.their_drop.sleeper_id == expected_drop.sleeper_id

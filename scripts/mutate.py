@@ -619,6 +619,15 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("the counterparty keeps 16 players, so their forced cut is free",
          "            total_them, drop = best_drop(after, roster_slots, weekly_by_week, weights)",
          "            total_them, drop = ros(after), None"),
+        ("the counterparty's forced cut can land on a player they just sent",
+         "        after = [*_without(theirs, get), *give]",
+         "        after = [*theirs, *give]"),
+        ("2-for-2 is not searched, so the shape carrying the surplus is missed",
+         "    for pair in combinations(mine, 2):\n        for other in combinations(theirs, 2):\n            consider(list(pair), list(other))",
+         "    for pair in combinations(mine, 2):\n        for other in combinations(theirs, 2):\n            pass"),
+        ("the pin is matched against the wrong side of the offer",
+         "        return any(p.sleeper_id == pin.sleeper_id for p in give)",
+         "        return any(p.sleeper_id == pin.sleeper_id for p in get)"),
     ],
 
 }

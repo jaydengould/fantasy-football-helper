@@ -96,6 +96,10 @@ def trade_options(
         for b in theirs:
             consider(list(pair), [b])
 
+    for pair in combinations(mine, 2):
+        for other in combinations(theirs, 2):
+            consider(list(pair), list(other))
+
     # Deterministic: a board that renames a package when nothing changed is one
     # nobody can trust. Ties on gain_me are real, not rounding -- a throw-in
     # that contributes 0 to either lineup (rb2 in the fixture) reproduces a
@@ -108,5 +112,12 @@ def trade_options(
 
 
 def _pin_matches(pin: Player, give, get, mine: list[Player]) -> bool:
-    """Task 7 fills this in. Until then every proposal passes."""
-    return True
+    """Keep only proposals involving `pin`, on the side his roster implies.
+
+    The side is decided by MEMBERSHIP, never by a flag the caller passes: a
+    player of mine can only be given, one of theirs can only be got, and two
+    sources of truth for one fact disagree eventually.
+    """
+    if any(p.sleeper_id == pin.sleeper_id for p in mine):
+        return any(p.sleeper_id == pin.sleeper_id for p in give)
+    return any(p.sleeper_id == pin.sleeper_id for p in get)
