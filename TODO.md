@@ -227,8 +227,76 @@ item. The project is now a season-mode project.
    re-introduces the feed dependency in the one path whose purpose is to survive
    a missing draft, and only helps when both values are set, which is the case
    that was already right.
-7. **Phase 5 — trade finder.** Unblocked earlier than expected: every Sleeper
-   roster is public and needs no auth. Own spec, after Phase 4.
+7. **Phase 5 — trade finder. IN PROGRESS, branch `phase-5-trade-finder`.**
+   Spec and plan committed; **tasks 1-4 of 9 done and committed, 472 tests.
+   RESUME AT TASK 5** — but read 7a FIRST, it is an open defect.
+
+   The SDD ledger at `.superpowers/sdd/2026-09-02-phase-5-trade-finder/progress.md`
+   is the authority on what is finished; task briefs 1-9 are extracted beside it.
+
+   | | |
+   | --- | --- |
+   | spec | `docs/superpowers/specs/2026-09-02-phase-5-trade-finder-design.md` |
+   | plan | `docs/superpowers/plans/2026-09-02-phase-5-trade-finder.md` (9 tasks) |
+   | done | 1 playoff calendar, 2 `week_weights`, 3 weighted `horizon_total`, 4 `best_drop` |
+   | left | 5-7 `trade.py` (1-for-1, 2-for-1, 2-for-2 + pin), 8 the `trades` command, 9 acceptance + docs |
+
+   **Nothing is half-finished** — every task ends at a commit and the suite is
+   green (472 passed; the 1 warning predates this branch, confirmed against
+   `main`).
+
+   **The mutation run has NOT been done for tasks 1-4.** It is Task 9 step 3,
+   deliberately, because `mutate.py` rewrites source in place and must run alone
+   on a green suite. 37 `season.py` targets are staged, each verified to match
+   exactly once — but a static uniqueness check is weaker evidence than a run,
+   and this project has been bitten four times by mutation tooling reporting
+   success while checking something else.
+
+   **Shipped behaviour CHANGED and has not been re-run live:** `waivers` now
+   sums to week 17 rather than 18 and applies week weights, so its numbers move.
+   Task 9 re-runs it. **Do not merge before that.**
+
+7a. **OPEN DEFECT, parked with a ruling — FIX THIS FIRST NEXT SESSION.**
+   Found by Task 4's reviewer, Important, and it was mandated by the plan:
+   `roster_upgrade` calls `best_drop([*roster, candidate])`, so **`best_drop` can
+   return the CANDIDATE HIMSELF as the drop** — "cut the player you were trying
+   to add", which is not a coherent recommendation. Two consequences:
+   - `gain` is then exactly 0.0 by construction (the roster is unchanged), and
+     the tie-break prefers the candidate whenever his own points are lowest.
+   - `kept` at `season.py:290` then filters nothing, so `weeks_started` is
+     computed against a 12-player superset rather than the 11-player post-swap
+     roster. Wrong, not merely cosmetic.
+
+   **Not reachable in shipped `waivers` under default config** — a 0.0 gain can
+   never clear `close_call_points * sqrt(weeks) >= 3.0` — which is why it is
+   parked rather than treated as live breakage. **It becomes reachable the
+   moment Task 5 lands**, because the trade search calls `best_drop` DIRECTLY
+   with no floor in front of it.
+
+   **Ruling: fix in `roster_upgrade` only, never in `best_drop`.** `best_drop`
+   is correctly general — in a real 2-for-1 a just-received player genuinely can
+   be the right cut — but `roster_upgrade`'s contract is "who do I cut to make
+   room for this add" and it must never answer "the add". After the call, if
+   `drop.sleeper_id == candidate.sleeper_id`, re-run restricted to `roster`.
+   Cost if wrong: the guard is unnecessary and costs `len(roster)` extra lineup
+   evaluations on a path that already does 15 of them.
+
+7b. **What Phase 5's probes established, before any code** (measured 2026-09-02
+   against the live league; all of it is in the spec):
+   - **1-for-1 trades are empty.** 2475 pairs across 11 opponents, 11 help both
+     teams at all, and **zero clear the 12.7-point floor.**
+   - **2-for-2 is where the surplus is** — 49 clear both floors across three
+     opponents. Only a multi-player swap changes how many bodies a side carries
+     at a position, which is what creates the surplus.
+   - **The whole-league board is ONE row** (best-per-opponent, all shapes, 330s).
+   - **THE ACCEPTANCE PRIOR IS DEAD.** `CLAUDE.md` said to rank by a
+     transaction-history prior. The league has made **3 transactions all season,
+     zero trades, and has no previous season.** Nothing replaces it.
+   - **A prefilter that looked provable is unsound** — it silently dropped
+     **22 of 49 real trades**. Sound for 1-for-1 only. Do not reintroduce it.
+   - **`LAST_REGULAR_WEEK = 18` was wrong for this league** and shipped that way
+     in `waivers`. `playoff_week_start: 15` + `playoff_teams: 6` ends the season
+     at week 17. `trade_deadline: 11`, also read rather than assumed.
 8. **Phase 3.7 — the `DataTable` swap** (§19). Offseason. Carries a decision to
    take FIRST: `html.Table` or `dash-ag-grid`. **It is also the trigger for the
    deferred `board.py` fold** — 3.7 is the point where a board change would

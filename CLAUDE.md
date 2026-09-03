@@ -325,7 +325,17 @@ fresh opinion.
   OAuth is never wasted — season mode needs it regardless.
 - **Trade finder will not output an acceptance probability.** Acceptance depends
   on attention, name-brand bias, and stubbornness; a confident percentage would
-  dress up a guess. Rank by a transaction-history prior instead.
+  dress up a guess. ~~Rank by a transaction-history prior instead.~~
+  **CORRECTED 2026-09-02: THE PRIOR HAS NO DATA AND NOTHING REPLACES IT.**
+  Measured against the live league: **3 transactions all season, all free-agent
+  moves, ZERO trades ever, and `previous_league_id` is None** — no prior season
+  to draw on. So "does this manager trade at all, how often, do they take
+  2-for-1s" cannot be answered, and fitting a manager model to an empty sample
+  would be the FAAB bid by a new route. The board ranks by **my own gain** and
+  states on screen that it cannot say whether anyone will accept. The refusal to
+  print a probability now rests on a measurement rather than a judgement.
+  **Reopen in November if the league has by then actually traded**;
+  `load_league_transactions` (cut in 4c) is what it would need.
 - **Sleeper's picks endpoint is CDN-cached and the poll must defeat it.** It is
   served `public, s-maxage=86400, stale-while-revalidate=300` behind Cloudflare,
   so a plain poll is answered from the edge and never reaches origin. Measured on
@@ -446,7 +456,7 @@ fresh opinion.
 | 4a | Season mode — weekly start/sit (`lineup`) | week 1 (Sept 9) | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4a-start-sit`, 377 tests / 153 mutations. Runs against both leagues. Awaiting the user's merge |
 | 4b | Matchup adjustment + weekly backtest + snapshot table + nflverse injuries | in-season | **COMPLETE 2026-09-02** (branch `phase-4b-snapshot`). Snapshot table shipped; `backtest_weekly.py` shipped and it **closed the matchup ADJUSTMENT** — measured on 2024 and 2025, it loses — so what ships is a descriptive opponent RANK that nothing consumes (see Decisions). nflverse practice report shipped and joins 14/15; `injuries_2026.csv` is a 404 until ~Sept 10, so it prints its degraded line today |
 | 4c | Waivers — free-agent pool, ROS horizon, trending as the price signal | in-season | **COMPLETE AND MERGE-CHECKED 2026-09-02**, branch `phase-4c-waivers`, 454 tests / 184 mutations. `waivers` prints an EMPTY board in week 1, which is the correct output, and the pipeline was proved separately by turning the floor off. Sleeper-only, labelled. **No FAAB bid** — see the correction in Decisions |
-| 5 | Trade finder (own spec) | in-season | not started — unblocked earlier than expected: Sleeper serves every team's roster with no auth |
+| 5 | Trade finder (own spec) | in-season | **IN PROGRESS** — branch `phase-5-trade-finder`, **tasks 1-4 of 9 done, 472 tests. RESUME AT TASK 5 after fixing `TODO.md` 7a.** `trades` does not exist yet; what is built is the arithmetic under it. **No mutation run yet** — Task 9's step |
 
 Phase 1 builds against the Sleeper feed because it needs no auth and Sleeper
 mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
@@ -526,6 +536,110 @@ mock drafts are free — it is the test harness that de-risks the Yahoo adapter.
   may be committed to this public repo.
 
 ## Session log
+
+### 2026-09-02 (seventh block) — PHASE 5 specced, planned, half built. Four of its defects were in the PLAN.
+
+**State:** branch `phase-5-trade-finder`, 6 commits, **472 tests** (from 454),
+**tasks 1-4 of 9 done and committed. RESUME AT TASK 5, after fixing the open
+defect in `TODO.md` 7a.** No mutation run yet — that is Task 9's step.
+
+`trades` does not exist yet. What exists is the arithmetic under it: the
+playoff calendar, week weights, a weighted `horizon_total`, and `best_drop`.
+
+#### Everything below was measured against the live league BEFORE designing
+
+- **1-for-1 trades are empty.** 2475 pairs across 11 opponents; 11 help both
+  teams at all and **zero clear the 12.7-point floor**. The shape everyone
+  imagines is the one that produces nothing.
+- **2-for-2 is where the surplus lives** — 49 clear both floors across three
+  opponents alone. Only a multi-player swap changes how many bodies a side
+  carries at a position, and that is what creates surplus.
+- **The whole-league board is ONE row.** Best-per-opponent across all three
+  shapes, 330s: one manager in twelve holds a surplus that pairs with ours.
+- **The user chose 2-for-2 over my recommendation and was right.** I proposed
+  1-for-1 only; they asked for the full search including 2-for-2, which I had
+  flagged as having no supporting evidence. Measuring it showed it carries
+  essentially all the value. **Recorded because the correction ran against me.**
+
+#### THE ACCEPTANCE PRIOR IS DEAD, and this file is what was wrong
+
+Decisions said to rank proposals by a transaction-history prior. **Measured: 3
+transactions all season, all free-agent moves, ZERO trades, and
+`previous_league_id` is None** — no prior season either. The sample is empty,
+and fitting a manager model to it would be the FAAB bid by a new route. The
+board ranks by my own gain and says on screen it cannot predict acceptance.
+
+#### `LAST_REGULAR_WEEK = 18` is wrong for this league, and `waivers` shipped it
+
+`playoff_week_start: 15` with `playoff_teams: 6` is a three-round bracket, so
+the season ends **week 17**. Week 18 is played by nobody, and shipped `waivers`
+has been summing it into every rest-of-season total — ~5% of the horizon.
+`trade_deadline: 11` was read the same way. **Same shape as the one-RB-slot and
+FAAB errors: a league rule assumed rather than read off the payload. Third
+time.** Consequence not yet discharged: `waivers` output MOVES, and Task 9
+re-runs it before merge.
+
+#### Week weights point the OPPOSITE way to the literature, deliberately
+
+A point scored in a week you do not play is worth nothing, so a week's weight
+is the probability you play it: 1.0 through week 14, then 4/12, 4/12, 2/12 on a
+6-of-12 bracket. **That weights the playoffs DOWN**, where the published
+playoff-biasing work weights them up. Theirs is conditional value, reachable
+only through a matchup win-probability model nobody has validated — the
+hand-picked factor §15 forbids. `tunables.playoff_weight` takes the other
+reading; the default is the one with a derivation behind it.
+
+#### Four of Phase 5's defects were in the PLAN, and three were caught before code
+
+The 4a lesson arriving again, but earlier, because the preflight scan is now a
+step rather than a hope:
+
+1. **A vacuous test the plan MANDATED** — `assert waiver_targets(...) is not
+   None`, in the task covering the significance floor.
+2. **Three `...` placeholders** in Task 8's test bodies.
+3. **`trade_deadline` added to `LeagueSettings` in two different tasks.**
+4. **The plan's mutation target for `horizon_total` matched TWO places** in
+   `season.py` — found by an implementer, not the scan. Left alone,
+   `mutate.py` takes the first and reports "killed" for a function the label
+   does not name. **Fourth time this project has hit the
+   check-reports-success-while-checking-something-else shape**, and the first
+   time the tool's own AMBIGUOUS guard caught it. The guard worked.
+
+#### The reviewer found a defect the plan mandated, in the riskiest task
+
+Task 4 extracted `best_drop` so the waiver path and the trade search share one
+rule for which player a team cuts. The refactor is correct and its equivalence
+proof held — `roster_upgrade`'s existing tests pass untouched, 28 insertions
+and 0 deletions in the test diff. **But the brief's own prescribed call lets
+`best_drop` return the CANDIDATE as the drop** — "cut the player you were
+trying to add" — with a 0.0 gain and a `weeks_started` computed against a
+12-player superset. Not reachable in shipped `waivers` (a 0.0 gain cannot clear
+the floor); **reachable the moment the trade search calls `best_drop` directly,
+with no floor in front of it.** Parked with a ruling in `TODO.md` 7a: fix in
+`roster_upgrade` only, never in `best_drop`, which is correctly general.
+
+#### Industry research, and why it changed nothing
+
+**The dominant commercial approach is a single trade-value number per player**
+(FantasyPros from expert consensus, dynasty charts from analysts).
+**Non-negotiable #2 bars it**: a consensus ranking is PRICE, and folding it into
+the value axis is the blend the rule forbids — the reason §18 closed ECR.
+
+The better tier personalises by "roster depth, slot count, position importance",
+which is `lineup_value`, except they apply a positional adjustment where this
+computes the actual lineup effect. **ESPN's published system uses an explicit
+diversity constraint** — independent confirmation of the near-duplicate problem
+measured here. **An arXiv genetic algorithm is rejected**: 330s enumerates one
+team exhaustively, and a GA returns different answers on different runs, which
+`roster_upgrade`'s tie-break already ruled out.
+
+**Start/sit research surfaced one genuinely different idea, deferred with a
+gate:** optimise win probability rather than points (high floor when favoured,
+high ceiling when an underdog). It needs a per-player variance this project has
+never estimated — the same missing ingredient as the deferred playoff-leverage
+weighting, so both wait on one prerequisite.
+
+
 
 ### 2026-09-02 (sixth block) — PHASE 4c SHIPPED, and its correct output is nothing
 
