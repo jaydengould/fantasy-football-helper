@@ -823,6 +823,44 @@ def test_waiver_targets_returns_empty_when_nothing_clears_and_that_is_a_result()
                                  close_call_points=3.0) == []
 
 
+def test_week_weights_are_one_for_every_regular_season_week():
+    w = season.week_weights(_settings(), range(1, 15))
+    assert set(w.values()) == {1.0}
+
+
+def test_week_weights_derive_playoff_weeks_from_the_bracket():
+    """6 of 12 teams make it, top two seeded on a bye. So week 15 is played by
+    the four unseeded qualifiers, week 16 by four, week 17 by two -- and the
+    weight is the share of the league that plays it. Derived from the payload,
+    NOT a picked multiplier: a hand-chosen number is what CLAUDE.md forbids."""
+    w = season.week_weights(_settings(), range(15, 18))
+    assert w[15] == pytest.approx(4 / 12)
+    assert w[16] == pytest.approx(4 / 12)
+    assert w[17] == pytest.approx(2 / 12)
+
+
+def test_week_weights_shrink_the_bracket_for_a_four_team_playoff():
+    """Two rounds, not three. The round sizes must follow playoff_teams."""
+    w = season.week_weights(_settings(playoff_teams=4), range(15, 17))
+    assert w[15] == pytest.approx(4 / 12)
+    assert w[16] == pytest.approx(2 / 12)
+
+
+def test_playoff_weight_overrides_the_derivation_for_playoff_weeks_only():
+    """The knob exists because the direction is contested -- the literature
+    weights playoff weeks UP. Setting it must not touch weeks 1-14."""
+    w = season.week_weights(_settings(), range(13, 18), playoff_weight=2.0)
+    assert w[13] == 1.0 and w[14] == 1.0
+    assert w[15] == 2.0 and w[16] == 2.0 and w[17] == 2.0
+
+
+def test_week_weights_are_flat_when_the_league_serves_no_playoff_block():
+    """Degrade to flat, never to a guessed bracket."""
+    w = season.week_weights(_settings(playoff_week_start=None, playoff_teams=None),
+                            range(1, 19))
+    assert set(w.values()) == {1.0}
+
+
 def _settings(**kw):
     """A LeagueSettings with the real sleeper-main shape, overridable per test."""
     from ffhelper.data import LeagueSettings

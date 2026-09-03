@@ -73,6 +73,51 @@ def last_scoring_week(settings: LeagueSettings) -> tuple[int, str | None]:
     return start + ceil(log2(teams)) - 1, None
 
 
+def week_weights(
+    settings: LeagueSettings, weeks, playoff_weight: float | None = None,
+) -> dict[int, float]:
+    """How much each week counts, as the probability you play it.
+
+    A point scored in a week you do not play is worth nothing. Under a uniform
+    prior over seeds, a regular-season week is played by everyone (1.0) and a
+    playoff week by whoever survives to it -- so a 6-of-12 bracket gives
+    4/12, 4/12, 2/12 across weeks 15-17.
+
+    THIS WEIGHTS PLAYOFF WEEKS DOWN, which is the opposite of the published
+    playoff-biasing work. That work argues conditional value -- points in the
+    final matter more BECAUSE the title is decided there -- which is only
+    reachable through a matchup win-probability model nobody here has
+    validated, and is exactly the hand-picked factor CLAUDE.md forbids. This
+    answers the question the tool can answer: expected points that count.
+
+    `playoff_weight` takes the other reading, replacing the derived weights on
+    playoff weeks only. It exists because the direction is contested; the
+    default refuses to smuggle a preference in as a fact.
+
+    The uniform-seed prior is itself an assumption, and it is the one the
+    deferred leverage slice replaces with real standings (TODO.md).
+    """
+    out = {int(w): 1.0 for w in weeks}
+    start, teams, num = (settings.playoff_week_start, settings.playoff_teams,
+                         settings.num_teams)
+    if not start or not teams or teams < 2 or not num:
+        return out
+    rounds = ceil(log2(teams))
+    bracket = 2 ** rounds
+    for i in range(1, rounds + 1):
+        wk = start + i - 1
+        if wk not in out:
+            continue
+        if playoff_weight is not None:
+            out[wk] = playoff_weight
+            continue
+        # Round 1 is played only by the teams without a bye; every later round
+        # halves the bracket.
+        playing = 2 * (teams - bracket // 2) if i == 1 else bracket // (2 ** (i - 1))
+        out[wk] = playing / num
+    return out
+
+
 def free_agent_pool(
     players: dict[str, Player], rosters: list[dict], projected_ids: set[str],
 ) -> list[Player]:

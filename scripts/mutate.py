@@ -579,6 +579,12 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("the bracket length is ignored, so the horizon ends on the first playoff week",
          "return start + ceil(log2(teams)) - 1, None",
          "return start, None"),
+        ("every week weighs the same, so the playoff bracket is ignored",
+         "playing = 2 * (teams - bracket // 2) if i == 1 else bracket // (2 ** (i - 1))",
+         "playing = num"),
+        ("the playoff_weight override leaks onto regular-season weeks",
+         "        if wk not in out:\n            continue",
+         "        if wk not in out:\n            pass"),
     ],
 
 }
