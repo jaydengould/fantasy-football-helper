@@ -613,8 +613,12 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "        if gain_them <= floor:\n            return",
          "        if gain_them <= -1e9:\n            return"),
         ("results are ordered by list position instead of deterministically",
-         "    out.sort(key=lambda p: (-p.gain_me, _ids(p.give), _ids(p.get)))",
+         "    out.sort(key=lambda p: (-p.gain_me, len(p.give) + len(p.get),\n"
+         "                            _ids(p.give), _ids(p.get)))",
          "    pass"),
+        ("the counterparty keeps 16 players, so their forced cut is free",
+         "            total_them, drop = best_drop(after, roster_slots, weekly_by_week, weights)",
+         "            total_them, drop = ros(after), None"),
     ],
 
 }

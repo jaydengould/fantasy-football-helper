@@ -80,16 +80,30 @@ def trade_options(
         gain_them = total_them - base_them
         if gain_them <= floor:
             return
-        out.append(Proposal(opponent, tuple(give), tuple(get),
+        # Sorted, not just tuple(give): with 2+ players the tuple's ORDER
+        # depends on iteration order over `mine`/`theirs`, invisible while
+        # every shape was 1-for-1 and every give/get had one element. Found by
+        # test_results_are_deterministic_across_runs failing on 2-for-1.
+        out.append(Proposal(opponent, tuple(sorted(give, key=lambda p: p.sleeper_id)),
+                            tuple(sorted(get, key=lambda p: p.sleeper_id)),
                             gain_me, gain_them, drop))
 
     for a in mine:
         for b in theirs:
             consider([a], [b])
 
+    for pair in combinations(mine, 2):
+        for b in theirs:
+            consider(list(pair), [b])
+
     # Deterministic: a board that renames a package when nothing changed is one
-    # nobody can trust.
-    out.sort(key=lambda p: (-p.gain_me, _ids(p.give), _ids(p.get)))
+    # nobody can trust. Ties on gain_me are real, not rounding -- a throw-in
+    # that contributes 0 to either lineup (rb2 in the fixture) reproduces a
+    # 1-for-1's exact gain as a 2-for-1, found by running Task 5's own test
+    # after Task 6 landed. Fewest players moved breaks the tie: the simpler ask
+    # for an identical outcome is the one to lead with.
+    out.sort(key=lambda p: (-p.gain_me, len(p.give) + len(p.get),
+                            _ids(p.give), _ids(p.get)))
     return out
 
 

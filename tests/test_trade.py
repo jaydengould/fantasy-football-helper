@@ -2,7 +2,7 @@
 import pytest
 
 from ffhelper.data import Player
-from ffhelper import trade
+from ffhelper import season, trade
 
 
 def mk(pid: str, pos: str) -> Player:
@@ -106,3 +106,31 @@ def test_results_are_deterministic_across_runs():
                             SLOTS, wbw, floor=0.5)
     assert [( [p.sleeper_id for p in x.give], [p.sleeper_id for p in x.get]) for x in a] \
         == [( [p.sleeper_id for p in x.give], [p.sleeper_id for p in x.get]) for x in b]
+
+
+def test_two_for_one_names_the_cut_the_counterparty_must_make():
+    """They receive two and send one, so they land at 16 players -- illegal.
+    The league forces a cut, that cut is part of what the trade costs them, and
+    a proposal that hides it is quoting them a price they have not been told."""
+    mine, theirs, wbw = _swap_case()
+    out = trade.trade_options(mine, theirs, 7, SLOTS, wbw, floor=0.5)
+    two_for_one = [p for p in out if len(p.give) == 2 and len(p.get) == 1]
+    assert two_for_one, "the 2-for-1 shape must be searched"
+    assert all(p.their_drop is not None for p in two_for_one)
+    assert all(p.their_drop.sleeper_id not in {g.sleeper_id for g in p.get}
+               for p in two_for_one), "they cannot cut the player they just sent"
+
+
+def test_my_fourteen_man_roster_is_not_refilled_from_the_wire():
+    """A 2-for-1 leaves me at 14, which is LEGAL, so nothing is invented. The
+    first probe added a free agent here and inflated every gain by whatever the
+    wire happened to be worth -- conflating a trade with a waiver add, which
+    `waivers` already answers separately."""
+    mine, theirs, wbw = _swap_case()
+    out = trade.trade_options(mine, theirs, 7, SLOTS, wbw, floor=0.5)
+    for p in out:
+        if len(p.give) == 2 and len(p.get) == 1:
+            kept = [x for x in mine if x.sleeper_id not in {g.sleeper_id for g in p.give}]
+            expected = season.horizon_total([*kept, *p.get], SLOTS, wbw) \
+                - season.horizon_total(mine, SLOTS, wbw)
+            assert p.gain_me == pytest.approx(expected)
