@@ -300,6 +300,15 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "            except ZeroDivisionError as exc:              "
          "# noqa: BLE001 - degrade, never fabricate\n"
          "                # The last unguarded fetch in this function"),
+        ("the trade deadline is ignored, so it offers trades you cannot make",
+         "if deadline is not None and week > deadline:",
+         "if deadline is not None and week > 999:"),
+        ("the horizon runs to the NFL's last week instead of the league's",
+         "for w in range(week, last_week + 1):",
+         "for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
+        ("an ambiguous --player silently takes the first match",
+         "        if len(matches) > 1:",
+         "        if len(matches) > 99:"),
     ],
     "store.py": [
         ("snapshot write never committed, so the record dies with the process",

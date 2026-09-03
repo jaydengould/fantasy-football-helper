@@ -3,9 +3,12 @@ import json
 import logging
 import queue
 import time
+from dataclasses import replace
 
 import pytest
 
+import ffhelper.cli as cli
+from ffhelper import trade
 from ffhelper.cli import (
     MarkDrafted, NullFeed, _claims_overruled_by_feed, _combine_my_roster, _draft_log_path,
     _handle_command, _restore_marks, _split_commands, _wait_for_input,
@@ -3214,7 +3217,9 @@ def _stub_waiver_inputs(monkeypatch, fail_weeks=()):
                 {"player_id": "30", "stats": {"pass_td": 9}}]
 
     monkeypatch.setattr(cli, "resolve_settings",
-                        lambda lg: _lineup_settings(roster_slots={"QB": 1}))
+                        lambda lg: _lineup_settings(
+                            roster_slots={"QB": 1}, playoff_week_start=15,
+                            playoff_teams=6, playoff_round_type=0, trade_deadline=11))
     monkeypatch.setattr(cli, "load_players", lambda: players)
     monkeypatch.setattr(cli, "load_nfl_state", lambda: {"week": 1, "season": "2026"})
     monkeypatch.setattr(cli, "load_weekly_projections", weekly)
@@ -3297,3 +3302,69 @@ def test_main_dispatches_waivers_with_the_week_and_limit_it_was_given(monkeypatc
     rc = main(["waivers", "--league", "sleeper-main", "--week", "4", "--limit", "3"])
     assert rc == 7
     assert seen["args"] == ("sleeper-main", 4, 3)
+
+
+# --- Phase 5: the trade screen ----------------------------------------------
+
+
+def mk_player(pid, pos):
+    return Player(sleeper_id=pid, name=f"P{pid}", position=pos, team="X")
+
+
+def test_trades_refuses_yahoo_and_says_why(capsys, monkeypatch):
+    """Not a fallback and not a bug: the search needs EVERY roster to know what
+    the other eleven teams hold, and Yahoo serves none."""
+    lg = League(name="yahoo-main", platform="yahoo", league_id="1")
+    assert cli._trades(lg, Tunables()) == 1
+    out = capsys.readouterr().out
+    assert "sleeper" in out.lower() and "yahoo" in out.lower()
+
+
+def test_trades_refuses_after_the_trade_deadline(capsys, monkeypatch):
+    """trade_deadline is 11 in the real league. Printing proposals you are not
+    allowed to make is worse than printing none -- and it exits 0, because a
+    passed deadline is a legal state, not an error."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    rc = cli._trades(_sleeper_league(), Tunables(), week=13)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "deadline" in out.lower() and "11" in out
+
+
+def test_trades_prints_an_empty_board_as_a_stated_result(capsys, monkeypatch):
+    """Measured on the real league in week 1: one opponent qualifies, and on a
+    tighter floor none do. A blank screen reads as a failed fetch, so silence
+    must be a sentence."""
+    import ffhelper.cli as cli
+
+    _stub_waiver_inputs(monkeypatch)
+    # close_call_points high enough that nothing in the fixture can clear it.
+    rc = cli._trades(_sleeper_league(), replace(Tunables(), close_call_points=1e6),
+                     week=1)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no trade" in out.lower()
+
+
+def test_render_trades_names_both_packages_and_both_gains():
+    """Pure render, no network. Every row is an argument you send to a human,
+    so it must carry what each side gets and what each side gains."""
+    p = trade.Proposal(opponent=7, give=(mk_player("a", "WR"),),
+                       get=(mk_player("b", "RB"),),
+                       gain_me=34.3, gain_them=13.7, their_drop=None)
+    out = cli.render_trades([p], week=1, last_week=17, league_name="L",
+                            owner="me", names={7: "stephcody"}, notes=[],
+                            weeks_scored=17, pinned=None)
+    assert "stephcody" in out and "34.3" in out and "13.7" in out
+    assert "Pa" in out and "Pb" in out
+
+
+def test_render_trades_names_the_forced_cut():
+    """It is part of the offer and they will notice it before you do."""
+    p = trade.Proposal(opponent=7, give=(mk_player("a", "WR"), mk_player("c", "WR")),
+                       get=(mk_player("b", "RB"),),
+                       gain_me=20.0, gain_them=5.0, their_drop=mk_player("d", "TE"))
+    out = cli.render_trades([p], 1, 17, "L", "me", {7: "stephcody"}, [], 17, None)
+    assert "Pd" in out
