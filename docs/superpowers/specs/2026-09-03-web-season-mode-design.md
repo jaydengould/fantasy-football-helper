@@ -9,10 +9,17 @@ this spec and that file disagree, that file wins and this one is wrong. The Phas
 spec's "Hosting, later" section (`2026-08-26-phase-3-dash-ui-design.md`) is the
 direct predecessor; this spec resolves it.
 
+**Scope note.** An earlier draft of this document grew to cover scheduled jobs,
+push notifications, cache-TTL fixes and always-on hosting, because a question
+about notifications was answered by expanding the spec rather than by opening a
+phase. That work is not lost — it is in "Deferred, with the research intact" at
+the end, which is the more valuable half of this document. **This phase builds a
+website and nothing else. Nothing in it runs unattended.**
+
 ## What this builds
 
 One Dash application with a homepage that routes to draft mode and to the three
-season commands, reachable from a phone. Concretely:
+season commands, reachable from a phone.
 
 | Route | What it shows |
 | --- | --- |
@@ -22,104 +29,31 @@ season commands, reachable from a phone. Concretely:
 | `/waivers` | `ffhelper waivers` as a web page |
 | `/trades` | `ffhelper trades` as a web page |
 
-## What hosting is for — recorded, because it bounds everything
+## What this is for — recorded, because it bounds everything
 
 Asked and answered 2026-09-03. The user wants:
 
 1. **Phone access in-season.** Check lineup/waivers/trades without a terminal.
-2. **A guaranteed weekly snapshot.** TODO item 2: nothing schedules it today.
-3. **One surface instead of five commands.**
-4. **To be told, on the phone, when the lineup needs attention** — a starter
-   ruled out, or a lineup left unset — without having to remember to look.
-   Added later the same day; see "Alerting".
+2. **One surface instead of five commands.**
 
 And explicitly does **not** want:
 
-5. **Sharing with leaguemates.** No public URL, no other readers.
+3. **Sharing with leaguemates.** No public URL, no other readers.
+4. **Anything running unattended on a project he may forget about.**
 
-Item 5's absence is the single most load-bearing fact in this document. **No
-authentication is required**, and with it goes login, session handling, a hardened
+**Item 3's absence is the single most load-bearing fact in this document.** No
+authentication is required, and with it goes login, session handling, a hardened
 config surface, and any question about leaking the tool's edge. The Phase 3 spec
 listed authentication first among "what hosting would newly require"; that
-requirement is now void, and it was the expensive one.
+requirement is void, and it was the expensive one.
 
-Item 4 is the one want that is **not** served by the website at all. A push
-notification is delivered by the scheduled job, which is why alerting is
-specified here alongside the snapshot rather than as a page.
-
-## Item 2 does not need a website
-
-The weekly snapshot is fixed by one `launchd` plist running `ffhelper lineup`.
-It is macOS-native, needs no dependency, no server and no browser, and it closes
-the only genuinely irrecoverable risk in the queue. **It ships first and
-independently of everything else here.** See "Scheduling the snapshot" below.
-
-With item 2 handled separately, the web build is buying items 1 and 3 — an
-ergonomics want. That is a real want and worth building; it is not worth
-restructuring the data layer for.
-
-## Hosting — the evaluation, and why the decision is deferred
-
-### The finding
-
-**The application work is identical on every host.** Extracting the pipeline,
-routing the pages, and rendering HTML are the same diff whether the process runs
-on `localhost:8050`, on a Tailscale address, or on Fly.io. Hosting is a final
-step measured in minutes, not a foundation.
-
-Therefore the hosting choice is **made last, after the app exists**, when the
-Mac's real availability is known. The user's own answer to "what machine is
-this?" was *not sure, depends on the week* — a genuine uncertainty, and this
-sequencing means it does not have to be resolved to start.
-
-### The candidates
-
-**Prices below are from memory and MUST be verified before any money is spent.**
-
-**Render, free tier — not viable.** Three independent blockers, any one of which
-is fatal: no persistent disk on free, so `season.db` is wiped on every redeploy
-(silently — and the table exists precisely because its contents cannot be
-recovered); free services spin down after ~15 minutes idle, so an in-process
-scheduler dies and every phone visit pays a cold start on top of the API fetches;
-and cron is a paid product.
-
-**Render, paid — viable, ~$7/mo** for a Starter instance plus a small disk.
-
-**Fly.io — viable and the better paid option, ~$3–5/mo.** Volumes are
-first-class, and machines suspend and wake in about a second rather than
-spinning down for the better part of a minute. Better suited to a
-SQLite-backed app that is idle most of the week.
-
-**The Mac + Tailscale — $0, and the recommended starting point.** Tailscale on
-the Mac and the phone; bind Dash to `0.0.0.0`; reach it at the tailnet address
-from anywhere. Tailscale *is* the authentication, which is only acceptable
-because of fact 4 above. `season.db`, `.cache/` (164 MB, measured 2026-09-03)
-and `.roster/yahoo-main.txt` all stay exactly where they are — no secret
-migration, no volume, no redeploy story. `launchd` keeps the process up and
-restarts it at boot.
-
-Its one failure mode is the Mac being asleep or away, which is the same
-condition that threatens the snapshot job, and which `pmset repeat wake`
-partially answers.
-
-**GitHub Pages remains impossible**, as the Phase 3 spec said: Pages serves
-static files and Dash is a Flask app needing a live Python process.
-
-### What a move to Fly would newly require
-
-Recorded now so the cost is known, not discovered:
-
-- Secrets from `.env` into Fly secrets. Small — Yahoo OAuth, still blocked.
-- A volume for `season.db` (12 KB, measured) and the snapshot job running there.
-- The `app.py` retrofit the Phase 3 spec describes: build the app at import
-  time, league selection out of `argv`. **This spec does that anyway** (see
-  Routing), so it is no longer a hosting cost.
-- An edit path for `.roster/yahoo-main.txt` (447 bytes, hand-maintained after
-  every Yahoo add/drop, per TODO item 3). Locally this is a text editor. Hosted
-  it is a redeploy or a web textarea, and the textarea is a config-editing
-  surface with all the hazards the Phase 3 spec deferred. **This is the
-  strongest single argument for staying on the Mac.**
-- `.cache/` may stay ephemeral. It is a cache; a cold host refetches.
+**Item 4 is why there are no scheduled jobs here**, and the reasoning is worth
+keeping: a `launchd` plist writes its output nowhere unless configured to, so a
+moved venv, a renamed repo or a changed endpoint makes it fail every week in
+silence. That converts a known gap into a false belief that weeks are being
+recorded — the same species as the recurring mistake `CLAUDE.md` records, *a
+verification tool reporting success while checking something else*. The site
+nudges instead; see Homepage.
 
 ## Architecture
 
@@ -130,9 +64,9 @@ The impure orchestration layer between the loaders and the renderers. Today
 compute, format as text, and print. Only the first two are shared with the web.
 
 ```
-build_lineup(league, tunables, week, fetcher=None)          -> LineupView
-build_waivers(league, tunables, week, limit, fetcher=None)   -> WaiverView
-build_trades(league, tunables, week, player, limit, fetcher=None) -> TradeView
+build_lineup(league, tunables, week, fetcher=None)                -> LineupView
+build_waivers(league, tunables, week, limit, fetcher=None)         -> WaiverView
+build_trades(league, tunables, week, player, limit, fetcher=None)  -> TradeView
 ```
 
 Each view is a frozen dataclass carrying everything **both** renderers need —
@@ -140,28 +74,25 @@ the computed state (`StartSit`, `list[WaiverTarget]`, trade proposals), plus
 resolved week and season, owner, notes, matchup context and practice line. No
 printing. No database write. No dash import.
 
-`LineupView` additionally carries the **submitted** lineup (see Alerting), so
-all three consumers — text, HTML and the alert — read one computation.
-
 `fetcher` stays an explicit argument, matching the existing loader convention,
 so every builder is testable without the network.
 
 **Why a new module rather than leaving these in `cli.py`:** `cli.py` is 1844
 lines (measured 2026-09-03) and the extraction removes several hundred of them.
-More importantly, `season.py` and `value.py` are pure by rule and cannot hold
-fetching, while `data.py` holds loaders and knows nothing about leagues. The
-orchestration has no existing home.
+`season.py` and `value.py` are pure by rule and cannot hold fetching, while
+`data.py` holds loaders and knows nothing about leagues. The orchestration has
+no existing home.
 
-**Why one shared builder rather than a web-side copy:** this is the rule
-`CLAUDE.md` already states for `lineup_value()` / `optimal_lineup()`, applied
-one level up. Two code paths that can disagree about what this week's advice is
-would be the same defect that produced that rule.
+**Why one shared builder rather than a web-side copy:** the rule `CLAUDE.md`
+already states for `lineup_value()` / `optimal_lineup()`, applied one level up.
+Two code paths that can disagree about what this week's advice is would be the
+same defect that produced that rule.
 
 ### `ffhelper/news.py` — new
 
 RSS only, parsed with stdlib `xml.etree.ElementTree`. One entry point returning
-a list of `Headline(title, url, source, published)`. Caching reuses `data.py`'s
-existing TTL file cache, which needs a text-returning sibling to `fetch_json`.
+`Headline(title, url, source, published)`. Caching reuses `data.py`'s existing
+TTL file cache, which needs a text-returning sibling to `fetch_json`.
 
 Candidate feeds — ESPN NFL, ProFootballTalk, the Bears' official site. **The
 exact URLs are unverified and must be checked at build time**, not trusted from
@@ -169,10 +100,8 @@ memory.
 
 X/Twitter was evaluated and rejected: read access to the API begins at roughly
 $100/mo, the free tier cannot read timelines at all, Nitter is dead, and
-scraping needs an authenticated session and violates the terms. That price is
-15–30× the hosting cost under discussion, for a decorative panel. Bluesky's
-public API is free and was offered as the only real substitute; the user
-declined it.
+scraping needs an authenticated session and violates the terms. Bluesky's public
+API is free and was offered as the only real substitute; the user declined it.
 
 ### `ffhelper/app.py` — restructured
 
@@ -190,32 +119,15 @@ correctly refused to fake with a dead `server` global. The comment at the foot
 of `app.py` describing that refusal should be replaced, not deleted — it records
 a real correction.
 
-### `ffhelper/notify.py` — new
-
-One function, `notify(text) -> bool`, POSTing to a Discord webhook URL read from
-`.env`. `requests` is already a dependency; no bot, no token, no gateway, no
-library. Kept as its own module and its own function precisely because the user
-is choosing between transports without having lived with either — swapping
-Discord for `smtplib` later is then one function body, not a hunt through the
-scheduler.
-
-A failed POST is logged and returns `False`. It never raises into the caller:
-an unreachable webhook must not cost the snapshot write, which is the one part
-of the run that cannot be redone.
-
 ### Changed, minimally
 
-- **`season.py`** gains `roster_starter_ids()` beside the existing
-  `roster_player_ids()`, and the pure predicate that decides whether a lineup
-  difference is worth alerting about. Both are logic, both stay pure, both
-  test without a database or a network.
-- **`data.py`** gains a text-returning sibling to `fetch_json` for RSS.
+`data.py` gains a text-returning sibling to `fetch_json` for RSS. That is all.
 
 ### Unchanged
 
-`value.py`, `store.py`, `board.py`, `trade.py`, `feeds.py`, `config.py`. If any
-of them needs to change, the design is wrong and this spec should be revisited
-before the change is made.
+`season.py`, `value.py`, `store.py`, `board.py`, `trade.py`, `feeds.py`,
+`config.py`. If any of them needs to change, the design is wrong and this spec
+should be revisited before the change is made.
 
 ## Two decisions taken in the design
 
@@ -231,15 +143,9 @@ On the web it is a defect. Every page refresh rewrites the week's rows with a ne
 with a post-kickoff one** — destroying the only thing the table exists to hold.
 No warning, no error, and the row still looks healthy.
 
-So: **the scheduled job owns the write; the web surface is read and compute
-only.** `build_lineup` does not touch the database; `cli.py`'s `_lineup` keeps
-its `_record_snapshot` call, now behind a `--no-snapshot` flag so the hourly
-alert sweep can run the same command without writing. **The flag suppresses;
-it does not enable** — the default stays "write", so a forgotten flag costs a
-redundant write rather than a missing week.
-
-A pleasant consequence: apart from the status strip read below, the web app is
-stateless.
+So `build_lineup` does not touch the database. `cli.py`'s `_lineup` keeps its
+`_record_snapshot` call unchanged, and the snapshot remains something a human
+causes by running the command.
 
 ### Season pages use `html.Table`, not `DataTable`
 
@@ -248,210 +154,102 @@ responsive layout on a phone, and hand-rolling here proves the pattern before
 the board depends on it — de-risking the Phase 3.7 swap (TODO item 6) rather
 than pre-empting it. The board keeps `DataTable` until 3.7 decides.
 
-## The `season.db` coupling, stated plainly
-
-The homepage status strip answers "is this week's snapshot recorded?", which is a
-**read** of `season.db` — the table's first reader ever (verified 2026-09-03:
-`cli.py:1221` is the only caller of `store.connect`, and nothing reads).
-
-That read ties the web app to wherever the database lives, which is wherever the
-scheduled job runs. Practically: **the app and the snapshot job stay together.**
-On the Mac today; both move together if the app ever moves to Fly.
-
-The alternative is dropping that line from the strip, which is also the line that
-makes the strip worth having. The coupling is accepted deliberately.
-
 ## Homepage
 
 - **League picker and nav.** Four links.
 - **Status strip.** Current NFL week; whether this week's snapshot is recorded;
   age of `.roster/yahoo-main.txt`. These are the two operational risks in TODO
-  items 2 and 3, surfaced on the screen you always land on, at the cost of one
-  small fetch, one DB read and one `stat`.
+  items 2 and 3, surfaced on the screen the user always lands on, at the cost of
+  one small fetch, one SQLite read and one `stat`.
 - **Headlines panel.** RSS, newest first, each item a link out.
 - **Trending panel.** `load_trending()`, already in `data.py`. Its docstring is
-  emphatic that these are national counts and must never predict whether your
-  own claim wins; **the panel must repeat that on screen.**
+  emphatic that these are national counts and must never predict whether the
+  user's own claim wins; **the panel must repeat that on screen.**
 
-**The panels are visually separate from anything advisory and are labelled as
-headlines.** A news box beside lineup advice implies the advice considered the
-news. It did not: `start_sit` sees projections, practice status and injury
-designation, and nothing else. An unreachable feed renders "feed unavailable",
-never a silently empty box — the same rule as non-negotiable #3 and #7.
+### The snapshot line is a nudge, and it replaces the scheduled job
 
-## Scheduling the snapshot
+This is the design's answer to item 4. The user opens the site each week to set
+a lineup; that is exactly the moment a snapshot is due. The strip says so, the
+user runs one command, and **nothing runs unattended.** It is pull, not push: it
+cannot fail silently, and if the project is abandoned it stops along with it.
 
-**Two `launchd` jobs with different responsibilities.** This separation is the
-correction that came out of design; the reasoning is below and it matters more
-than the times.
+**The line is absent, never wrong, when the database cannot be read.** If
+`season.db` is missing or unreadable the line is omitted entirely rather than
+reporting "not recorded" — that would be a fabricated value where a measured one
+is expected, which non-negotiable #7 bars. Two lines of code. It never fires
+while the app and the database sit on the same machine, which is the whole of
+this phase; it matters the moment either moves.
 
-| Job | Schedule (ET) | Writes snapshot? | Purpose |
-| --- | --- | --- | --- |
-| Alert sweep | Hourly, 08:00–20:00, daily | **No** (`--no-snapshot`) | Catch an inactive or an unset lineup |
-| Snapshot | Sunday 11:45 | **Yes** | The week's record |
+### Panels are separated from anything advisory
 
-### Why hourly and daily, rather than one run per slate
+A news box beside lineup advice implies the advice **considered** the news. It
+did not: `start_sit` sees projections, practice status and injury designation,
+and nothing else. The panels are visually separate and labelled as headlines,
+and an unreachable feed renders "feed unavailable" rather than a silently empty
+box — non-negotiables #3 and #7.
 
-The obvious design is one run before each slate — Thursday evening, Sunday
-11:45, Sunday 15:00, Sunday evening, Monday evening. It was rejected.
+## Hosting
 
-**Enumerating slates is the failure mode `CLAUDE.md` names**: "guarding the path
-the last defect took, and missing its siblings." A slate list silently omits the
-09:30 London games, the Saturday slates in weeks 16–18, and the Thanksgiving and
-Christmas games — and those are the weeks a surprise inactive costs most.
-Kickoff times are not in any payload this project fetches, so a static list
-cannot be validated against reality and would drift without anyone noticing.
+### The finding
 
-An hourly sweep covers every kickoff the league can schedule without predicting
-any of them, and it is **one** plist rather than five that fall out of date.
+**The application work is identical on every host.** Extracting the pipeline,
+routing the pages, and rendering HTML are the same diff whether the process runs
+on `localhost:8050`, on a Tailscale address, or on Fly.io. Hosting is a final
+step measured in minutes, not a foundation. It is therefore **decided last**.
 
-**It is affordable only because of deduplication** (see Alerting). Thirteen runs
-a day produce thirteen notifications a *season*, not a day. Without the digest
-this schedule would be indefensible.
+**Dropping the scheduled jobs changed this section's conclusion.** An earlier
+draft ruled out Render's free tier on three grounds — no persistent disk,
+spin-down killing an in-process scheduler, and cron being a paid product. **Two
+of the three are now void:** there is no scheduler and nothing on the host
+writes, so there is no data for an ephemeral disk to destroy. A free host that
+cannot see `season.db` reports a missing snapshot line, not a lost database.
 
-Two consequences worth having:
+### The candidates
 
-- **Mid-week early warning.** A starter ruled out on Wednesday reaches the user
-  on Wednesday, while there is still a waiver window — rather than at 11:45 on
-  Sunday when the pool has been picked over.
-- **No new knob for mid-week noise.** Trigger 2 ("lineup is not optimal") would
-  otherwise fire every hour from Tuesday. It does not: the digest is unchanged
-  all week, so it alerts once and then stays silent until something actually
-  changes. That is also the correct behaviour — a lineup that is wrong on
-  Wednesday is worth knowing about on Wednesday.
+**Prices are from memory and MUST be verified before any money is spent.**
 
-### Why the snapshot write is a separate job
+**The Mac + Tailscale — $0, and the recommendation.** Tailscale on the Mac and
+the phone; bind Dash to `0.0.0.0`; reach it at the tailnet address from
+anywhere. Tailscale *is* the authentication, which is only acceptable because of
+fact 3. `season.db`, `.cache/` (164 MB, measured) and `.roster/yahoo-main.txt`
+all stay where they are — no secret migration, no volume, no redeploy story.
 
-An earlier draft of this spec had every scheduled run write the snapshot. **That
-was the same defect this document rejects for the web surface, reintroduced two
-sections later.** With `INSERT OR REPLACE` on
-`(league, season, week, player_id)`, a 15:00 run overwrites the 11:45 row with
-post-kickoff state for every 1pm player — silently, and the row still reads as
-healthy.
+**With scheduling dropped, the Mac sleeping no longer matters.** A website
+tolerates being intermittent: if the Mac is asleep, the page loads later. That
+was never true of a scheduled job, which is what made sleep a problem — see
+Deferred.
 
-So the sweep never writes, and exactly one run per week does. **Sunday 11:45 is
-before every Sunday kickoff**, which makes it a valid "last look before kickoff"
-for the whole slate, matching `store.py`'s documented semantics without changing
-them.
+**Render free / Fly free-tier — now genuinely viable** for this scope, with one
+real cost: spin-down means roughly 50 seconds of cold start on the first phone
+visit after idle, on top of the fetches. An annoyance, not a risk.
 
-**The residual, stated rather than hidden:** a Thursday-night or Monday-night
-starter is recorded at Sunday 11:45 — after his game for TNF, before it for MNF.
-`proj_pts` most likely survives, since weekly projections are static; `status`
-most likely does not. **This is unquantified.** It has not been observed, it
-cannot be observed without watching a week, and it must not be written up as a
-finding until it has been. It affects at most one or two players in a week.
+**Paid, ~$3–7/mo (Fly, or Render Starter) — buys away the cold start** and
+nothing else this phase needs. Not recommended yet.
 
-The clean fix is open question 1 — `taken_at` in the primary key, so every run
-writes and nothing overwrites. Deliberately not taken now: it changes what a row
-means in the one stateful module in the package, and the patch above is correct
-for every Sunday player, which is nearly all of them.
+**GitHub Pages remains impossible**: Pages serves static files, Dash is a Flask
+app needing a live Python process.
 
-**Machine availability.** `launchd` runs a missed calendar job when the machine
-wakes, but a wake after kickoff produces a post-hoc record with no value.
-`pmset repeat wake` scheduled shortly before each run is the native mitigation.
-It cannot help a machine that is off or elsewhere; that residual risk is the
-same one that argues for a paid always-on host, and it is accepted for now.
+### The one thing that argues against ever moving off the Mac
 
-## Alerting
+`.roster/yahoo-main.txt` is 447 bytes, gitignored, and hand-maintained after
+every Yahoo add/drop (TODO item 3). Locally that is a text editor. Hosted it is
+a redeploy or a web textarea, and a textarea is a config-editing surface with
+all the hazards the Phase 3 spec deferred.
 
-**Verified 2026-09-03 against the live Sleeper payload**, not assumed: the
-roster object returned by `load_league_rosters()` carries `starters` (10 ids)
-alongside `players` (15). Nothing in the codebase reads it —
-`roster_player_ids()` takes `players`. **The tool has never known what the user
-actually submitted, and the data to know it has been arriving all along.**
+## Measured cost of a page load
 
-### The design principle
+Timed 2026-09-03 against the live APIs, read-only:
 
-**Silent unless actionable.** An alert that arrives on every run regardless of
-content is one that stops being read, and then the week it matters it is
-dismissed with the rest. That failure is the reason this feature is usually not
-worth building, and avoiding it is the whole design.
+| | Cold (TTL expired) | Warm |
+| --- | --- | --- |
+| Wall time | 4.57s | 0.49s |
+| CPU (user+sys) | — | 0.24s |
+| Peak RSS | 128 MB | 123 MB |
 
-### Triggers
-
-An alert is sent when either holds for the user's own roster:
-
-1. **A submitted starter is OUT, DOUBTFUL, or not practising.** Already carried
-   on `Player` — `injury_status` plus the nflverse practice status wired in
-   during 4a. No new source.
-2. **The submitted lineup differs from `optimal_lineup()` by more than
-   `close_call_points`.** This is "you forgot to set your lineup", stated in
-   points.
-
-**The threshold is not a new number.** `close_call_points` is an existing
-tunable already doing exactly this job — deciding whether a gap is worth
-mentioning — in `lineup`, `waivers` and `trades`. Non-negotiable #8 bars
-inventing a discount or weight; reusing the knob that already answers this
-question is the compliant move, and a raw diff would not be: optimal-per-
-projection almost never equals a human's choices, so an ungated comparison
-fires every week and rebuilds the fatigue problem through the back door.
-
-### Deduplication — required, not a refinement
-
-Thirteen sweeps a day against one unresolved problem is thirteen identical
-notifications. That is the same alert fatigue arriving by a different route, and
-it would have shipped unnoticed.
-
-**Send only when the alert's content changes.** Hash the rendered alert text
-(`hashlib`, stdlib), store the digest at `.cache/alert-<league>-<season>-<week>`,
-and skip the POST when it matches. Roughly five lines. A resolved problem
-followed by a new one produces a new digest and a new alert, which is correct.
-
-`.cache/` is the right home: losing the digest costs one duplicate
-notification, which is precisely the severity that belongs in a cache and not in
-`season.db`.
-
-### Transport
-
-Discord webhook. `requests.post(url, json={"content": text})` — the URL lives in
-`.env` beside the other secrets and is **never committed**; the repo is public.
-Chosen over `ntfy.sh` on three grounds: ntfy topics are public, so anyone
-guessing the name could both read the alerts and post to them; ntfy keeps no
-history; and Discord renders markdown, so a lineup difference can be a code
-block rather than mangled plaintext. Chosen over email because a Discord push
-lands on a phone through an app the user already runs.
-
-**Setup note that decides whether this works at all:** the target channel must
-be set to *All Messages*. Discord's default batching would deliver a 12:15
-scratch late, which for this purpose is identical to not delivering it.
-
-### Freshness
-
-**Measured 2026-09-03, and the answer is a defect.** Neither `load_players` nor
-`load_nfl_injuries` passes `ttl_seconds`, so both take `fetch_json`'s 86,400s
-default. Verified against a live run: `sleeper_players.json` on disk was from
-the previous evening and was served from cache on two consecutive runs.
-
-**An hourly sweep would therefore re-read yesterday's injury picture thirteen
-times a day and alert on none of it**, while every test passed and every run
-looked healthy. This is the failure mode the spec flagged as an open question;
-it is now a measured requirement.
-
-**The alert path must pass a short `ttl_seconds`** to both loaders —
-`load_weekly_actuals`'s docstring already establishes exactly this pattern for
-live-game paths. The default stays 86,400 for every other caller: the draft
-board and the CLI have no reason to refetch a 14.6 MB player file hourly.
-
-**Which source actually moves on a Sunday morning is unresolved and must be
-settled before building.** The nflverse injuries file is the official *weekly*
-injury report — practice participation and Out/Doubtful/Questionable, published
-Wednesday to Friday. Gameday inactives at 90 minutes are a different feed. If
-that reading is right, the source that updates on Sunday morning is Sleeper's
-`injury_status` via `load_players`, which would make that one loader's TTL the
-single most load-bearing number in this design. **Not verified.** Do not build
-trigger 1 until it is.
-
-**Also measured:** `load_nfl_injuries` currently returns 404 —
-`injuries_2026.csv` does not yet exist, which is expected for 2026-09-03 with
-the season starting Sept 9. The loader degrades correctly rather than
-fabricating. **Re-verify after the season starts**; until the file exists, half
-of trigger 1 has no data at all.
-
-### Scope
-
-**Sleeper only.** Yahoo has no API, so there is no `starters` array and no way
-to know what was submitted. The roster file records who is owned, never who is
-started. `yahoo-main` gets no alerts, and the spec does not pretend otherwise.
+Nearly all the cold time is network wait, not CPU. `sleeper_players.json` is
+14.6 MB and cached for 24 hours; weekly projections for one hour; rosters for
+five minutes. **A page load is cheap and the existing cache is sufficient — no
+caching layer is needed.**
 
 ## Degradation
 
@@ -460,32 +258,27 @@ started. `yahoo-main` gets no alerts, and the spec does not pretend otherwise.
   Yahoo serves none — never an empty table. `/lineup` works, from the roster file.
 - **`/draft` states on the page** that it is local-only and single-process, and
   that the CLI must not run against the same league concurrently. Hosting the
-  draft board is explicitly out of scope; see below.
+  draft board is out of scope; see below.
 - **A failed fetch degrades to a named absence**, never a fabricated number.
   Non-negotiable #7 applies to every panel on every page.
+- **`load_nfl_injuries` currently returns 404** — `injuries_2026.csv` does not
+  yet exist, expected for 2026-09-03 with the season starting Sept 9. The loader
+  degrades correctly rather than fabricating. Re-verify after the season starts.
 
 ## Staging
 
-Each step is independently shippable and independently useful.
+Each step is independently shippable.
 
-1. **`launchd` snapshot job** at Sunday 11:45, plus `--no-snapshot`. Closes
-   TODO item 2. No app changes, no alerting yet, silent by construction.
-2. **Alerting.** `roster_starter_ids()`, the threshold predicate, `notify.py`,
-   the dedupe digest. Rides on step 1's job and needs none of the web work —
-   which is why it comes second rather than last, despite being specified late.
-3. **Extract `pipeline.py`;** `cli.py` renders from it. **The existing text
+1. **Extract `pipeline.py`;** `cli.py` renders from it. **The existing text
    renderer tests must pass unchanged** — that is the evidence the extraction
    altered no behaviour, and it is the only evidence that counts.
-4. **Multi-page shell,** homepage with status strip, season pages as
+2. **Multi-page shell,** homepage with status strip, season pages as
    `html.Pre(<existing text renderer>)`. Usable from a phone at the end of this
    step, with horizontal scrolling.
-5. **Upgrade `/lineup`, `/waivers`, `/trades` to real HTML,** one page per
+3. **Upgrade `/lineup`, `/waivers`, `/trades` to real HTML,** one page per
    commit. The text renderers remain as the CLI's output and as a fallback.
-6. **Headlines and trending panels.**
-7. **Hosting**, decided with the app in hand.
-
-Steps 1 and 2 deliver want 4 — arguably the highest-value want on the list —
-before any of the web work begins.
+4. **Headlines and trending panels.**
+5. **Hosting**, decided with the app in hand.
 
 ## Testing
 
@@ -495,39 +288,15 @@ before any of the web work begins.
   new test that passes against both the old and new code proves nothing about
   the refactor.
 - **`conftest.py`'s network and database guards apply unchanged.** No test may
-  reach either; the web tests are no exception, and a Dash test that starts a
-  server is not worth the guard it would need waiving.
-- **Mutations in `scripts/mutate.py`** for the RSS parser and for the status
-  strip's snapshot-recorded predicate — both are branch logic whose failure is
-  silent and plausible-looking.
-- **The status strip's "recorded?" logic must be tested against `:memory:`**,
-  including the week-with-no-rows case, which is the case that matters.
-
-### Alerting specifically
-
-Every one of these fails silently and looks healthy, which is why they are
-enumerated rather than left to judgement.
-
-- **The clean case must be tested: no alert is sent.** This is the property the
-  entire design rests on, and it is the one a suite naturally omits because
-  nothing happens. A test that only proves alerts fire would pass against code
-  that alerts every run.
-- **The dedupe must be tested across two runs with unchanged input** — one
-  POST, not two. Also across two runs where the problem *changes*, which must
-  produce two.
-- **The threshold must be tested on both sides of `close_call_points`**, since
-  a comparison written with the wrong sign or a `>=` for a `>` produces a
-  feature that either never fires or always does.
-- **`notify()` must be tested for the failure path**: a rejected POST returns
-  `False`, logs, and does not raise. The snapshot write must still happen. No
-  test may reach Discord — the transport takes an injectable poster, the same
-  convention as `fetcher`.
-- **The short-TTL alert path must be tested**, not assumed. Measured
-  2026-09-03: both `load_players` and `load_nfl_injuries` default to a 86,400s
-  TTL, so an hourly sweep reads yesterday's injuries and alerts on nothing --
-  with every other test still green. The test asserts the alert path requests a
-  short TTL; the fixture proves a changed status is seen within one sweep.
-- **Mutations** for the threshold comparison and the dedupe predicate.
+  reach either; the web tests are no exception.
+- **The status strip's snapshot logic must be tested against `:memory:`**,
+  covering three cases: a recorded week, a week with no rows, and **an
+  unreadable or missing database, which must omit the line rather than report
+  "not recorded"**. The third is the one a suite naturally skips and the one the
+  non-negotiable is about.
+- **Mutations in `scripts/mutate.py`** for the RSS parser and the status strip's
+  snapshot predicate — both are branch logic whose failure is silent and
+  plausible-looking.
 
 ## Out of scope
 
@@ -539,38 +308,160 @@ enumerated rather than left to judgement.
 - **In-browser config editing.** Deferred by the Phase 3 spec for reasons that
   have not changed: `config.toml` is load-bearing for correctness, `tomllib` is
   read-only, and a silently-failed edit produces a healthy-looking wrong board.
-- **Authentication.** Not required, per fact 4. Revisit only if sharing is ever
-  wanted, and treat it as a new spec rather than an addition.
+- **Authentication.** Not required, per fact 3.
 - **Bluesky or any social feed.** Offered, declined.
-- **Alerts on waivers or trades.** Neither is time-critical in the way a
-  kickoff is, and both would be advisory pushes with no deadline — the exact
-  shape of notification that trains you to ignore the channel.
-- **X/Twitter alerts or any second transport.** `notify()` is one function so a
-  swap stays cheap; a fallback chain is not built until one transport has
-  actually failed.
 - **The Phase 3.7 `DataTable` swap.** This spec produces evidence for it and
   does not perform it.
 
+## Deferred, with the research intact
+
+Everything below was designed and partly verified on 2026-09-03 and then cut, on
+the user's decision, to keep this phase a website. **None of it should be
+re-derived.** It is a phase of its own, best opened once the season has run long
+enough to say how much the snapshots and alerts are actually missed.
+
+### Alerting — the design that was cut
+
+**Want:** be told on the phone when a starter is ruled out or a lineup is left
+unset, without having to remember to look.
+
+**Verified 2026-09-03 against the live Sleeper payload**, not assumed: the
+roster object returned by `load_league_rosters()` carries `starters` (10 ids)
+alongside `players` (15). Nothing in the codebase reads it —
+`roster_player_ids()` takes `players`. **The tool has never known what was
+actually submitted, and the data to know it has been arriving all along.**
+
+**Design principle: silent unless actionable.** An alert that arrives on every
+run regardless of content stops being read, and then the week it matters it is
+dismissed with the rest.
+
+**Triggers.** (1) A submitted starter is OUT, DOUBTFUL, or not practising. (2)
+The submitted lineup differs from `optimal_lineup()` by more than
+`close_call_points` — an existing tunable already deciding whether a gap is
+worth mentioning, so no invented number (non-negotiable #8). A raw diff would
+fire every week, since optimal-per-projection never equals a human's choices.
+
+**Deduplication is mandatory, not a refinement.** Repeated runs against one
+unresolved problem produce identical notifications, which is the same fatigue by
+another route. Hash the rendered alert text, store the digest under `.cache/`,
+skip when unchanged. Roughly five lines. It also removes the need for any
+mid-week-noise knob: a lineup wrong on Wednesday alerts once and then stays
+quiet.
+
+**Transport: Discord webhook.** `requests.post(url, json={"content": text})`,
+URL in `.env`, never committed. Chosen over ntfy.sh because ntfy topics are
+public in both directions and keep no history; over email because a Discord push
+lands on a phone through an app the user already runs. The target channel must
+be set to *All Messages* or Discord batches it and a late-breaking scratch
+arrives too late to act on. Keep the transport as one `notify(text)` function so
+swapping it is a function body.
+
+**Sleeper only.** Yahoo has no API and therefore no `starters`.
+
+### The TTL defect — measured, unfixed, and blocking any alerting
+
+**Neither `load_players` nor `load_nfl_injuries` passes `ttl_seconds`, so both
+take `fetch_json`'s 86,400s default.** Verified live: `sleeper_players.json` on
+disk was from the previous evening and was served from cache on two consecutive
+runs.
+
+**Any frequent sweep would therefore re-read yesterday's injury picture and
+alert on none of it, while every test passed and every run looked healthy.** The
+alert path must pass a short `ttl_seconds`; the default stays for every other
+caller, since the draft board has no reason to refetch a 14.6 MB file hourly.
+
+**Unresolved and blocking:** which source actually carries a Sunday-morning
+ruling. nflverse's file is the official *weekly* injury report — practice
+participation and Out/Doubtful/Questionable, published Wednesday to Friday.
+Gameday inactives at 90 minutes are a different feed. If that reading is right,
+Sleeper's `injury_status` via `load_players` is the one that moves, making that
+loader's TTL the most load-bearing number in the alerting design. **Not
+verified. Settle before building trigger 1.**
+
+### Timing — what the schedule has to respect
+
+Inactives are released **90 minutes before each kickoff**, and Sleeper locks
+players individually at their own game time. So the 1pm and 4pm slates have
+separate windows, and one run cannot serve both.
+
+**Do not enumerate slates.** A five-entry list (TNF / 1pm / 4pm / SNF / MNF)
+silently omits the 09:30 London games, the Saturday slates in weeks 16–18, and
+the holiday games — and kickoff times appear in no payload this project fetches,
+so the list could never be validated. An hourly sweep across a wide daily window
+covers every kickoff the league can invent, is one config entry instead of five,
+and is affordable **only** because of deduplication.
+
+**Cost is not the constraint.** Measured: ~0.24s CPU per run, ~5–7 CPU-seconds
+per day for thirteen runs, ~123 MB peak RSS that exits with the process, and
+20–30 MB/day of network. Negligible.
+
+### The snapshot write must be separated from any sweep
+
+An earlier draft had every scheduled run write the snapshot. **That is the same
+defect this spec rejects for the web surface**: with `INSERT OR REPLACE`, a
+later run overwrites an earlier row with post-kickoff state for players whose
+games have started — silently, and the row still reads as healthy. Any future
+design must have exactly one writing run per week, before the first kickoff.
+
+**Residual, stated and not quantified:** a Thursday-night or Monday-night
+starter recorded at a Sunday-morning write is recorded after his game or before
+it. `proj_pts` most likely survives, since weekly projections are static;
+`status` most likely does not. Unobserved, and **must not be written up as a
+finding until a week has been watched.** The clean fix is `taken_at` in the
+primary key so nothing overwrites — a change to what a row means, in the one
+stateful module in the package.
+
+### Where a scheduled job could run — four candidates, none chosen
+
+**`launchd` on the Mac.** Ten lines of XML. **Rejected for this phase on the
+user's explicit objection to unattended jobs on a project he may forget**, and
+the objection is technically sound: launchd writes output nowhere unless
+configured to, so a moved venv or changed endpoint fails weekly in silence.
+
+**And it would not work reliably anyway.** The machine is a MacBook Pro 14-inch
+(`Mac14,9`, 2023) with `sleep 1`, `standby 1`, `powernap 1` on AC. **A sleeping
+Mac does not run launchd calendar jobs on schedule** — they are deferred and
+*coalesced*, firing once on wake rather than once per missed slot. Power Nap
+covers Apple's own services, not user LaunchAgents; being on AC does not prevent
+sleep; a closed lid sleeps regardless outside clamshell mode. `caffeinate -s`
+during game windows or `pmset repeat wakeorpoweron` (one repeating event only,
+so one guaranteed wake per day) are the mitigations. *Documented behaviour, not
+measured here.*
+
+**GitHub Actions, committing `season.db` to the repo.** Free for public repos,
+needs no secrets since Sleeper is unauthenticated, and runs whether or not the
+Mac is awake. Three problems, all real:
+
+1. **The repo is public.** Snapshot rows carry `proj_pts` — Rotowire's weekly
+   projection with league scoring applied. Derived rather than raw, so arguably
+   outside the letter of non-negotiable #5, but squarely inside its spirit. The
+   rows are also the user's own roster and start/sit decisions, published where
+   leaguemates can read them, in a repo that has already had one redaction
+   incident. **A private repo or private gist holding only `season.db` removes
+   this problem entirely**, at the cost of a second repo.
+2. **Scheduled Actions run late.** Delays of 10–30 minutes are normal under
+   load and runs are sometimes skipped. Fatal for a pre-kickoff snapshot;
+   tolerable for a weekly record.
+3. **Actions auto-disables scheduled workflows after 60 days of repo
+   inactivity** — which relocates the forgotten-project failure rather than
+   solving it. In its favour, GitHub emails on workflow failure, so it is less
+   silent than launchd.
+
+**An always-on host (~$3–5/mo).** Removes the sleep question entirely. This —
+not the website — is what the money would actually buy, and it is the strongest
+argument for paying that exists in this project.
+
+**Doing nothing scheduled at all.** What this phase chooses. The status strip
+nudges; the user runs the command.
+
 ## Open questions
 
-1. **Should `taken_at` join the snapshot primary key,** so multiple looks per
-   week are kept rather than overwritten? It would make the Thursday run
-   meaningful on its own terms and would let a Sunday-morning look be compared
-   against a Thursday one. It also changes what a row means and touches
-   `store.py`. **Not decided; not needed for anything in this spec.**
+1. **Should `taken_at` join the snapshot primary key?** Not needed by anything
+   in this phase. Becomes load-bearing the moment more than one run per week
+   writes.
 2. **Which RSS feeds, exactly.** URLs to be verified at build time.
-3. **Whether the status strip should also surface `preflight`'s other checks.**
-   The strip carries two of them; `preflight` carries more. Deliberately left
-   until the strip has been lived with.
-4. **Which source carries a Sunday-morning ruling** -- nflverse's weekly injury
-   report is published Wednesday to Friday, so Sleeper's `injury_status` is the
-   likely answer, making `load_players`' TTL the design's most load-bearing
-   number. **Unverified. Settle before building trigger 1.** (The TTL question
-   itself is now measured and answered; see Freshness.)
-5. **Whether the 08:00–20:00 sweep window is right.** It covers every current
-   NFL kickoff including 09:30 London games and 20:20 Sunday night. Widen only
-   on an observed miss, never pre-emptively.
-6. **Whether the TNF/MNF snapshot residual is real.** Requires watching one
-   week with a Thursday or Monday starter and comparing the recorded row
-   against what was true pre-kickoff. Until then it is a stated risk, not a
-   measurement, and must not be quoted as one.
+3. **Whether the status strip should surface `preflight`'s other checks.** The
+   strip carries two; `preflight` carries more. Left until the strip has been
+   lived with.
+4. **Which injury source carries a Sunday-morning ruling.** See the TTL section.
+   Blocks alerting, blocks nothing here.
