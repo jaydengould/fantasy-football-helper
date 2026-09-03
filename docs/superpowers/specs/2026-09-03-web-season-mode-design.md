@@ -233,7 +233,10 @@ No warning, no error, and the row still looks healthy.
 
 So: **the scheduled job owns the write; the web surface is read and compute
 only.** `build_lineup` does not touch the database; `cli.py`'s `_lineup` keeps
-its `_record_snapshot` call.
+its `_record_snapshot` call, now behind a `--no-snapshot` flag so the hourly
+alert sweep can run the same command without writing. **The flag suppresses;
+it does not enable** — the default stays "write", so a forgotten flag costs a
+redundant write rather than a missing week.
 
 A pleasant consequence: apart from the status strip read below, the web app is
 stateless.
@@ -278,40 +281,70 @@ never a silently empty box — the same rule as non-negotiable #3 and #7.
 
 ## Scheduling the snapshot
 
-`launchd` plists with `StartCalendarInterval`:
+**Two `launchd` jobs with different responsibilities.** This separation is the
+correction that came out of design; the reasoning is below and it matters more
+than the times.
 
-| Run | Time (ET) | Purpose |
-| --- | --- | --- |
-| Thursday | 19:00 | Redundancy |
-| Sunday | 10:00, 10:30, 11:00, 11:30, 12:00, 12:30, 12:45 | Alerting; last write is the record |
+| Job | Schedule (ET) | Writes snapshot? | Purpose |
+| --- | --- | --- | --- |
+| Alert sweep | Hourly, 08:00–20:00, daily | **No** (`--no-snapshot`) | Catch an inactive or an unset lineup |
+| Snapshot | Sunday 11:45 | **Yes** | The week's record |
 
-**Why the Sunday window rather than one run.** The original design set a single
-run at 11:30. That is wrong for two reasons found during the alerting
-discussion. First, **official inactives are released 90 minutes before
-kickoff — 11:30 ET for the 1pm slate** — so a run at 11:30 races the release it
-exists to catch. Second, a scratch announced at 12:15 is exactly the event the
-user asked to be told about, and a single earlier run cannot see it.
+### Why hourly and daily, rather than one run per slate
 
-Repeated runs are affordable **only because alerts are silent when clean** (see
-Alerting). Without that property this window would be six notifications a
-Sunday and the feature would be dead inside a month.
+The obvious design is one run before each slate — Thursday evening, Sunday
+11:45, Sunday 15:00, Sunday evening, Monday evening. It was rejected.
 
-Repeated runs also make the snapshot *better*, not worse: `INSERT OR REPLACE`
-means the last write before kickoff wins, and the documented semantics are
-already "the LAST look taken before kickoff". The 12:45 run is a closer record
-than 11:30 would have been.
+**Enumerating slates is the failure mode `CLAUDE.md` names**: "guarding the path
+the last defect took, and missing its siblings." A slate list silently omits the
+09:30 London games, the Saturday slates in weeks 16–18, and the Thanksgiving and
+Christmas games — and those are the weeks a surprise inactive costs most.
+Kickoff times are not in any payload this project fetches, so a static list
+cannot be validated against reality and would drift without anyone noticing.
 
-**The Thursday run is redundancy, not Thursday fidelity.** This correction was
-made during design, after the schedule was chosen. Because the primary key is
-`(league, season, week, player_id)` and the write is `INSERT OR REPLACE`,
-Sunday's run overwrites Thursday's rows entirely, including the TNF starter's
-pre-game state. What Thursday actually buys is a record surviving a failed
-Sunday run — Mac asleep, network down, API flaking — instead of nothing. That is
-worth the second plist on its own terms.
+An hourly sweep covers every kickoff the league can schedule without predicting
+any of them, and it is **one** plist rather than five that fall out of date.
 
-Capturing genuine Thursday-evening state requires adding `taken_at` to the
-primary key, which changes what a row means. It is an open question below, not a
-silent change to the one stateful module in the package.
+**It is affordable only because of deduplication** (see Alerting). Thirteen runs
+a day produce thirteen notifications a *season*, not a day. Without the digest
+this schedule would be indefensible.
+
+Two consequences worth having:
+
+- **Mid-week early warning.** A starter ruled out on Wednesday reaches the user
+  on Wednesday, while there is still a waiver window — rather than at 11:45 on
+  Sunday when the pool has been picked over.
+- **No new knob for mid-week noise.** Trigger 2 ("lineup is not optimal") would
+  otherwise fire every hour from Tuesday. It does not: the digest is unchanged
+  all week, so it alerts once and then stays silent until something actually
+  changes. That is also the correct behaviour — a lineup that is wrong on
+  Wednesday is worth knowing about on Wednesday.
+
+### Why the snapshot write is a separate job
+
+An earlier draft of this spec had every scheduled run write the snapshot. **That
+was the same defect this document rejects for the web surface, reintroduced two
+sections later.** With `INSERT OR REPLACE` on
+`(league, season, week, player_id)`, a 15:00 run overwrites the 11:45 row with
+post-kickoff state for every 1pm player — silently, and the row still reads as
+healthy.
+
+So the sweep never writes, and exactly one run per week does. **Sunday 11:45 is
+before every Sunday kickoff**, which makes it a valid "last look before kickoff"
+for the whole slate, matching `store.py`'s documented semantics without changing
+them.
+
+**The residual, stated rather than hidden:** a Thursday-night or Monday-night
+starter is recorded at Sunday 11:45 — after his game for TNF, before it for MNF.
+`proj_pts` most likely survives, since weekly projections are static; `status`
+most likely does not. **This is unquantified.** It has not been observed, it
+cannot be observed without watching a week, and it must not be written up as a
+finding until it has been. It affects at most one or two players in a week.
+
+The clean fix is open question 1 — `taken_at` in the primary key, so every run
+writes and nothing overwrites. Deliberately not taken now: it changes what a row
+means in the one stateful module in the package, and the patch above is correct
+for every Sunday player, which is nearly all of them.
 
 **Machine availability.** `launchd` runs a missed calendar job when the machine
 wakes, but a wake after kickoff produces a post-hoc record with no value.
@@ -355,7 +388,7 @@ fires every week and rebuilds the fatigue problem through the back door.
 
 ### Deduplication — required, not a refinement
 
-Seven Sunday runs against one unresolved problem is seven identical
+Thirteen sweeps a day against one unresolved problem is thirteen identical
 notifications. That is the same alert fatigue arriving by a different route, and
 it would have shipped unnoticed.
 
@@ -385,7 +418,7 @@ scratch late, which for this purpose is identical to not delivering it.
 ### Freshness
 
 The alert is only as good as the data behind it. `load_league_rosters` already
-caches for 300s, which is right for a 30-minute cadence. **The injury and
+caches for 300s, which is right for an hourly cadence. **The injury and
 practice loaders' TTLs have not been checked against this cadence** — if either
 is cached for an hour, a Sunday-morning ruling is invisible until after
 kickoff and the feature silently does nothing. `load_weekly_actuals`'s docstring
@@ -414,8 +447,8 @@ started. `yahoo-main` gets no alerts, and the spec does not pretend otherwise.
 
 Each step is independently shippable and independently useful.
 
-1. **`launchd` snapshot job.** Closes TODO item 2. No app changes. Thursday
-   plus the Sunday window; no alerting yet, so it is silent by construction.
+1. **`launchd` snapshot job** at Sunday 11:45, plus `--no-snapshot`. Closes
+   TODO item 2. No app changes, no alerting yet, silent by construction.
 2. **Alerting.** `roster_starter_ids()`, the threshold predicate, `notify.py`,
    the dedupe digest. Rides on step 1's job and needs none of the web work —
    which is why it comes second rather than last, despite being specified late.
@@ -468,7 +501,7 @@ enumerated rather than left to judgement.
   `False`, logs, and does not raise. The snapshot write must still happen. No
   test may reach Discord — the transport takes an injectable poster, the same
   convention as `fetcher`.
-- **The injury and practice TTLs must be confirmed against the 30-minute
+- **The injury and practice TTLs must be confirmed against the hourly
   cadence** and the finding written down. If a loader caches for an hour, the
   alert cannot see a Sunday-morning ruling, and every test above still passes.
 - **Mutations** for the threshold comparison and the dedupe predicate.
@@ -509,7 +542,10 @@ enumerated rather than left to judgement.
 4. **What the injury and practice loader TTLs actually are**, and whether the
    alert path needs shorter ones. Listed as an open question rather than
    answered from memory. See Testing.
-5. **Whether the Sunday window should extend to the late slate** (4:05/4:25 ET
-   kickoffs). The current window covers the 1pm games only. Left until one
-   Sunday has been observed, because the answer depends on how many of the
-   user's starters play late — a fact about this roster, not about the design.
+5. **Whether the 08:00–20:00 sweep window is right.** It covers every current
+   NFL kickoff including 09:30 London games and 20:20 Sunday night. Widen only
+   on an observed miss, never pre-emptively.
+6. **Whether the TNF/MNF snapshot residual is real.** Requires watching one
+   week with a Thursday or Monday starter and comparing the recorded row
+   against what was true pre-kickoff. Until then it is a stated risk, not a
+   measurement, and must not be quoted as one.
