@@ -581,3 +581,38 @@ def test_load_trending_skips_rows_with_no_player_id(tmp_path):
     body = '[{"count": 5}, {"player_id": "8800", "count": 12}]'
     got = load_trending("add", cache_dir=tmp_path, fetcher=lambda url: body)
     assert got == {"8800": 12}
+
+
+def test_sleeper_settings_carry_the_playoff_calendar(tmp_path):
+    """The horizon end is a league RULE and must be read, not assumed. Same
+    class as the one-RB-slot and FAAB errors, both of which came from taking an
+    API default as fact."""
+    payload = {
+        "total_rosters": 12,
+        "scoring_settings": {"rec": 1.0},
+        "roster_positions": ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX",
+                             "K", "DEF", "BN", "BN", "BN", "BN", "BN"],
+        "draft_id": "123",
+        "settings": {"playoff_week_start": 15, "playoff_teams": 6,
+                     "playoff_round_type": 0, "trade_deadline": 11},
+    }
+    from ffhelper.data import load_sleeper_settings
+
+    st = load_sleeper_settings(
+        "L1", cache_dir=tmp_path, fetcher=lambda url: json.dumps(payload))
+    assert st.playoff_week_start == 15
+    assert st.playoff_teams == 6
+    assert st.playoff_round_type == 0
+    assert st.trade_deadline == 11
+
+
+def test_sleeper_settings_playoff_fields_are_none_when_absent(tmp_path):
+    """A payload without a settings block must yield None, not 0 -- 0 would
+    read as 'playoffs start week 0' and produce a nonsense horizon."""
+    from ffhelper.data import load_sleeper_settings
+
+    payload = {"total_rosters": 12, "scoring_settings": {}, "roster_positions": ["QB"]}
+    st = load_sleeper_settings(
+        "L1", cache_dir=tmp_path, fetcher=lambda url: json.dumps(payload))
+    assert st.playoff_week_start is None
+    assert st.playoff_teams is None

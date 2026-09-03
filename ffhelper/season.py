@@ -6,10 +6,10 @@ fetch, the design is wrong -- put the loader in `data.py`.
 """
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from math import sqrt
+from math import ceil, log2, sqrt
 from statistics import fmean
 
-from ffhelper.data import Player, score_stats
+from ffhelper.data import LeagueSettings, Player, score_stats
 from ffhelper.value import FLEX_ELIGIBLE, lineup_value, optimal_lineup
 
 
@@ -42,6 +42,35 @@ def roster_player_ids(rosters: list[dict], roster_id: int) -> list[str]:
 # The 2026 regular season. Week 18 is the last one a fantasy roster can score
 # in; playoffs are league-configured and this tool does not model them.
 LAST_REGULAR_WEEK = 18
+
+
+def last_scoring_week(settings: LeagueSettings) -> tuple[int, str | None]:
+    """The last week this league actually scores, and a note if it was guessed.
+
+    LAST_REGULAR_WEEK is the NFL's last week, not the league's. With playoffs
+    starting week 15 and six teams (a three-round bracket) the fantasy season
+    ends at week 17 -- week 18 is played by nobody and contributes to no
+    outcome, so summing it pads every rest-of-season total by a week that
+    cannot be won. Measured on the real league 2026-09-02.
+
+    Returns the constant plus a NOTE rather than a confident wrong week when
+    the payload cannot answer: absent playoff fields (Yahoo hand-entered
+    settings), or multi-week rounds, which this tool does not model.
+
+    playoff_round_type None is read as 0 (one week per round), which is the
+    only shape hand-entered settings can mean.
+    """
+    start, teams = settings.playoff_week_start, settings.playoff_teams
+    if not start or not teams or teams < 2:
+        return LAST_REGULAR_WEEK, (
+            f"league playoff settings are absent, so the horizon runs to week "
+            f"{LAST_REGULAR_WEEK} and may include weeks nobody plays")
+    if settings.playoff_round_type not in (None, 0):
+        return LAST_REGULAR_WEEK, (
+            f"playoff_round_type {settings.playoff_round_type} means multi-week "
+            f"rounds, which this tool does not model -- the horizon runs to week "
+            f"{LAST_REGULAR_WEEK}")
+    return start + ceil(log2(teams)) - 1, None
 
 
 def free_agent_pool(

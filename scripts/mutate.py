@@ -576,6 +576,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("a contradictory draft picks the first roster_id instead of refusing",
          "return found.pop() if len(found) == 1 else None",
          "return found.pop() if found else None"),
+        ("the bracket length is ignored, so the horizon ends on the first playoff week",
+         "return start + ceil(log2(teams)) - 1, None",
+         "return start, None"),
     ],
 
 }

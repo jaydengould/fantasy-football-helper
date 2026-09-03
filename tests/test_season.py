@@ -821,3 +821,54 @@ def test_waiver_targets_returns_empty_when_nothing_clears_and_that_is_a_result()
     weekly = {w: {**_WK, "0001": 1.0} for w in range(1, 19)}
     assert season.waiver_targets(roster, pool, _waiver_slots(), weekly,
                                  close_call_points=3.0) == []
+
+
+def _settings(**kw):
+    """A LeagueSettings with the real sleeper-main shape, overridable per test."""
+    from ffhelper.data import LeagueSettings
+    base = dict(
+        num_teams=12,
+        scoring={"rec": 1.0, "rec_yd": 0.1, "rec_td": 6.0},
+        roster_slots={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1},
+        rounds=15,
+        playoff_week_start=15,
+        playoff_teams=6,
+        playoff_round_type=0,
+    )
+    base.update(kw)
+    return LeagueSettings(**base)
+
+
+def test_last_scoring_week_is_the_final_playoff_week_not_week_18():
+    """6 teams is a 3-round bracket, so 15 -> 17. Week 18 is played by nobody
+    and contributes to no fantasy outcome; summing it silently pads every
+    rest-of-season total with a week that cannot be won."""
+    week, note = season.last_scoring_week(_settings())
+    assert week == 17
+    assert note is None
+
+
+def test_last_scoring_week_handles_a_four_team_bracket():
+    """ceil(log2(4)) = 2 rounds, so 15 -> 16. The arithmetic must follow the
+    bracket, not a constant offset."""
+    week, note = season.last_scoring_week(_settings(playoff_teams=4))
+    assert week == 16
+    assert note is None
+
+
+def test_last_scoring_week_refuses_multi_week_rounds_and_says_so():
+    """playoff_round_type != 0 means a round spans two weeks, which this tool
+    does not model. Fall back to the constant and NAME the reason -- computing
+    a confident wrong last week is the fabrication this project forbids."""
+    week, note = season.last_scoring_week(_settings(playoff_round_type=1))
+    assert week == season.LAST_REGULAR_WEEK
+    assert note is not None and "round" in note
+
+
+def test_last_scoring_week_falls_back_when_the_league_serves_no_playoff_fields():
+    """Yahoo's hand-entered settings carry no playoff block at all. Degrade to
+    the constant with a note, never to a guessed bracket."""
+    week, note = season.last_scoring_week(
+        _settings(playoff_week_start=None, playoff_teams=None, playoff_round_type=None))
+    assert week == season.LAST_REGULAR_WEEK
+    assert note is not None
