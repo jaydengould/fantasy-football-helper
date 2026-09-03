@@ -111,13 +111,19 @@ API is free and was offered as the only real substitute; the user declined it.
 
 ### `ffhelper/app.py` — restructured
 
-Multi-page via `dcc.Location` and a single callback switching layout on
-pathname. League rides in the query string (`?league=sleeper-main`) so every
-page is linkable and the picker rewrites the URL rather than holding state.
+**Corrected 2026-09-03 while writing the plan.** An earlier draft of this
+section specified a hand-rolled `dcc.Location` router and rejected
+`dash.use_pages` for imposing a `pages/` directory convention. **`app.py`
+already uses `use_pages`** — `dash.Dash(__name__, use_pages=True,
+pages_folder="")` with a programmatic `dash.register_page("board", path="/",
+layout=...)`. The empty `pages_folder` is exactly what avoids the directory
+convention, so the objection was to a problem the codebase had already solved.
 
-**Hand-rolled, roughly twenty lines — not `dash.use_pages`.** `use_pages`
-imposes a `pages/` directory convention and app-level configuration to solve a
-problem five routes do not have.
+Adding a route is therefore one more `register_page` call, which is less code
+than the router that was specified to avoid it. **Reuse the existing pattern.**
+
+League rides in the query string (`?league=sleeper-main`) so every page is
+linkable and the picker rewrites the URL rather than holding state.
 
 The app is constructed at import time, with league selection coming from the URL
 rather than `argv`.
@@ -157,6 +163,24 @@ No warning, no error, and the row still looks healthy.
 So `build_lineup` does not touch the database. `cli.py`'s `_lineup` keeps its
 `_record_snapshot` call unchanged, and the snapshot remains something a human
 causes by running the command.
+
+### `/trades` computes on a button, not on page load
+
+`_trades` carries a `ponytail:` comment recording a measured **~330 second**
+full sweep — eleven opponents times three shapes, because the 2-for-1 search
+explores the counterparty's forced cut. The comment records that pruning was
+rejected after it was measured dropping 22 of 49 real trades.
+
+Five and a half minutes is survivable for a command a human deliberately runs.
+**It is not survivable as a page render**: the browser gives up, a proxy would
+give up sooner, and merely navigating to `/trades` by accident costs the full
+sweep. Nothing in this phase makes it faster, and speeding it up is not this
+phase's job.
+
+So `/trades` renders **a button and the caveat text**, not results. The search
+runs on click, wrapped in `dcc.Loading`, and the page states the expected wait
+before you commit to it. `/lineup` and `/waivers` render on load — measured at
+0.49s warm, 4.57s cold, which is a page.
 
 ### Season pages use `html.Table`, not `DataTable`
 
