@@ -1534,49 +1534,19 @@ def _resolve_my_roster(
 
 def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
     """Print this week's optimal lineup. One shot -- no loop, no polling."""
-    settings = resolve_settings(league)
-    week, season_str, notes, state_week = _resolve_week(week)
-    if week is None:
-        # Neither the endpoint nor --week can supply a week -- guessing one (the
-        # old `or 1` fallback) is exactly the fabrication this design forbids.
-        print("no NFL week available: /state/nfl is unreachable and --week "
-              "was not given -- pass e.g. '--week 1' to run without it")
+    from ffhelper.pipeline import build_lineup      # local: pipeline imports cli
+    view = build_lineup(league, tunables, week)
+    if view.error:
+        print(view.error)
         return 1
-
-    players = load_players()
-    # Kept, not discarded after scoring: the same rows carry `opponent`, which
-    # is the whole schedule this command needs -- no schedule endpoint, no
-    # second fetch.
-    weekly_rows = load_weekly_projections(season_str, week)
-    weekly = season_mod.weekly_points(weekly_rows, settings.scoring)
-
-    roster, owner, notes_r, rosters, rid = _resolve_my_roster(league, settings, players)
-    notes += notes_r
-
-    # Practice status is the one thing Sleeper's player DB does not carry (zero
-    # of 3231 players), so it comes from nflverse and joins on gsis_id through
-    # the crosswalk already fetched. It fills the EXISTING field, which is why
-    # nothing downstream -- the status note, the snapshot -- needed changing.
-    practice, practice_line = _practice_status(season_str, week)
-    roster = season_mod.with_practice_status(roster, practice)
-
-    # Players with no projection are NOT a "!!" note: see render_lineup. They get
-    # their own quiet section, because a stash can carry no number for months.
-    scored = season_mod.with_weekly_points(roster, weekly)
-    state_ss = season_mod.start_sit(scored, settings.roster_slots,
-                                    tunables.close_call_points,
-                                    projected_ids=set(weekly))
-    matchups, matchup_line = _matchup_context(
-        season_str, week, players, settings.scoring,
-        season_mod.opponents(weekly_rows), roster)
-    print(render_lineup(state_ss, week, league.name, owner, notes, matchups))
-    print(matchup_line)
-    print(practice_line)
+    print(render_lineup(view.state, view.week, view.league_name, view.owner,
+                        view.notes, view.matchups))
+    print(view.matchup_line)
+    print(view.practice_line)
     # After the lineup, not inside `notes`: notes render as "!!" alarms, and a
-    # snapshot that worked is not an alarm. Same reason the unprojected players
-    # got their own quiet section in 4a rather than crying wolf every week.
-    print(_record_snapshot(league, season_str, week, state_week,
-                           state_ss, set(weekly)))
+    # snapshot that worked is not an alarm.
+    print(_record_snapshot(league, view.season_str, view.week, view.state_week,
+                           view.state, view.projected_ids))
     return 0
 
 
