@@ -888,3 +888,80 @@ def test_flex_filter_composes_with_search():
             {"player": "Wan'Dale Robinson", "pos": "WR"},
             {"player": "Jordan Love", "pos": "QB"}]
     assert len(filter_rows(rows, "FLEX", "robin")) == 2
+
+
+# --- five routes, the league carried in the query string ---
+
+import pytest
+from ffhelper.app import league_from_search
+
+
+@pytest.mark.parametrize("search,expected", [
+    ("?league=yahoo-main", "yahoo-main"),
+    ("?league=sleeper-main&x=1", "sleeper-main"),
+    ("", "sleeper-main"),
+    ("?league=", "sleeper-main"),
+    ("?league=not-a-league", "sleeper-main"),
+])
+def test_league_from_search(search, expected):
+    """An unknown or absent league falls back to the default, never raises.
+
+    The query string is user-editable, so a typo must not 500 the page. It
+    falls back rather than guessing at a near-match: a silently wrong league
+    would advise on someone else's team.
+    """
+    names = ["sleeper-main", "yahoo-main"]
+    assert league_from_search(search, names, "sleeper-main") == expected
+
+
+def test_build_app_registers_all_five_routes_and_keeps_the_board_key():
+    # test_build_app_actually_constructs_and_carries_the_interval (above) reads
+    # dash.page_registry["board"] -- renaming that key when the path moved to
+    # /draft would break it silently for anyone who greps for "board" instead
+    # of "/draft".
+    import dash
+    app.build_app(["a", "b"], "a", poll_ms=1000)
+    paths = {mod: page["path"] for mod, page in dash.page_registry.items()
+             if mod in {"board", "home", "lineup", "waivers", "trades"}}
+    assert paths == {
+        "board": "/draft", "home": "/", "lineup": "/lineup",
+        "waivers": "/waivers", "trades": "/trades",
+    }
+
+
+def test_season_page_layout_resolves_the_league_from_the_url_not_the_default():
+    # Dash calls a registered page's layout with the query string ALREADY
+    # parsed into kwargs (e.g. league="b"), not the raw "?league=b" string.
+    # league_from_kwargs re-encodes that back into a query string before
+    # handing it to league_from_search -- without it, every season page would
+    # silently ignore ?league= and always show the default league, which would
+    # defeat the entire point of carrying the league in the URL.
+    import dash
+    app.build_app(["a", "b"], "a", poll_ms=1000)
+    layout = dash.page_registry["lineup"]["layout"]
+    rendered = layout(league="b")
+    links = rendered.children.children
+    waivers_link = next(link for link in links if link.children == "WAIVERS")
+    assert waivers_link.href == "/waivers?league=b"
+
+
+def test_draft_page_shows_the_local_only_notice():
+    # main() already prints this to the terminal at startup, where nobody
+    # looking at the browser sees it -- the page itself has to say it too.
+    import dash
+    app.build_app(["a", "b"], "a", poll_ms=1000)
+    layout = dash.page_registry["board"]["layout"]
+    texts = []
+
+    def walk(node):
+        children = getattr(node, "children", None)
+        if isinstance(children, str):
+            texts.append(children)
+        elif isinstance(children, list):
+            for child in children:
+                walk(child)
+        elif children is not None:
+            walk(children)
+
+    walk(layout)
+    assert app.DRAFT_NOTICE in texts

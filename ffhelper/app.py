@@ -14,6 +14,7 @@ import argparse
 import logging
 import sys
 import time
+from urllib.parse import parse_qs, urlencode
 
 import dash
 from dash import Input, Output, dash_table, dcc, html
@@ -345,12 +346,81 @@ def apply_undo(log_path) -> str:
     return "undone"
 
 
+ROUTES = [("/", "home"), ("/draft", "draft"), ("/lineup", "lineup"),
+          ("/waivers", "waivers"), ("/trades", "trades")]
+
+
+def league_from_search(search: str, names: list[str], default: str) -> str:
+    """The league named in `?league=`, or the default.
+
+    Falls back rather than raising: the query string is user-editable and a
+    typo must not 500 the page. Falls back rather than fuzzy-matching, too --
+    silently advising on the wrong league is the failure this refuses.
+    """
+    got = parse_qs((search or "").lstrip("?")).get("league", [""])[0]
+    return got if got in names else default
+
+
+def league_from_kwargs(kw: dict, names: list[str], default: str) -> str:
+    """`league_from_search`, wired for how Dash actually calls a page layout.
+
+    A registered page's layout callable is invoked with the URL's query
+    parameters already parsed into individual kwargs (e.g. `league="x"`), not
+    with the raw "?league=x" string -- so passing `kw.get("league", "")`
+    straight into `league_from_search` would feed it a bare value with no "="
+    in it, which `parse_qs` silently turns into nothing and every page would
+    read as the default league regardless of the URL. Re-encoding `kw` back
+    into a query string keeps `league_from_search` as the one place the
+    fallback rule lives, instead of a second copy of it here.
+    """
+    return league_from_search("?" + urlencode(kw), names, default)
+
+
+def nav(active: str, league: str) -> html.Div:
+    """The same five links on every page, with the league carried across."""
+    return html.Div([
+        dcc.Link(label.upper(), href=f"{path}?league={league}",
+                 style={"marginRight": "18px",
+                        "fontWeight": "700" if label == active else "400"})
+        for path, label in ROUTES
+    ], style={"padding": "12px 0"})
+
+
+def home_layout(league: str, league_names: list[str]) -> html.Div:
+    """Stub -- Task 5 fills this in. Nav only, so the route is real today."""
+    return html.Div(nav("home", league))
+
+
+def _season_layout_for(name: str, league_names: list[str], default_league: str):
+    """Stub layout factory for /lineup, /waivers, /trades -- Tasks 6-9 fill these in.
+
+    Returns the Dash page-layout callable itself (not the layout), since
+    `register_page` needs a function it can call once per request with that
+    request's query kwargs -- a plain `html.Div(...)` built here would freeze
+    the league at registration time and never see `?league=` changes.
+    """
+    def layout(**kw) -> html.Div:
+        league = league_from_kwargs(kw, league_names, default_league)
+        return html.Div(nav(name, league))
+    return layout
+
+
 def build_app(league_names: list[str], default_league: str,
               poll_ms: int = 5000) -> dash.Dash:
     app = dash.Dash(__name__, use_pages=True, pages_folder="")
+    # Key stays "board" -- only the path moves to /draft. tests/test_app.py
+    # reads dash.page_registry["board"], and the registry key is internal;
+    # the path is the user-visible thing this task actually changes.
     dash.register_page(
-        "board", path="/",
+        "board", path="/draft",
         layout=_layout(league_names, default_league, poll_ms))
+    dash.register_page("home", path="/", layout=lambda **kw: home_layout(
+        league_from_kwargs(kw, league_names, default_league), league_names))
+    for path, name in [("/lineup", "lineup"), ("/waivers", "waivers"),
+                       ("/trades", "trades")]:
+        dash.register_page(
+            name, path=path,
+            layout=_season_layout_for(name, league_names, default_league))
     app.layout = html.Div([dash.page_container])
     return app
 
@@ -400,9 +470,25 @@ _TABLE_HEADER = {
 
 _NUMERIC_COLUMNS = ("rank", "vona", "vbd", "marg", "tier", "surv", "div")
 
+# The journal file IS the database (see the module docstring), which is what
+# makes the CLI-takeover fallback work at all -- and exactly why this page is
+# not hosted: two processes writing the same local disk only stays sound
+# because there is only ever one browser tab open on it. main() already prints
+# this to the terminal, where nobody looking at the browser sees it.
+DRAFT_NOTICE = ("LOCAL ONLY -- one process at a time. Do NOT run "
+                "`ffhelper.cli run` for this league while this page is open: "
+                "the CLI replays the journal once at ITS startup, so it would "
+                "quietly show a stale board.")
+
 
 def _layout(league_names: list[str], default_league: str, poll_ms: int = 5000):
     return html.Div(id="page", className="page", children=[
+        nav("draft", default_league),
+        html.Div(DRAFT_NOTICE, style={
+            "fontFamily": _SANS, "fontSize": "13px", "fontWeight": "600",
+            "color": "#ef4444", "border": "1px solid #ef4444",
+            "borderRadius": "6px", "padding": "10px 14px", "margin": "0 0 12px",
+        }),
         # DOM order IS the grid order: brand, clock, league. The clock sits in
         # the centre track, which is where the eye goes first on the clock.
         html.Header(className="topbar", children=[
