@@ -417,14 +417,35 @@ scratch late, which for this purpose is identical to not delivering it.
 
 ### Freshness
 
-The alert is only as good as the data behind it. `load_league_rosters` already
-caches for 300s, which is right for an hourly cadence. **The injury and
-practice loaders' TTLs have not been checked against this cadence** — if either
-is cached for an hour, a Sunday-morning ruling is invisible until after
-kickoff and the feature silently does nothing. `load_weekly_actuals`'s docstring
-already establishes the pattern of passing a shorter `ttl_seconds` on live-game
-paths. Resolving this is an implementation task, and it is listed in Testing
-because a wrong answer here fails silently and looks healthy.
+**Measured 2026-09-03, and the answer is a defect.** Neither `load_players` nor
+`load_nfl_injuries` passes `ttl_seconds`, so both take `fetch_json`'s 86,400s
+default. Verified against a live run: `sleeper_players.json` on disk was from
+the previous evening and was served from cache on two consecutive runs.
+
+**An hourly sweep would therefore re-read yesterday's injury picture thirteen
+times a day and alert on none of it**, while every test passed and every run
+looked healthy. This is the failure mode the spec flagged as an open question;
+it is now a measured requirement.
+
+**The alert path must pass a short `ttl_seconds`** to both loaders —
+`load_weekly_actuals`'s docstring already establishes exactly this pattern for
+live-game paths. The default stays 86,400 for every other caller: the draft
+board and the CLI have no reason to refetch a 14.6 MB player file hourly.
+
+**Which source actually moves on a Sunday morning is unresolved and must be
+settled before building.** The nflverse injuries file is the official *weekly*
+injury report — practice participation and Out/Doubtful/Questionable, published
+Wednesday to Friday. Gameday inactives at 90 minutes are a different feed. If
+that reading is right, the source that updates on Sunday morning is Sleeper's
+`injury_status` via `load_players`, which would make that one loader's TTL the
+single most load-bearing number in this design. **Not verified.** Do not build
+trigger 1 until it is.
+
+**Also measured:** `load_nfl_injuries` currently returns 404 —
+`injuries_2026.csv` does not yet exist, which is expected for 2026-09-03 with
+the season starting Sept 9. The loader degrades correctly rather than
+fabricating. **Re-verify after the season starts**; until the file exists, half
+of trigger 1 has no data at all.
 
 ### Scope
 
@@ -501,9 +522,11 @@ enumerated rather than left to judgement.
   `False`, logs, and does not raise. The snapshot write must still happen. No
   test may reach Discord — the transport takes an injectable poster, the same
   convention as `fetcher`.
-- **The injury and practice TTLs must be confirmed against the hourly
-  cadence** and the finding written down. If a loader caches for an hour, the
-  alert cannot see a Sunday-morning ruling, and every test above still passes.
+- **The short-TTL alert path must be tested**, not assumed. Measured
+  2026-09-03: both `load_players` and `load_nfl_injuries` default to a 86,400s
+  TTL, so an hourly sweep reads yesterday's injuries and alerts on nothing --
+  with every other test still green. The test asserts the alert path requests a
+  short TTL; the fixture proves a changed status is seen within one sweep.
 - **Mutations** for the threshold comparison and the dedupe predicate.
 
 ## Out of scope
@@ -539,9 +562,11 @@ enumerated rather than left to judgement.
 3. **Whether the status strip should also surface `preflight`'s other checks.**
    The strip carries two of them; `preflight` carries more. Deliberately left
    until the strip has been lived with.
-4. **What the injury and practice loader TTLs actually are**, and whether the
-   alert path needs shorter ones. Listed as an open question rather than
-   answered from memory. See Testing.
+4. **Which source carries a Sunday-morning ruling** -- nflverse's weekly injury
+   report is published Wednesday to Friday, so Sleeper's `injury_status` is the
+   likely answer, making `load_players`' TTL the design's most load-bearing
+   number. **Unverified. Settle before building trigger 1.** (The TTL question
+   itself is now measured and answered; see Freshness.)
 5. **Whether the 08:00–20:00 sweep window is right.** It covers every current
    NFL kickoff including 09:30 London games and 20:20 Sunday night. Widen only
    on an observed miss, never pre-emptively.
