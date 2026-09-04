@@ -122,9 +122,6 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "return False"),
     ],
     "cli.py": [
-        ("waivers builds the pool from my roster only",
-         "pool = season_mod.free_agent_pool(players, rosters, projected)",
-         "pool = season_mod.free_agent_pool(players, rosters[:1], projected)"),
         ("empty waiver board renders as a blank",
          'lines.append("  nothing on the wire beats what you already have.")',
          "pass"),
@@ -300,42 +297,20 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "            except ZeroDivisionError as exc:              "
          "# noqa: BLE001 - degrade, never fabricate\n"
          "                # The last unguarded fetch in this function"),
+    ],
+    "pipeline.py": [
+        ("waivers builds the pool from my roster only",
+         "pool = season_mod.free_agent_pool(players, rosters, projected)",
+         "pool = season_mod.free_agent_pool(players, rosters[:1], projected)"),
         ("the trade deadline is ignored, so it offers trades you cannot make",
          "if deadline is not None and week > deadline:",
          "if deadline is not None and week > 999:"),
-        ("trades' horizon runs to the NFL's last week instead of the league's",
-         "print(\"no roster resolved, so there is nothing to trade -- \"\n"
-         "              + \"; \".join(notes))\n"
-         "        return 1\n"
-         "\n"
-         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
-         "    failed: list[int] = []\n"
-         "    for w in range(week, last_week + 1):",
-         "print(\"no roster resolved, so there is nothing to trade -- \"\n"
-         "              + \"; \".join(notes))\n"
-         "        return 1\n"
-         "\n"
-         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
-         "    failed: list[int] = []\n"
-         "    for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
+        ("both horizons run to the NFL's last week instead of the league's",
+         "for w in range(week, last_week + 1):",
+         "for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
         ("an ambiguous --player silently takes the first match",
          "        if len(matches) > 1:",
          "        if len(matches) > 99:"),
-        ("waivers' horizon runs to the NFL's last week instead of the league's",
-         "print(\"no roster resolved, so there is nothing to upgrade -- \"\n"
-         "              + \"; \".join(notes))\n"
-         "        return 1\n"
-         "\n"
-         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
-         "    failed: list[int] = []\n"
-         "    for w in range(week, last_week + 1):",
-         "print(\"no roster resolved, so there is nothing to upgrade -- \"\n"
-         "              + \"; \".join(notes))\n"
-         "        return 1\n"
-         "\n"
-         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
-         "    failed: list[int] = []\n"
-         "    for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
         ("trades' best-per-opponent row is their WORST qualifying offer, not their best",
          "best.append(max(options, key=lambda p: p.gain_me))",
          "best.append(min(options, key=lambda p: p.gain_me))"),
