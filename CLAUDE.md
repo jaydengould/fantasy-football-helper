@@ -175,14 +175,18 @@ earns a second occurrence.
   and its target string — disagree eventually.
 - **A green suite is not evidence the thing you changed is covered.** Every
   significant defect found late was found by a human running the code against real
-  data, or by two independent views of one write disagreeing (the printed count
-  said 15, the table held 17).
+  data, by two independent views of one write disagreeing (the printed count
+  said 15, the table held 17), or by a mutation. The mutation case is the one
+  you can run yourself: 2026-09-04, three separate `try` blocks written so each
+  fetch degrades alone, with tests that only ever made a fetch RAISE — so a
+  defect on the SUCCESS path was unreachable by every test that claimed to
+  cover it, and the suite stayed green.
 - **Guarding the path the last defect took, and missing its siblings.** Grep the
   other callers of every endpoint or helper a fix wave touches.
 
 ## Current state
 
-Both drafts are done (2026-09-01); the 2026 season starts Sept 9. Phases 0–5 are
+Both drafts are done (2026-09-01); the 2026 season starts Sept 9. Phases 0–6 are
 complete except Phase 0 (Yahoo OAuth, blocked on Yahoo's approval since
 2026-08-24) and Phase 3.7 (the `DataTable` swap, offseason). Full table and the
 open risks are in `docs/decisions.md`; the queue is `TODO.md`.
