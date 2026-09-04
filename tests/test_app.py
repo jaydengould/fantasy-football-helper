@@ -1201,3 +1201,139 @@ def test_simple_table_wraps_in_a_scrolling_div_not_a_datatable():
     rendered = str(table)
     assert "DataTable" not in rendered
     assert "overflowX" in rendered
+
+
+# --- /waivers as HTML tables ---
+
+from ffhelper.app import waiver_rows, waivers_children
+from ffhelper.cli import DROP_CAVEAT
+from ffhelper.season import WaiverTarget
+
+
+def test_waivers_empty_board_states_the_result():
+    """An empty board is a result, not a blank. Never lower a bar to fill it."""
+    view = pipeline.WaiverView(league_name="sleeper-main", week=3, last_week=17,
+                               this_week=[], ros=[], weeks_scored=15)
+    rendered = str(waivers_children(view))
+    assert "nothing on the wire beats what you already have" in rendered
+
+
+def test_waivers_empty_board_also_carries_the_floor_caveat():
+    """The empty result is TWO lines, not one -- the floor caveat is what
+    tells the user the board is empty because of a measured bar, not a
+    failed fetch. DROP_CAVEAT must NOT appear -- it belongs only to the
+    non-empty branch (render_waivers, cli.py).
+    """
+    view = pipeline.WaiverView(league_name="sleeper-main", week=3, last_week=17,
+                               this_week=[], ros=[], weeks_scored=15)
+    rendered = str(waivers_children(view))
+    assert "a target must gain more than the weekly projection error" in rendered
+    assert "does not know about handcuffs" not in rendered
+
+
+def test_waiver_rows_this_week_uses_denominator_of_one():
+    """render_waivers passes `of=1` for THIS WEEK regardless of weeks_scored
+    (cli.py) -- the denominator is section-dependent, not a single number.
+    """
+    p = Player(sleeper_id="1", name="Guy", position="RB", team="KC", proj_pts=10.0)
+    d = Player(sleeper_id="2", name="Drop Guy", position="RB", team="SF", proj_pts=5.0)
+    view = pipeline.WaiverView(
+        league_name="sleeper-main", week=3, last_week=17,
+        this_week=[WaiverTarget(player=p, gain=4.0, drop=d, weeks_started=1)],
+        ros=[], weeks_scored=15)
+    rows = waiver_rows(view, "this_week")
+    assert rows[0] == {"pos": "RB", "player": "Guy", "gain": "+4.0",
+                       "drop": "Drop Guy", "starts": "1 of 1 starts", "trending": ""}
+
+
+def test_waiver_rows_ros_uses_weeks_scored_as_the_denominator():
+    p = Player(sleeper_id="3", name="Ros Guy", position="WR", team="LAR", proj_pts=12.0)
+    d = Player(sleeper_id="4", name="Ros Drop", position="WR", team="DAL", proj_pts=6.0)
+    view = pipeline.WaiverView(
+        league_name="sleeper-main", week=3, last_week=17,
+        this_week=[], ros=[WaiverTarget(player=p, gain=3.0, drop=d, weeks_started=9)],
+        weeks_scored=15)
+    rows = waiver_rows(view, "ros")
+    assert rows[0]["starts"] == "9 of 15 starts"
+
+
+def test_waiver_rows_trending_column_carries_the_national_qualifier():
+    """A bare number reads as league activity -- load_trending's docstring is
+    emphatic these counts say nothing about your leaguemates. The qualifier
+    must sit in the value the user actually reads, not just a header.
+    """
+    p = Player(sleeper_id="5", name="Trendy Guy", position="TE", team="CHI", proj_pts=8.0)
+    d = Player(sleeper_id="6", name="Trendy Drop", position="TE", team="NYJ", proj_pts=4.0)
+    view = pipeline.WaiverView(
+        league_name="sleeper-main", week=3, last_week=17,
+        this_week=[WaiverTarget(player=p, gain=2.0, drop=d, weeks_started=1)],
+        ros=[], weeks_scored=15, trending={"5": 1234})
+    rows = waiver_rows(view, "this_week")
+    assert rows[0]["trending"] == "+1,234 adds NATIONALLY -- NOT your league"
+
+
+def test_waiver_rows_trending_blank_when_the_player_is_not_trending():
+    p = Player(sleeper_id="5", name="Quiet Guy", position="TE", team="CHI", proj_pts=8.0)
+    d = Player(sleeper_id="6", name="Quiet Drop", position="TE", team="NYJ", proj_pts=4.0)
+    view = pipeline.WaiverView(
+        league_name="sleeper-main", week=3, last_week=17,
+        this_week=[WaiverTarget(player=p, gain=2.0, drop=d, weeks_started=1)],
+        ros=[], weeks_scored=15, trending={})
+    rows = waiver_rows(view, "this_week")
+    assert rows[0]["trending"] == ""
+
+
+def test_waivers_page_carries_every_section_not_just_the_tables():
+    """SPEC GAP ruling for task 8, same shape as task 7's lineup test: the
+    brief's waiver_rows covers only the two target tables, but render_waivers
+    also prints '!!' notes and the waiver-priority line -- both carry
+    information the table cannot restate (league shape, cost of a claim).
+
+    Every assertion is anchored on a string that can arrive from ONE section
+    only: two distinct players (this-week-only, ros-only, distinct from each
+    other and from the notes/priority text), the literal REST OF SEASON
+    heading, the section-specific starts denominator, the notes text, the
+    priority line, the trending qualifier (attached to the ros player only),
+    and DROP_CAVEAT's own wording. See the task report for the per-section
+    delete/fail/restore/pass proof.
+    """
+    this_week_guy = Player(sleeper_id="1", name="This Week Guy", position="RB", team="KC",
+                           proj_pts=10.0)
+    this_week_drop = Player(sleeper_id="2", name="This Week Drop", position="RB", team="SF",
+                            proj_pts=5.0)
+    ros_guy = Player(sleeper_id="3", name="Ros Guy", position="WR", team="LAR",
+                     proj_pts=12.0)
+    ros_drop = Player(sleeper_id="4", name="Ros Drop", position="WR", team="DAL",
+                      proj_pts=6.0)
+    view = pipeline.WaiverView(
+        league_name="sleeper-main", week=3, last_week=17, owner="me",
+        this_week=[WaiverTarget(player=this_week_guy, gain=4.0, drop=this_week_drop,
+                                weeks_started=1)],
+        ros=[WaiverTarget(player=ros_guy, gain=3.0, drop=ros_drop, weeks_started=9)],
+        weeks_scored=15, position=4, teams=12,
+        trending={"3": 5000},
+        notes=["FAAB bid due Wednesday"],
+    )
+    rendered = str(waivers_children(view))
+    assert "This Week Guy" in rendered and "1 of 1 starts" in rendered
+    assert "REST OF SEASON" in rendered
+    assert "Ros Guy" in rendered and "9 of 15 starts" in rendered
+    assert "FAAB bid due Wednesday" in rendered                              # !! notes
+    assert "waiver priority 4 of 12" in rendered                             # priority line
+    assert "5,000" in rendered and "NATIONALLY -- NOT your league" in rendered  # trending
+    assert "does not know about handcuffs" in rendered                       # DROP_CAVEAT
+
+
+def test_season_page_children_waivers_routes_to_the_table():
+    """Confirms `season_page_children` wires /waivers through `waivers_children`
+    now, not the old html.Pre(render_waivers(...)) path.
+    """
+    p = Player(sleeper_id="1", name="Table Guy", position="RB", team="KC", proj_pts=10.0)
+    d = Player(sleeper_id="2", name="Table Drop", position="RB", team="SF", proj_pts=5.0)
+    view = pipeline.WaiverView(
+        league_name="sleeper-main", week=3, last_week=17,
+        this_week=[WaiverTarget(player=p, gain=4.0, drop=d, weeks_started=1)],
+        ros=[], weeks_scored=15)
+    rendered = str(season_page_children("waivers", view))
+    assert "Table Guy" in rendered
+    assert "Table" in rendered

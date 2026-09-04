@@ -544,6 +544,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("unprojected starter's invented 0.0 sort value prints as a real projection",
          '"team": p.team or "", "proj": "--",',
          '"team": p.team or "", "proj": f"{p.proj_pts:.1f}",'),
+        ("empty waiver board loses its wording -- reads as a failed fetch, not a result",
+         'html.P("nothing on the wire beats what you already have.",',
+         'html.P("wording was mutated -- this should never render.",'),
     ],
     "season.py": [
         ("free agent pool subtracts only my roster",

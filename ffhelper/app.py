@@ -24,9 +24,9 @@ from ffhelper.board import (
     BoardState, auto_mine, board_state, explicit_not_mine, marks_in_entry_order,
 )
 from ffhelper.cli import (
-    DRAFT_LOG_DIR, ROOT, ROSTER_DIR, SEASON, _draft_log_path, _matchup_note,
+    DRAFT_LOG_DIR, DROP_CAVEAT, ROOT, ROSTER_DIR, SEASON, _draft_log_path, _matchup_note,
     _restore_marks, _select_feed, _status_note, load_board_inputs, render_trades,
-    render_waivers, roster_file_age_days,
+    roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import Player, load_nfl_state
@@ -607,26 +607,103 @@ def _lineup_children(view) -> list:
     return children
 
 
-def season_page_children(name: str, view):
-    """One season view as page content. /lineup renders as HTML tables
-    (task 7); /waivers and /trades still go through the CLI's own text
-    renderer, in html.Pre, until tasks 8-9.
+_WAIVER_HEADERS = ["pos", "player", "gain", "drop", "starts", "trending"]
 
-    ponytail: html.Pre of the CLI's own renderer for waivers/trades. Ceiling
-    is that 80-column output needs horizontal scrolling on a phone, which is
-    the whole reason tasks 8-9 exist. Upgrade path is to replace this
-    function per page; the text renderers stay as the CLI's output either
-    way.
+
+def waiver_rows(view, section: str) -> list[dict]:
+    """One row per target in THIS WEEK (`section="this_week"`) or REST OF
+    SEASON (`section="ros"`), mirroring `render_waivers`'s `section` closure
+    (cli.py) line for line -- including its section-dependent `of` starts
+    denominator: 1 for THIS WEEK, `weeks_scored` for REST OF SEASON. Two
+    rules that can disagree is the defect this project calls out repeatedly.
+
+    `trending` carries `load_trending`'s NATIONALLY -- NOT your league
+    qualifier in the cell itself, not just a header the user can miss.
+    """
+    targets = view.this_week if section == "this_week" else view.ros
+    of = 1 if section == "this_week" else view.weeks_scored
+    rows = []
+    for t in targets:
+        count = view.trending.get(t.player.sleeper_id)
+        trending = (f"+{count:,} adds NATIONALLY -- NOT your league" if count else "")
+        rows.append({
+            "pos": t.player.position, "player": t.player.name,
+            "gain": f"+{t.gain:.1f}", "drop": t.drop.name,
+            "starts": f"{t.weeks_started} of {of} starts",
+            "trending": trending,
+        })
+    return rows
+
+
+def waivers_children(view) -> list:
+    """Every `render_waivers` section as HTML: '!!' notes, the waiver-priority
+    line, THIS WEEK / REST OF SEASON tables (or the empty-board result), and
+    DROP_CAVEAT. SPEC GAP ruling for task 8, same shape as task 7's
+    `_lineup_children`: `waiver_rows` covers only the two target tables, but
+    `render_waivers` also prints the notes and the priority line, and both
+    carry information the table cannot restate -- league shape and the cost
+    of a claim.
+    """
+    who = f" ({view.owner})" if view.owner else ""
+    children = [
+        html.P(f"WAIVERS -- {view.league_name}{who} -- week {view.week}",
+              style={"fontFamily": _SANS, "fontWeight": "700"}),
+    ]
+    if view.notes:
+        children.append(html.Ul([html.Li(f"!! {n}") for n in view.notes]))
+    if view.position is not None and view.teams:
+        children.append(html.P(
+            f"waiver priority {view.position} of {view.teams} -- a successful "
+            f"claim sends you to {view.teams}th"))
+
+    this_week = waiver_rows(view, "this_week")
+    if this_week:
+        children += [
+            html.P(f"THIS WEEK -- upgrade to your week {view.week} lineup",
+                  style={"fontWeight": "700", "marginTop": "16px"}),
+            simple_table(_WAIVER_HEADERS, this_week),
+        ]
+
+    ros = waiver_rows(view, "ros")
+    if ros:
+        children += [
+            html.P(f"REST OF SEASON -- upgrade over weeks {view.week}-{view.last_week}",
+                  style={"fontWeight": "700", "marginTop": "16px"}),
+            simple_table(_WAIVER_HEADERS, ros),
+        ]
+
+    if not this_week and not ros:
+        # A RESULT, not a blank. On a healthy roster the best thing available
+        # is inside the measured weekly error, and saying nothing at all
+        # would read as a failed fetch.
+        children += [
+            html.P("nothing on the wire beats what you already have.",
+                  style={"marginTop": "16px"}),
+            html.P("(a target must gain more than the weekly projection error "
+                  "to be listed.)"),
+        ]
+    else:
+        children.append(html.P(DROP_CAVEAT, style={"marginTop": "16px",
+                                                    "whiteSpace": "pre-wrap"}))
+    return children
+
+
+def season_page_children(name: str, view):
+    """One season view as page content. /lineup and /waivers render as HTML
+    tables (tasks 7-8); /trades still goes through the CLI's own text
+    renderer, in html.Pre, until task 9.
+
+    ponytail: html.Pre of the CLI's own renderer for trades. Ceiling is that
+    80-column output needs horizontal scrolling on a phone, which is the
+    whole reason task 9 exists. Upgrade path is to replace this function's
+    trades branch too; the text renderer stays as the CLI's output either way.
     """
     if view.error:
         return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})
     if name == "lineup":
         return html.Div(_lineup_children(view))
     elif name == "waivers":
-        text = render_waivers(view.this_week, view.ros, view.week, view.last_week,
-                              view.league_name, view.owner, view.position,
-                              view.teams, view.trending, view.notes,
-                              view.weeks_scored)
+        return html.Div(waivers_children(view))
     else:
         text = render_trades(view.best, view.week, view.league_name, view.owner,
                              view.names, view.notes, view.weeks_scored, view.pinned)
