@@ -18,15 +18,17 @@ import time
 import dash
 from dash import Input, Output, dash_table, dcc, html
 
+from ffhelper import news, pipeline, store
 from ffhelper.board import (
     BoardState, auto_mine, board_state, explicit_not_mine, marks_in_entry_order,
 )
 from ffhelper.cli import (
-    DRAFT_LOG_DIR, ROOT, _draft_log_path, _restore_marks, _select_feed,
-    load_board_inputs,
+    DRAFT_LOG_DIR, DROP_CAVEAT, ROOT, ROSTER_DIR, SEASON, TRADE_CAVEAT, _draft_log_path,
+    _matchup_note, _package, _restore_marks, _select_feed, _status_note, load_board_inputs,
+    roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
-from ffhelper.data import Player
+from ffhelper.data import CACHE_DIR, Player, load_nfl_state, load_players, load_trending
 from ffhelper.value import FLEX_ELIGIBLE, is_bench_only, next_pick_number, optimal_lineup
 
 log = logging.getLogger(__name__)
@@ -345,12 +347,597 @@ def apply_undo(log_path) -> str:
     return "undone"
 
 
+ROUTES = [("/", "home"), ("/draft", "draft"), ("/lineup", "lineup"),
+          ("/waivers", "waivers"), ("/trades", "trades")]
+
+
+def _resolve_league(value: str, names: list[str], default: str) -> str:
+    """A candidate league name, or the default when it is unknown.
+
+    The one place the fallback rule lives: unknown, empty, or malformed input
+    means the default, never a raise -- a typo or a stray edit to the URL must
+    not 500 the page, and never fuzzy-matches, either, which would silently
+    advise on the wrong league.
+    """
+    return value if value in names else default
+
+
+def league_from_kwargs(kw: dict, names: list[str], default: str) -> str:
+    """`_resolve_league`, wired for how Dash actually calls a page layout.
+
+    A registered page's layout callable is invoked with the URL's query
+    parameters already parsed into individual kwargs (e.g. `league="x"`), not
+    with the raw "?league=x" string, so the bare value is handed straight to
+    the shared fallback rule instead of parsing a query string that Dash has
+    already parsed.
+    """
+    return _resolve_league(kw.get("league", ""), names, default)
+
+
+def league_picker(current: str, league_names: list[str]) -> html.Div:
+    """A row of links to `/?league=<name>`, one per configured league.
+
+    Needs no callback: every page already resolves its league from the query
+    string (`league_from_kwargs`), so a plain `dcc.Link` per league is the
+    whole feature. Without this, `nav()` only ever emits `?league=<current>`
+    and there is no path through the UI to a second league -- see the spec's
+    route table for `/`: "League picker, nav, status strip, headlines,
+    trending."
+    """
+    return html.Div([
+        dcc.Link(name, href=f"/?league={name}",
+                 style={"marginRight": "18px",
+                        "fontWeight": "700" if name == current else "400"})
+        for name in league_names
+    ], style={"padding": "12px 0"})
+
+
+def nav(active: str, league: str) -> html.Div:
+    """The same five links on every page, with the league carried across."""
+    return html.Div([
+        dcc.Link(label.upper(), href=f"{path}?league={league}",
+                 style={"marginRight": "18px",
+                        "fontWeight": "700" if label == active else "400"})
+        for path, label in ROUTES
+    ], style={"padding": "12px 0"})
+
+
+def snapshot_recorded(conn, league: str, season: str, week: int) -> bool | None:
+    """Whether this week is in the snapshot table. None means 'could not check'.
+
+    Three-valued on purpose. False is a measurement -- the table was read and
+    the week is not in it, so a snapshot is due. None is the absence of a
+    measurement, and the caller must omit the line rather than print False's
+    wording. Non-negotiable #7: degrade to absent, never to a fabricated value.
+    """
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM snapshot WHERE league=? AND season=? AND week=? LIMIT 1",
+            (league, season, week)).fetchone()
+    except Exception:                        # noqa: BLE001 - absent, not fabricated
+        return None
+    return row is not None
+
+
+def status_strip(league: str) -> html.Div:
+    """Homepage line-per-fact summary: NFL week, snapshot status, roster age.
+
+    Every fact degrades independently and by OMISSION, never a fabricated
+    substitute -- non-negotiable #7. `snapshot_recorded`'s None is the reason
+    this exists: an unreadable database drops the line instead of claiming the
+    week is missing.
+
+    ponytail: "Yahoo league" is read off roster-file existence rather than a
+    platform lookup. No `League` config object reaches this page -- `build_app`
+    only ever carries league NAMES -- and `.roster/<league>.txt` is written by
+    nothing in this codebase; `cli.py` only READS it, and only on the
+    non-sleeper branch. So the file's mere presence already implies the
+    platform, without a config load this page has no other reason to do.
+    """
+    lines = []
+    state: dict = {}
+    week = season = None
+    try:
+        state = load_nfl_state()
+        week = state.get("week")
+        season = str(state.get("season") or SEASON)
+    except Exception:                          # noqa: BLE001 - degrade, never fabricate
+        pass
+
+    # `not week` rather than `week is not None` is deliberate, matching
+    # cli._resolve_week -- Sleeper serves "week": 0 in the offseason, and the
+    # two guards disagreeing is a defect this project already shipped once.
+    if not week:
+        lines.append("week unavailable")
+    else:
+        lines.append(f"nfl week {week} ({season} {state.get('season_type')})")
+
+    if week:
+        conn = None
+        try:
+            conn = store.connect()
+            recorded = snapshot_recorded(conn, league, season, week)
+        except Exception:                      # noqa: BLE001 - degrade, never fabricate
+            recorded = None
+        finally:
+            if conn is not None:
+                conn.close()
+        if recorded is True:
+            lines.append(f"snapshot recorded for week {week}")
+        elif recorded is False:
+            lines.append(f"snapshot NOT recorded for week {week} -- run a snapshot")
+        # recorded is None: could not check, so the line is omitted entirely.
+
+    age = roster_file_age_days(ROSTER_DIR / f"{league}.txt")
+    if age is not None:
+        lines.append(f"roster file: {age}d old")
+
+    return html.Div([html.P(line, style={"margin": "4px 0"}) for line in lines],
+                    style={"fontFamily": _SANS, "fontSize": "13px", "padding": "8px 0"})
+
+
+def headlines_panel(headlines: list, notes: list[str]) -> html.Div:
+    """Recent NFL headlines. Decorative only -- see news.py's module docstring:
+    nothing here is wired to a player, a projection or a recommendation.
+
+    An unreachable feed says so ("unavailable") instead of rendering an empty
+    box, which would read as "no news" rather than "could not fetch".
+    """
+    children = [html.P("HEADLINES", style={"fontWeight": "700"})]
+    if headlines:
+        children.append(html.Ul([
+            html.Li(html.A(f"[{h.source}] {h.title}", href=h.url, target="_blank",
+                          rel="noopener noreferrer"))
+            for h in headlines
+        ]))
+    if notes:
+        prefix = "headlines unavailable" if not headlines else "partially unavailable"
+        children.append(html.P(f"{prefix}: {'; '.join(notes)}",
+                               style={"fontSize": "12px", "color": "#8b95a3",
+                                      "marginTop": "8px"}))
+    elif not headlines:
+        children.append(html.P("no headlines right now",
+                               style={"fontSize": "12px", "color": "#8b95a3"}))
+    return html.Div(children, style=_PANEL_STYLE)
+
+
+def trending_panel(counts: dict[str, int], players: dict) -> html.Div:
+    """Top ten Sleeper adds by count, over the last 24h (load_trending's
+    default lookback).
+
+    NATIONAL counts, repeated here on the panel itself (not just a header the
+    user can miss) -- `load_trending`'s docstring requires it, and an
+    unlabelled count next to waiver advice reads as a claim prediction.
+
+    Ids that don't resolve through `load_players` are printed as the raw id,
+    never dropped (non-negotiable #3) -- a stale or cold player cache must not
+    silently shrink the list.
+    """
+    top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    rows = []
+    for player_id, count in top:
+        p = players.get(player_id)
+        label = f"{p.name} ({p.position}-{p.team or '--'})" if p else f"player {player_id} (unresolved)"
+        rows.append(html.Li(f"{label}: +{count:,} adds NATIONALLY -- NOT your league"))
+    children = [
+        html.P("TRENDING ADDS", style={"fontWeight": "700"}),
+        html.P("counts are NATIONALLY across all of Sleeper -- NOT your league",
+              style={"fontSize": "12px", "color": "#8b95a3"}),
+    ]
+    children.append(html.Ul(rows) if rows else
+                    html.P("trending data unavailable", style={"fontSize": "12px",
+                                                                "color": "#8b95a3"}))
+    return html.Div(children, style=_PANEL_STYLE)
+
+
+def home_layout(league: str, league_names: list[str]) -> html.Div:
+    """Nav, status strip, then two decorative panels: headlines and national
+    trending adds.
+
+    Each panel catches its own fetch failure independently -- a dead feed or
+    a Sleeper outage must not take down the status strip, the one part of
+    this page that has to work.
+    """
+    headlines, notes = [], []
+    try:
+        headlines, notes = news.load_headlines(news.FEEDS)
+    except Exception:                          # noqa: BLE001 - degrade, never crash the homepage
+        notes = ["headlines: could not load"]
+
+    counts, players = {}, {}
+    try:
+        counts = load_trending("add", cache_dir=CACHE_DIR)
+        # ponytail: cold-cache load_players downloads Sleeper's FULL player DB
+        # (~14.6 MB, ~3231 players -- 560 is the filtered draft-pool size, not
+        # this), which is nearly all of the spec's measured 4.57s cold page
+        # load. data.py's own disk TTL cache (not reimplemented here) makes
+        # every request after the first cheap. No extra caching layer added
+        # for this task.
+        players = load_players(cache_dir=CACHE_DIR)
+    except Exception:                          # noqa: BLE001 - degrade, never crash the homepage
+        pass
+
+    return html.Div(className="page", children=[
+        league_picker(league, league_names),
+        nav("home", league),
+        status_strip(league),
+        headlines_panel(headlines, notes),
+        trending_panel(counts, players),
+    ])
+
+
+_LINEUP_HEADERS = ["slot", "player", "pos", "team", "proj", "flags"]
+
+
+def lineup_rows(view) -> list[dict]:
+    """One row per starter slot, plus a projected-total row.
+
+    Mirrors `render_lineup`'s STARTERS section and total line branch for
+    branch (cli.py) -- two rules that can disagree is the defect this project
+    calls out repeatedly. `--`, never `0.0`, for an unprojected starter: the
+    0.0 is a sort value this code invented, and printing it as a projection
+    is the fabrication non-negotiable #7 bars, arriving in the one place a
+    user is most likely to trust it.
+    """
+    state = view.state
+    unprojected_ids = {p.sleeper_id for p in state.unprojected}
+    rows = []
+    total = 0.0
+    unprojected_starters = 0
+    for slot, p in state.lineup:
+        if p is None:
+            rows.append({"slot": slot, "player": "-- EMPTY --", "pos": "", "team": "",
+                        "proj": "", "flags": "no eligible player on this roster"})
+            continue
+        total += p.proj_pts
+        if p.sleeper_id in unprojected_ids:
+            unprojected_starters += 1
+            rows.append({"slot": slot, "player": p.name, "pos": p.position,
+                        "team": p.team or "", "proj": "--",
+                        "flags": f"NO PROJECTION{_status_note(p)}".strip()})
+        else:
+            rows.append({"slot": slot, "player": p.name, "pos": p.position,
+                        "team": p.team or "", "proj": f"{p.proj_pts:.1f}",
+                        "flags": f"{_matchup_note(p, view.matchups)}"
+                                f"{_status_note(p)}".strip()})
+    # Same caveat render_lineup prints next to the total, for the same reason:
+    # unprojected starters contribute their invented 0.0 to `total`, so an
+    # unqualified number would understate a lineup with a gap in it.
+    caveat = (f"(floor -- {unprojected_starters} starter"
+             f"{'s' if unprojected_starters != 1 else ''} unprojected)"
+             if unprojected_starters else "")
+    rows.append({"slot": "", "player": "projected total", "pos": "", "team": "",
+                "proj": f"{total:.1f}", "flags": caveat})
+    return rows
+
+
+def bench_rows(view) -> list[dict]:
+    """Projected bench, mirroring `render_lineup`'s BENCH section.
+
+    Excludes anything in `state.unprojected` -- those get their own section
+    below, same split the text renderer makes.
+    """
+    state = view.state
+    projected_bench = [p for p in state.bench if p not in state.unprojected]
+    return [{"slot": "", "player": p.name, "pos": p.position, "team": p.team or "",
+            "proj": f"{p.proj_pts:.1f}",
+            "flags": f"{_matchup_note(p, view.matchups)}{_status_note(p)}".strip()}
+           for p in projected_bench]
+
+
+def unprojected_player_rows(view) -> list[dict]:
+    """'NO PROJECTION THIS WEEK' -- not started, and not a zero.
+
+    Mirrors `render_lineup`'s own section of that name: a stash can carry no
+    number for months, so this is a quiet list, never a '!!' note.
+    """
+    return [{"slot": "", "player": p.name, "pos": p.position, "team": p.team or "",
+            "proj": "--", "flags": _status_note(p).strip()}
+           for p in view.state.unprojected]
+
+
+def simple_table(headers: list[str], rows: list[dict]) -> html.Div:
+    """A read-only `html.Table` from plain dicts.
+
+    Not `dash_table.DataTable` -- these rows take no clicks, and DataTable's
+    styling machinery would be dead weight here. Wrapped in its own
+    `overflowX: auto` div so a wide table scrolls inside its own container,
+    never the page body.
+    """
+    head = html.Tr([html.Th(h.upper(), style=_TABLE_HEADER) for h in headers])
+    body = [html.Tr([html.Td(row.get(h, ""), style=_TABLE_CELL) for h in headers])
+           for row in rows]
+    table = html.Table([html.Thead(head), html.Tbody(body)],
+                       style={"borderCollapse": "collapse", "width": "100%"})
+    return html.Div(table, style={"overflowX": "auto"})
+
+
+def _lineup_children(view) -> list:
+    """Every `render_lineup` section as HTML: starters, bench, unprojected,
+    close calls, notes. SPEC GAP ruling for task 7 -- the brief's
+    `lineup_rows` covers only STARTERS and the total, but `render_lineup`
+    also prints BENCH, an unprojected list, CLOSE CALLS, and '!!' notes, and
+    an HTML page that dropped them would quietly show less than the text
+    page it replaces. Nothing here is new logic; each section reuses the row
+    builders above or reads the same view fields the text renderer does.
+    """
+    state = view.state
+    who = f"  ({view.owner})" if view.owner else ""
+    children = [
+        html.P(f"{view.league_name}{who}   week {view.week}",
+              style={"fontFamily": _SANS, "fontWeight": "700"}),
+        simple_table(_LINEUP_HEADERS, lineup_rows(view)),
+    ]
+
+    bench = bench_rows(view)
+    if bench:
+        children += [html.P("BENCH", style={"fontWeight": "700", "marginTop": "16px"}),
+                     simple_table(_LINEUP_HEADERS, bench)]
+
+    unprojected = unprojected_player_rows(view)
+    if unprojected:
+        children += [html.P("NO PROJECTION THIS WEEK -- not started, and not a zero",
+                            style={"fontWeight": "700", "marginTop": "16px"}),
+                     simple_table(_LINEUP_HEADERS, unprojected)]
+
+    if state.close_calls:
+        children += [
+            html.P("CLOSE CALLS -- worth your own read",
+                  style={"fontWeight": "700", "marginTop": "16px"}),
+            html.Ul([
+                html.Li(f"{c.slot}: starting {c.starter.name} over {c.challenger.name} "
+                       f"by {c.gap:.1f}{_status_note(c.challenger)}".strip())
+                for c in state.close_calls
+            ]),
+        ]
+
+    if view.notes:
+        children.append(html.Ul([html.Li(f"!! {n}") for n in view.notes],
+                                style={"marginTop": "16px"}))
+
+    # Unconditional, matching the pre-table text renderer: both
+    # cli._matchup_context and cli._practice_status are contracted to
+    # "always return a line" (their own docstrings), so there is no real
+    # empty case to guard here -- only LineupView's dataclass defaults are
+    # empty strings, and those never reach a view with `error` unset.
+    children.append(html.P(f"{view.matchup_line}  {view.practice_line}",
+                           style={"fontSize": "12px", "color": "#8b95a3",
+                                  "marginTop": "16px"}))
+    return children
+
+
+_WAIVER_HEADERS = ["pos", "player", "gain", "drop", "starts", "trending"]
+
+
+def waiver_rows(view, section: str) -> list[dict]:
+    """One row per target in THIS WEEK (`section="this_week"`) or REST OF
+    SEASON (`section="ros"`), mirroring `render_waivers`'s `section` closure
+    (cli.py) line for line -- including its section-dependent `of` starts
+    denominator: 1 for THIS WEEK, `weeks_scored` for REST OF SEASON. Two
+    rules that can disagree is the defect this project calls out repeatedly.
+
+    `trending` carries `load_trending`'s NATIONALLY -- NOT your league
+    qualifier in the cell itself, not just a header the user can miss.
+    """
+    targets = view.this_week if section == "this_week" else view.ros
+    of = 1 if section == "this_week" else view.weeks_scored
+    rows = []
+    for t in targets:
+        count = view.trending.get(t.player.sleeper_id)
+        trending = (f"+{count:,} adds NATIONALLY -- NOT your league" if count else "")
+        rows.append({
+            "pos": t.player.position, "player": t.player.name,
+            "gain": f"+{t.gain:.1f}", "drop": t.drop.name,
+            "starts": f"{t.weeks_started} of {of} starts",
+            "trending": trending,
+        })
+    return rows
+
+
+def waivers_children(view) -> list:
+    """Every `render_waivers` section as HTML: '!!' notes, the waiver-priority
+    line, THIS WEEK / REST OF SEASON tables (or the empty-board result), and
+    DROP_CAVEAT. SPEC GAP ruling for task 8, same shape as task 7's
+    `_lineup_children`: `waiver_rows` covers only the two target tables, but
+    `render_waivers` also prints the notes and the priority line, and both
+    carry information the table cannot restate -- league shape and the cost
+    of a claim.
+    """
+    who = f" ({view.owner})" if view.owner else ""
+    children = [
+        html.P(f"WAIVERS -- {view.league_name}{who} -- week {view.week}",
+              style={"fontFamily": _SANS, "fontWeight": "700"}),
+    ]
+    if view.notes:
+        children.append(html.Ul([html.Li(f"!! {n}") for n in view.notes]))
+    if view.position is not None and view.teams:
+        children.append(html.P(
+            f"waiver priority {view.position} of {view.teams} -- a successful "
+            f"claim sends you to {view.teams}th"))
+
+    this_week = waiver_rows(view, "this_week")
+    if this_week:
+        children += [
+            html.P(f"THIS WEEK -- upgrade to your week {view.week} lineup",
+                  style={"fontWeight": "700", "marginTop": "16px"}),
+            simple_table(_WAIVER_HEADERS, this_week),
+        ]
+
+    ros = waiver_rows(view, "ros")
+    if ros:
+        children += [
+            html.P(f"REST OF SEASON -- upgrade over weeks {view.week}-{view.last_week}",
+                  style={"fontWeight": "700", "marginTop": "16px"}),
+            simple_table(_WAIVER_HEADERS, ros),
+        ]
+
+    if not this_week and not ros:
+        # A RESULT, not a blank. On a healthy roster the best thing available
+        # is inside the measured weekly error, and saying nothing at all
+        # would read as a failed fetch.
+        children += [
+            html.P("nothing on the wire beats what you already have.",
+                  style={"marginTop": "16px"}),
+            html.P("(a target must gain more than the weekly projection error "
+                  "to be listed.)"),
+        ]
+    else:
+        children.append(html.P(DROP_CAVEAT, style={"marginTop": "16px",
+                                                    "whiteSpace": "pre-wrap"}))
+    return children
+
+
+def trades_children(view) -> list:
+    """Every `render_trades` section as HTML: the weeks-scored header, '!!'
+    notes, the mode line, one block per proposal (opponent, gains, shape,
+    give, get, the forced `their_drop`), the empty-result line, and
+    TRADE_CAVEAT. SPEC GAP ruling for task 9, same shape as tasks 7-8's
+    `_lineup_children`/`waivers_children`: the brief's proposal fields cover
+    only the per-trade blocks, but `render_trades` (cli.py) also prints the
+    header count, the notes, the mode line, the empty result, and the
+    caveat, and an HTML page that dropped them would quietly show less than
+    the text page it replaces.
+
+    Handles `view.error` itself rather than trusting every caller to check
+    first -- `season_page_children` already gates on it, but a direct call
+    (as this module's own tests make) must not crash on a deadline-passed or
+    platform-refusal view, which never carries a `best` list, a `week`, or
+    `names` to render.
+    """
+    if view.error:
+        return [html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})]
+
+    who = f" ({view.owner})" if view.owner else ""
+    children = [
+        html.P(f"TRADES -- {view.league_name}{who} -- week {view.week}, "
+              f"{view.weeks_scored} weeks scored",
+              style={"fontFamily": _SANS, "fontWeight": "700"}),
+    ]
+    if view.notes:
+        children.append(html.Ul([html.Li(f"!! {n}") for n in view.notes]))
+
+    best = view.best
+    pinned = view.pinned
+    if pinned is None:
+        mode = "best offer per opponent"
+    elif best and any(p.sleeper_id == pinned.sleeper_id for p in best[0].give):
+        mode = f"best return for {pinned.name}"
+    elif best and any(p.sleeper_id == pinned.sleeper_id for p in best[0].get):
+        mode = f"cost to acquire {pinned.name}"
+    else:
+        mode = f"trade search for {pinned.name}"
+    children.append(html.P(mode, style={"fontWeight": "700", "marginTop": "16px"}))
+
+    if not best:
+        children.append(html.P(
+            "no trade with any opponent clears the floor for both sides.",
+            style={"marginTop": "16px"}))
+    else:
+        for p in best:
+            name = view.names.get(p.opponent, f"roster {p.opponent}")
+            shape = f"{len(p.give)}-for-{len(p.get)}"
+            children.append(html.P(
+                f"{name}   you +{p.gain_me:.1f}   them +{p.gain_them:.1f}   [{shape}]",
+                style={"fontWeight": "700", "marginTop": "16px"}))
+            children.append(html.P(f"give {_package(p.give)}"))
+            children.append(html.P(f"get  {_package(p.get)}"))
+            if p.their_drop is not None:
+                # Part of the offer, not a footnote -- mirrors render_trades'
+                # own comment (cli.py): the counterparty notices the cut
+                # before they notice the gain.
+                children.append(html.P(f"they must also drop {p.their_drop.name} "
+                                       f"({p.their_drop.position})"))
+
+    children.append(html.P(TRADE_CAVEAT,
+                           style={"marginTop": "16px", "whiteSpace": "pre-wrap"}))
+    # This replaces trades-content's own RUN button and Store (trades_landing),
+    # so there is nothing left on screen to trigger a second search -- reload
+    # the page to run another.
+    children.append(html.P("reload the page to run another search.",
+                           style={"marginTop": "16px", "fontStyle": "italic"}))
+    return children
+
+
+def trades_landing(league: str) -> html.Div:
+    """The /trades landing state, before the sweep runs: TRADE_CAVEAT, the
+    expected-wait line, and the RUN button -- never followed automatically.
+    `build_trades`'s full sweep is a measured ~330s (pipeline.py's own
+    ponytail note), so a page that computed on navigation would hang the
+    browser for five minutes; an accidental visit to /trades must cost
+    nothing.
+
+    Carries the league in a hidden `dcc.Store`: the callback below is wired
+    to `Input("trades-run", "n_clicks")` alone, which carries no league, so
+    without this a click would always sweep the DEFAULT league regardless of
+    `?league=` -- silent, and a wasted 330s on the wrong league.
+    """
+    return html.Div([
+        dcc.Store(id="trades-league", data=league),
+        html.P(TRADE_CAVEAT, style={"whiteSpace": "pre-wrap", "maxWidth": "60ch"}),
+        html.P("the full sweep takes about five minutes -- eleven opponents, "
+              "three shapes each",
+              style={"fontWeight": "700", "marginTop": "12px"}),
+        html.Button("RUN THE SEARCH", id="trades-run"),
+    ], id="trades-content")
+
+
+def season_page_children(name: str, view):
+    """One season view as page content. /lineup, /waivers and /trades all
+    render as HTML (tasks 7-9): `trades_children` carries `render_trades`'s
+    header, notes, mode line, per-proposal blocks and TRADE_CAVEAT, exactly
+    as `_lineup_children`/`waivers_children` do for their own text renderers.
+    """
+    if view.error:
+        return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})
+    if name == "lineup":
+        return html.Div(_lineup_children(view))
+    elif name == "waivers":
+        return html.Div(waivers_children(view))
+    return html.Div(trades_children(view))
+
+
+def _season_layout_for(name: str, league_names: list[str], default_league: str):
+    """Layout factory for /lineup, /waivers, /trades.
+
+    Returns the Dash page-layout callable itself (not the layout), since
+    `register_page` needs a function it can call once per request with that
+    request's query kwargs -- a plain `html.Div(...)` built here would freeze
+    the league at registration time and never see `?league=` changes.
+    """
+    def layout(**kw) -> html.Div:
+        league = league_from_kwargs(kw, league_names, default_league)
+        if name == "trades":
+            # No view built here -- build_trades' full sweep is ~330s
+            # (pipeline.py's ponytail note); the button below is the only
+            # thing allowed to trigger it (see _register_callbacks).
+            return html.Div(className="page", children=[
+                nav(name, league), dcc.Loading(trades_landing(league))])
+        leagues, tunables = load_config(CONFIG_PATH)
+        lg = get_league(leagues, league)
+        builder = pipeline.build_lineup if name == "lineup" else pipeline.build_waivers
+        view = builder(lg, tunables)
+        return html.Div(className="page", children=[
+            nav(name, league), season_page_children(name, view)])
+    return layout
+
+
 def build_app(league_names: list[str], default_league: str,
               poll_ms: int = 5000) -> dash.Dash:
     app = dash.Dash(__name__, use_pages=True, pages_folder="")
+    # Key stays "board" -- only the path moves to /draft. tests/test_app.py
+    # reads dash.page_registry["board"], and the registry key is internal;
+    # the path is the user-visible thing this task actually changes.
     dash.register_page(
-        "board", path="/",
-        layout=_layout(league_names, default_league, poll_ms))
+        "board", path="/draft",
+        layout=lambda **kw: _layout(
+            league_names, league_from_kwargs(kw, league_names, default_league), poll_ms))
+    dash.register_page("home", path="/", layout=lambda **kw: home_layout(
+        league_from_kwargs(kw, league_names, default_league), league_names))
+    for path, name in [("/lineup", "lineup"), ("/waivers", "waivers"),
+                       ("/trades", "trades")]:
+        dash.register_page(
+            name, path=path,
+            layout=_season_layout_for(name, league_names, default_league))
     app.layout = html.Div([dash.page_container])
     return app
 
@@ -369,6 +956,12 @@ def poll_interval_ms(tunables: Tunables, platform: str) -> int:
 
 _SANS = ('-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, '
          '"Helvetica Neue", Arial, sans-serif')
+
+_PANEL_STYLE = {
+    "fontFamily": _SANS, "fontSize": "13px",
+    "border": "1px solid #262c35", "borderRadius": "6px",
+    "padding": "12px 14px", "margin": "12px 0",
+}
 
 # Numbers are the reason the board was monospace. tabular-nums gives a
 # proportional font fixed-width DIGITS, so the columns still line up and the
@@ -400,9 +993,25 @@ _TABLE_HEADER = {
 
 _NUMERIC_COLUMNS = ("rank", "vona", "vbd", "marg", "tier", "surv", "div")
 
+# The journal file IS the database (see the module docstring), which is what
+# makes the CLI-takeover fallback work at all -- and exactly why this page is
+# not hosted: two processes writing the same local disk only stays sound
+# because there is only ever one browser tab open on it. main() already prints
+# this to the terminal, where nobody looking at the browser sees it.
+DRAFT_NOTICE = ("LOCAL ONLY -- one process at a time. Do NOT run "
+                "`ffhelper.cli run` for this league while this page is open: "
+                "the CLI replays the journal once at ITS startup, so it would "
+                "quietly show a stale board.")
+
 
 def _layout(league_names: list[str], default_league: str, poll_ms: int = 5000):
     return html.Div(id="page", className="page", children=[
+        nav("draft", default_league),
+        html.Div(DRAFT_NOTICE, style={
+            "fontFamily": _SANS, "fontSize": "13px", "fontWeight": "600",
+            "color": "#ef4444", "border": "1px solid #ef4444",
+            "borderRadius": "6px", "padding": "10px 14px", "margin": "0 0 12px",
+        }),
         # DOM order IS the grid order: brand, clock, league. The clock sits in
         # the centre track, which is where the eye goes first on the clock.
         html.Header(className="topbar", children=[
@@ -550,9 +1159,32 @@ def _register_callbacks(app, leagues, tunables, cache):
         # does nothing -- reported live as "sometimes clicks don't register".
         return status, (n or 0) + 1, None, last_marked
 
-    # Both exposed for direct testing: a callback sealed inside this function is
-    # code no test can reach, and untestable code is untested code.
-    return _refresh, _write
+    @app.callback(
+        Output("trades-content", "children"),
+        Input("trades-run", "n_clicks"),
+        dash.State("trades-league", "data"),
+    )
+    def _run_trades(n_clicks, league_name):
+        if n_clicks is None:
+            # Dash fires every callback once at page load, using each
+            # Input's value at that moment -- the button's n_clicks stays
+            # unset (None) until it is actually clicked, because the layout
+            # never gives it a starting n_clicks=0 the way "undo" does above.
+            # This is the entire guard against an accidental navigation
+            # costing the ~330s sweep (pipeline.py's build_trades ponytail
+            # note): the state is returned unchanged.
+            return dash.no_update
+        # league_name comes from the State store trades_landing wrote, not
+        # from a default -- a callback wired to n_clicks alone carries no
+        # league, and get_league(leagues, DEFAULT) would silently sweep the
+        # wrong one.
+        league = get_league(leagues, league_name)
+        view = pipeline.build_trades(league, tunables, progress=None)
+        return trades_children(view)
+
+    # All three exposed for direct testing: a callback sealed inside this
+    # function is code no test can reach, and untestable code is untested code.
+    return _refresh, _write, _run_trades
 
 
 def main(argv: list[str] | None = None) -> int:

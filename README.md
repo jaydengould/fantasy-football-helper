@@ -24,7 +24,7 @@ lineup, waiver, and trade-finder commands all work end to end.
 | Terminal board with auto-refresh | working |
 | Hand-typed picks survive a crash or restart | working |
 | Yahoo API feed | blocked on Yahoo developer approval |
-| Web board (`python -m ffhelper.app`) | working |
+| Web app — draft board plus season pages (`python -m ffhelper.app`) | working |
 | Weekly start/sit lineup (`lineup`) | working |
 | Official practice report (nflverse) | working — the file appears once week 1 is played |
 | Opponent matchup context | working — a rank, not an adjustment: adjusting lost to plain projections on 2024 and 2025 |
@@ -179,7 +179,9 @@ known state behind a `FEED STALE` banner rather than dying.
 .venv/bin/python -m ffhelper.app --league my-sleeper-league
 ```
 
-The same engine, in a browser at `http://127.0.0.1:8050`. Click a row to mark that
+The same engine, in a browser at `http://127.0.0.1:8050/draft` (the root URL is
+the season homepage — league picker, status, headlines, trending; see below).
+Click a row to mark that
 player drafted; your own roster is derived from your `draft_slot` and the pick
 number rather than typed. On a league with no feed, a per-row override corrects
 attribution when entry has drifted — leagues that have a feed do not show it,
@@ -267,6 +269,8 @@ He stays off the board — he really was drafted, just not by you.
 .venv/bin/python -m ffhelper.cli lineup --league my-sleeper-league
 ```
 
+Also at `/lineup` in the web app, as a table. Same builder, same numbers.
+
 One-shot — no loop, no polling. Prints your optimal starting lineup for the
 current NFL week, scored against your league's real settings, then your bench.
 A player with no projection this week is shown separately rather than scored
@@ -327,6 +331,8 @@ a live roster. `preflight` reports the file's path, player count, and age.
 .venv/bin/python -m ffhelper.cli waivers --league my-sleeper-league
 ```
 
+Also at `/waivers` in the web app, as tables.
+
 Ranks the free-agent pool by what adding a player is actually worth: your roster
 is full, so an add is an add-and-drop, and the number is the gain to your
 *starting lineup* over a horizon — this week, and the rest of the season — after
@@ -359,6 +365,10 @@ what your own leaguemates want.
 .venv/bin/python -m ffhelper.cli trades --league my-sleeper-league
 .venv/bin/python -m ffhelper.cli trades --league my-sleeper-league --player "some player"
 ```
+
+Also at `/trades` in the web app, behind a button rather than on page load:
+the full sweep is eleven opponents by three shapes and takes about five
+minutes, so navigating there must not start one.
 
 Searches every opponent's roster for the best 1-for-1, 2-for-1, and 2-for-2
 that clears a floor on **both sides** — a trade only you gain from is not a

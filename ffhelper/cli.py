@@ -10,7 +10,6 @@ import threading
 import time
 from dataclasses import replace
 from datetime import date, datetime
-from math import sqrt
 from pathlib import Path
 
 from ffhelper import season as season_mod
@@ -1534,274 +1533,47 @@ def _resolve_my_roster(
 
 def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
     """Print this week's optimal lineup. One shot -- no loop, no polling."""
-    settings = resolve_settings(league)
-    week, season_str, notes, state_week = _resolve_week(week)
-    if week is None:
-        # Neither the endpoint nor --week can supply a week -- guessing one (the
-        # old `or 1` fallback) is exactly the fabrication this design forbids.
-        print("no NFL week available: /state/nfl is unreachable and --week "
-              "was not given -- pass e.g. '--week 1' to run without it")
+    from ffhelper.pipeline import build_lineup      # local: pipeline imports cli
+    view = build_lineup(league, tunables, week)
+    if view.error:
+        print(view.error)
         return 1
-
-    players = load_players()
-    # Kept, not discarded after scoring: the same rows carry `opponent`, which
-    # is the whole schedule this command needs -- no schedule endpoint, no
-    # second fetch.
-    weekly_rows = load_weekly_projections(season_str, week)
-    weekly = season_mod.weekly_points(weekly_rows, settings.scoring)
-
-    roster, owner, notes_r, rosters, rid = _resolve_my_roster(league, settings, players)
-    notes += notes_r
-
-    # Practice status is the one thing Sleeper's player DB does not carry (zero
-    # of 3231 players), so it comes from nflverse and joins on gsis_id through
-    # the crosswalk already fetched. It fills the EXISTING field, which is why
-    # nothing downstream -- the status note, the snapshot -- needed changing.
-    practice, practice_line = _practice_status(season_str, week)
-    roster = season_mod.with_practice_status(roster, practice)
-
-    # Players with no projection are NOT a "!!" note: see render_lineup. They get
-    # their own quiet section, because a stash can carry no number for months.
-    scored = season_mod.with_weekly_points(roster, weekly)
-    state_ss = season_mod.start_sit(scored, settings.roster_slots,
-                                    tunables.close_call_points,
-                                    projected_ids=set(weekly))
-    matchups, matchup_line = _matchup_context(
-        season_str, week, players, settings.scoring,
-        season_mod.opponents(weekly_rows), roster)
-    print(render_lineup(state_ss, week, league.name, owner, notes, matchups))
-    print(matchup_line)
-    print(practice_line)
+    print(render_lineup(view.state, view.week, view.league_name, view.owner,
+                        view.notes, view.matchups))
+    print(view.matchup_line)
+    print(view.practice_line)
     # After the lineup, not inside `notes`: notes render as "!!" alarms, and a
-    # snapshot that worked is not an alarm. Same reason the unprojected players
-    # got their own quiet section in 4a rather than crying wolf every week.
-    print(_record_snapshot(league, season_str, week, state_week,
-                           state_ss, set(weekly)))
+    # snapshot that worked is not an alarm.
+    print(_record_snapshot(league, view.season_str, view.week, view.state_week,
+                           view.state, view.projected_ids))
     return 0
 
 
 def _waivers(league: League, tunables: Tunables, week: int | None = None,
              limit: int = 10) -> int:
     """Rank the free-agent pool. One shot -- no loop, no polling."""
-    if league.platform != "sleeper":
-        # Not a fallback and not a bug: the pool is the full player list minus
-        # the union of EVERY roster, and Yahoo serves no rosters without API
-        # access. A pool built from one hand-entered roster would be silently
-        # wrong, which is worse than absent.
-        print(f"waivers needs every team's roster to know who is free, and "
-              f"{league.platform} has no API access -- so this command is "
-              f"Sleeper-only. `lineup` still works for {league.name}.")
+    from ffhelper.pipeline import build_waivers      # local: pipeline imports cli
+    view = build_waivers(league, tunables, week, limit)
+    if view.error:
+        print(view.error)
         return 1
-
-    settings = resolve_settings(league)
-    week, season_str, notes, _state_week = _resolve_week(week)
-    if week is None:
-        print("no NFL week available: /state/nfl is unreachable and --week "
-              "was not given -- pass e.g. '--week 1' to run without it")
-        return 1
-
-    last_week, cal_note = season_mod.last_scoring_week(settings)
-    if cal_note is not None:
-        notes.append(cal_note)
-
-    players = load_players()
-    roster, owner, notes_r, rosters, rid = _resolve_my_roster(league, settings, players)
-    notes += notes_r
-    if not roster:
-        print("no roster resolved, so there is nothing to upgrade -- "
-              + "; ".join(notes))
-        return 1
-
-    weekly_by_week: dict[int, dict[str, float]] = {}
-    failed: list[int] = []
-    for w in range(week, last_week + 1):
-        try:
-            rows = load_weekly_projections(season_str, w)
-        except Exception:                             # noqa: BLE001 - degrade, never fabricate
-            failed.append(w)
-            continue
-        weekly_by_week[w] = season_mod.weekly_points(rows, settings.scoring)
-    if not weekly_by_week:
-        print("no weekly projections could be fetched -- nothing can be ranked")
-        return 1
-    if failed:
-        # A shorter horizon is a smaller total, and a total that shrank for an
-        # unexplained reason is the kind of silent wrongness this project keeps
-        # finding. Say which weeks are missing.
-        notes.append(f"{len(failed)} week(s) of projections could not be scored "
-                     f"({', '.join(str(w) for w in failed)}) -- the rest-of-season "
-                     f"total covers {len(weekly_by_week)} weeks, not "
-                     f"{last_week - week + 1}")
-
-    weights = season_mod.week_weights(settings, weekly_by_week, tunables.playoff_weight)
-
-    projected = set().union(*(set(wk) for wk in weekly_by_week.values()))
-    pool = season_mod.free_agent_pool(players, rosters, projected)
-
-    # `this_week` is not a bet on an uncertain future week -- it is the week
-    # already in front of you, being asked about right now, so it is scored
-    # unweighted. Passing `weights` here would raise its own significance floor
-    # on exactly the weeks (playoffs) where an immediate one-week call matters
-    # most, discounting a week that is, from where you stand, certain.
-    this_week_horizon = {week: weekly_by_week[week]} if week in weekly_by_week else {}
-    this_week = season_mod.waiver_targets(
-        roster, pool, settings.roster_slots, this_week_horizon,
-        tunables.close_call_points, limit) if this_week_horizon else []
-    ros = season_mod.waiver_targets(
-        roster, pool, settings.roster_slots, weekly_by_week,
-        tunables.close_call_points, limit, weights=weights)
-
-    try:
-        trending = load_trending("add")
-    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
-        trending = {}
-        notes.append(f"could not reach Sleeper's trending endpoint ({exc}) -- "
-                     f"the trending column is absent")
-
-    position, teams = season_mod.waiver_position(rosters, rid) if rid else (None, 0)
-
-    print(render_waivers(this_week, ros, week, last_week,
-                         league.name, owner, position, teams, trending, notes,
-                         len(weekly_by_week)))
+    print(render_waivers(view.this_week, view.ros, view.week, view.last_week,
+                         view.league_name, view.owner, view.position, view.teams,
+                         view.trending, view.notes, view.weeks_scored))
     return 0
 
 
 def _trades(league: League, tunables: Tunables, week: int | None = None,
             player: str | None = None, limit: int = 20) -> int:
-    """Search every opponent for a mutually-beneficial trade. One shot.
-
-    Mirrors `_waivers`: same platform guard, same week/roster/horizon
-    resolution, all reused rather than re-derived. The only new pieces are the
-    deadline check and the opponent-by-opponent search.
-    """
-    if league.platform != "sleeper":
-        # Same reasoning as `waivers`: the search needs to know what all
-        # eleven other rosters hold, and Yahoo serves no rosters at all.
-        print(f"trades needs every team's roster to know what they hold, and "
-              f"{league.platform} has no API access -- so this command is "
-              f"Sleeper-only. `lineup` still works for {league.name}.")
-        return 1
-
-    settings = resolve_settings(league)
-    week, season_str, notes, _state_week = _resolve_week(week)
-    if week is None:
-        print("no NFL week available: /state/nfl is unreachable and --week "
-              "was not given -- pass e.g. '--week 1' to run without it")
-        return 1
-
-    deadline = settings.trade_deadline
-    if deadline is not None and week > deadline:
-        # A legal state, not an error: printing proposals you are not allowed
-        # to make is worse than printing none.
-        print(f"the trade deadline for {league.name} passed in week {deadline} "
-              f"-- no proposal can be made now")
-        return 0
-    if deadline is None:
-        notes.append("trade_deadline is unknown for this league -- proceeding "
-                     "without one")
-
-    last_week, cal_note = season_mod.last_scoring_week(settings)
-    if cal_note is not None:
-        notes.append(cal_note)
-
-    players = load_players()
-    roster, owner, notes_r, rosters, rid = _resolve_my_roster(league, settings, players)
-    notes += notes_r
-    if not roster:
-        print("no roster resolved, so there is nothing to trade -- "
-              + "; ".join(notes))
-        return 1
-
-    weekly_by_week: dict[int, dict[str, float]] = {}
-    failed: list[int] = []
-    for w in range(week, last_week + 1):
-        try:
-            rows = load_weekly_projections(season_str, w)
-        except Exception:                             # noqa: BLE001 - degrade, never fabricate
-            failed.append(w)
-            continue
-        weekly_by_week[w] = season_mod.weekly_points(rows, settings.scoring)
-    if not weekly_by_week:
-        print("no weekly projections could be fetched -- nothing can be ranked")
-        return 1
-    if failed:
-        notes.append(f"{len(failed)} week(s) of projections could not be scored "
-                     f"({', '.join(str(w) for w in failed)}) -- the horizon "
-                     f"total covers {len(weekly_by_week)} weeks, not "
-                     f"{last_week - week + 1}")
-
-    weights = season_mod.week_weights(settings, weekly_by_week, tunables.playoff_weight)
-    floor = tunables.close_call_points * sqrt(season_mod.effective_weeks(weekly_by_week, weights))
-
-    pin: Player | None = None
-    if player:
-        matches = find_players(players, player)
-        if not matches:
-            print(f"no player matches '{player}'")
-            return 1
-        if len(matches) > 1:
-            # Never guess -- Bijan and Brian Robinson are both ATL RBs, and
-            # picking one silently would search for a trade nobody asked for.
-            print(f"'{player}' is ambiguous -- matches: "
-                 + ", ".join(f"{p.name} ({p.position} {p.team})" for p in matches))
-            return 1
-        pin = matches[0]
-
-    try:
-        users = {u["user_id"]: u.get("display_name")
-                 for u in load_league_users(league.league_id)}
-    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
-        # The exact sibling a previous fix wave missed on the happy path: this
-        # is the last unguarded fetch, and the cheapest thing to lose is a name.
-        users = {}
-        notes.append(f"could not reach Sleeper's league users endpoint ({exc}) -- "
-                     f"opponent names are unavailable")
-    names = {r.get("roster_id"): users.get(r.get("owner_id"))
-                                 or f"roster {r.get('roster_id')}"
-             for r in rosters}
-
-    best: list[trade_mod.Proposal] = []
-    # ponytail: the full sweep is ~330s (11 opponents x three shapes) because
-    # 2-for-1 searches the counterparty's forced cut. Accepted: a weekly
-    # one-shot command may be slow, and the alternative is pruning, which was
-    # measured dropping 22 of 49 real trades. If this ever needs to be fast,
-    # memoise horizon_total on a frozenset of player ids -- do NOT prefilter.
-    for r in rosters:
-        opp_rid = r.get("roster_id")
-        if opp_rid is None or opp_rid == rid:
-            continue
-        their_ids = r.get("players") or []
-        theirs = [players[i] for i in their_ids if i in players]
-        missing = [i for i in their_ids if i not in players]
-        if missing:
-            # Same degradation `_resolve_my_roster` already prints for MY
-            # roster -- an opponent roster shortened by an unresolvable id
-            # understates their baseline and can make a trade look better for
-            # them than it is.
-            notes.append(f"{len(missing)} of {names[opp_rid]}'s rostered players are "
-                         f"not in the player pool: {', '.join(missing)}")
-        print(f"  scanning {names[opp_rid]}...", file=sys.stderr)
-        options = trade_mod.trade_options(roster, theirs, opp_rid, settings.roster_slots,
-                                          weekly_by_week, floor, weights, pin)
-        if pin is not None:
-            best.extend(options)
-        elif options:
-            best.append(max(options, key=lambda p: p.gain_me))
-
-    if pin is not None:
-        mine = any(p.sleeper_id == pin.sleeper_id for p in roster)
-        best.sort(key=lambda p: -p.gain_me if mine else -p.gain_them)
-        # Unlike Mode 1 (one row per opponent, bounded by construction), a
-        # pin enumerates every qualifying shape against every opponent --
-        # ~1,695 per opponent at real scale. The spec gives Mode 2 no
-        # collapse rule of its own, so cap rather than invent a diversity
-        # heuristic.
-        best = best[:limit]
-    else:
-        best.sort(key=lambda p: -p.gain_me)
-
-    print(render_trades(best, week, league.name, owner, names, notes,
-                        len(weekly_by_week), pin))
+    """Search every opponent for a mutually-beneficial trade. One shot."""
+    from ffhelper.pipeline import build_trades      # local: pipeline imports cli
+    view = build_trades(league, tunables, week, player, limit,
+                        progress=lambda line: print(line, file=sys.stderr))
+    if view.error:
+        print(view.error)
+        return 0 if view.deadline_passed else 1
+    print(render_trades(view.best, view.week, view.league_name, view.owner,
+                        view.names, view.notes, view.weeks_scored, view.pinned))
     return 0
 
 

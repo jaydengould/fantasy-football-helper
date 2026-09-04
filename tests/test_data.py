@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ffhelper.data import fetch_json, load_crosswalk, load_league_rosters, rosters_cache_key
+from ffhelper.data import fetch_json, fetch_text, load_crosswalk, load_league_rosters, rosters_cache_key
 
 
 def test_fetches_and_caches(tmp_path: Path):
@@ -56,6 +56,49 @@ def test_raises_when_no_cache_and_fetch_fails(tmp_path: Path):
 
     with pytest.raises(ConnectionError):
         fetch_json("http://x/y", "k", cache_dir=tmp_path, fetcher=boom)
+
+
+def test_fetch_text_fetches_and_caches(tmp_path: Path):
+    calls = []
+
+    def fake(url: str) -> str:
+        calls.append(url)
+        return "<rss>body</rss>"
+
+    a = fetch_text("http://x/y", "k", cache_dir=tmp_path, fetcher=fake)
+    b = fetch_text("http://x/y", "k", cache_dir=tmp_path, fetcher=fake)
+    assert a == b == "<rss>body</rss>"
+    assert len(calls) == 1, "second call should hit the disk cache"
+
+
+def test_fetch_text_falls_back_to_stale_cache_on_failure(tmp_path: Path):
+    """The one behaviour Ruling T10-A is about: reusing fetch_json's cache
+    helpers UNCHANGED for text would parse every read as JSON, so a plain-text
+    stale cache would never be found usable and this would raise instead of
+    returning the stale body. Against that (pre-fix) code, this test fails.
+    """
+    def ok(url: str) -> str:
+        return "<rss>fresh</rss>"
+
+    def boom(url: str) -> str:
+        raise ConnectionError("network down")
+
+    fetch_text("http://x/y", "k", cache_dir=tmp_path, fetcher=ok)
+    # ttl=0 forces a refetch attempt, which fails; stale cache must be returned
+    got = fetch_text("http://x/y", "k", ttl_seconds=0, cache_dir=tmp_path, fetcher=boom)
+    assert got == "<rss>fresh</rss>"
+
+
+def test_fetch_text_and_fetch_json_do_not_collide_on_cache_key(tmp_path: Path):
+    """`fetch_json` writes `{key}.json`; `fetch_text` must not land on the same
+    filename for the same cache_key, or one would silently clobber the other."""
+    fetch_json("http://x/y", "shared_key", cache_dir=tmp_path, fetcher=lambda u: json.dumps({"v": 1}))
+    fetch_text("http://x/y", "shared_key", cache_dir=tmp_path, fetcher=lambda u: "plain text")
+
+    assert fetch_json("http://x/y", "shared_key", cache_dir=tmp_path,
+                      fetcher=lambda u: (_ for _ in ()).throw(AssertionError("should hit cache"))) == {"v": 1}
+    assert fetch_text("http://x/y", "shared_key", cache_dir=tmp_path,
+                      fetcher=lambda u: (_ for _ in ()).throw(AssertionError("should hit cache"))) == "plain text"
 
 
 def test_corrupt_cache_within_ttl_refetches(tmp_path: Path):

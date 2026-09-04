@@ -6,7 +6,122 @@ rather than a diary. Every durable lesson here has already been promoted into
 learned. **Nothing reads this file to decide anything** — it is evidence, not
 authority.
 
-Entries run 2026-08-24 (Phase 0) to 2026-09-03 (Phase 5 closed out).
+Entries run 2026-08-24 (Phase 0) to 2026-09-03 (Phase 6 closed out).
+
+### 2026-09-03 (second block) — Phase 6 shipped: season mode on the web. 28 rulings, and seven mutations I read past for eleven tasks.
+
+**State:** branch `phase-6-web-season-mode`, **574 tests** (from 494), **212
+mutations, 0 STALE, 1 survivor** (the documented `value.py` equivalent mutant,
+sole survivor since August), tree identical before and after the run. 30 commits
+off `main` at `7fa58a6`. Executed with `superpowers:subagent-driven-development`
+across two sessions — the first ended mid-Task-9 on a usage limit, and this one
+resumed from the ledger rather than from memory, which is the only reason the
+phase did not restart work already committed. The whole-branch review's
+eleven findings were answered in one fix wave (`fafca1c..5eed6d4`) and the
+scoped re-review verified each at its named location, with every new or
+amended assertion confirmed reachable through exactly one code path:
+**ready to merge.**
+
+**The headline finding of the whole-branch review was my own reading failure.**
+Tasks 1–3 moved ~280 lines out of `cli.py` into the new `pipeline.py` and nobody
+re-pointed the mutations targeting them. `MUTATIONS` had no `pipeline.py` key at
+all, so **`pipeline.py` had zero mutation coverage** — and the logic that lost it
+was the load-bearing set: the trade deadline, both horizon upper bounds
+(`LAST_REGULAR_WEEK`, already shipped wrong twice), the ambiguous-`--player`
+refusal, `max` vs `min` on best-per-opponent, and the pinned sort direction.
+`mutate.py`'s STALE guard reported all seven on **every single sweep for eleven
+tasks**. I read "8 needing a look, identical to the pre-existing baseline" and
+moved on, more than once, and wrote that reading into the ledger twice. It was
+never baseline: this branch caused it. The tool was right and the reader was
+wrong — a variant of the "verification tool checking something else" pattern in
+which the tool checked exactly the right thing and the human discarded it.
+Fixed in `1ddeabf` (five mutations moved verbatim, the two horizon ones collapsed
+onto the shared `pipeline._horizon`); STALE reached zero for the first time.
+
+**A defect that was live on the day it was found.** `status_strip` gated on
+`week is not None` while `cli._resolve_week` gates on `if not week:` — with a
+comment three lines away saying Sleeper serves `"week": 0` in the offseason and
+that these two guards disagreeing is a defect the project already shipped once.
+Season start was six days out, so the homepage's first real use printed
+`nfl week 0` and `snapshot NOT recorded for week 0 -- run a snapshot`, pointing
+the user at a command `build_lineup` refuses with `NO_WEEK`. Fixed in `712d6c8`
+to both the display line and the snapshot gate — the second one is the "fix
+applied to the file the finding named, not every place the defect lives" trap,
+and this is the third session in a row it has appeared.
+
+**A spec requirement the plan dropped silently.** The spec's route table says `/`
+shows a league picker. The plan never mentioned it, `home_layout`'s
+`league_names` parameter was never read, and `nav()` only ever emitted
+`?league=<current>` — so **there was no path through the UI to reach `yahoo-main`
+at all**, only hand-editing the URL. No per-task review could have caught this:
+each saw one task's diff, and the omission lived in the space between them. This
+is the case for keeping a whole-branch review even when every task passed.
+
+**Four false-pass tests, one of which survived to the final review.** Four times
+a test asserted a string that a *different* branch also produced, so it passed
+even when the code it named was deleted. Three were caught in task review; the
+fourth (`test_season_page_children_waivers_routes_to_the_table`, whose fixture
+player was named `Table Guy`, making `assert "Table" in rendered` inert) survived
+to the whole-branch review. The tell is always the same shape: one assertion, two
+producers. Every review prompt in the second half of the phase carried an
+explicit "name the branch this assertion is exclusive to" instruction, and that
+is what caught the later ones.
+
+**Two mutation sweeps were killed mid-run and stranded a mutation on disk**, once
+leaving `ffhelper/season.py` holding a live change to the waiver floor —
+uncommitted, caught by the `git status` guard, restored. The cause is not
+`mutate.py`, which has a correct `finally` restore: the Bash tool auto-backgrounds
+any command at its 120s default timeout, the full sweep runs longer than that, and
+a backgrounded sweep is SIGKILLed when the agent's turn ends, skipping `finally`.
+**"Foreground, alone" is not sufficient as written** — following it requires an
+explicit 600s timeout that no dispatch mentioned, mine included. That belongs in
+`CLAUDE.md` next to the existing rule.
+
+**Rulings made on the user's behalf, in order.** Each is a decision no human was
+asked about, with what it costs if wrong.
+
+| # | Ruling | Cost if wrong |
+| --- | --- | --- |
+| F1 | `_season_layout_for(name)` returns a layout callable feeding `pipeline.build_*` into `season_page_children` | T6 invents another wiring; small refactor |
+| F2 | `news.FEEDS` is a module-level mapping, undeclared in the plan's Interfaces | cosmetic rename |
+| F3 | T6's `/trades` layout renders landing text and builds no view; the `else` branch stays for T9's callback | a stray page load costs a 5-minute sweep |
+| T1-A | Accepted moving `resolve_settings` after the week check — **REVERSED next round** | see below |
+| T1-A rev | Restored the original order; the reordering hid a real config error behind "pass --week" on a double failure. The TEST was the problem | none identified |
+| T1-B | `pipeline` calls the three patched `cli` names module-qualified, so 22 existing `monkeypatch.setattr` tests keep biting | a future test patching one of four unpatched wrappers is silently inert |
+| — | Folded T1's Minors 2–4 into the open fix round | trivial inversion |
+| T4 | Kept the page-registry key `"board"`, moved only the path to `/draft` | key reads "board" while route reads "/draft" |
+| T5-A | **My briefing was wrong**: `mutate.py` already had an `"ffhelper/app.py"` key; a literal duplicate would have silently deleted 28 mutations | none; implementer's read was correct |
+| T5-B | `status_strip(league)`, not the plan's `status_strip(league, names)` — `names` had no consumer | one parameter added later at one call site |
+| T5-C | The `_resolve_league` extraction was authorised by me, not scope creep | none |
+| T5-D | Deleted `app.roster_file_age` over the brief that mandated it — it disagreed with `cli.roster_file_age_days` on the same file (floor vs round) | none identified |
+| — | Folded T5's Minors 2–3 in; two tests read whatever real `.roster/*.txt` was on the machine | trivial test churn |
+| T6-A | The line-for-line CLI/browser comparison is not agent-runnable; surfaced to the user instead of claimed | a render defect survives to the user's first run |
+| T6-B | Deferred the clean full sweep to one run with no agent live | a survivor goes unnoticed until that run |
+| T7-A | **Spec gap**: `/lineup` HTML must carry every section `render_lineup` prints (BENCH, NO PROJECTION, CLOSE CALLS, notes), not just the starters table | a busier page, vs one that hides a close call |
+| — | Folded T7's Important (a BENCH assertion that reused its own bench player) into the round | trivial |
+| T8-A | Same gap: `/waivers` keeps the `!!` notes and the waiver-priority line | a busier page, vs hiding the cost of a claim |
+| T8-B | **Retroactive correction**: a raw `curl` of a Dash route returns the app SHELL, so T6's "all five routes 200" proves the server is up and nothing more | widens what is reported unverified |
+| T9-A | Same gap, third time: `/trades` keeps the weeks-scored header, notes, all four mode lines, the empty-result line and `TRADE_CAVEAT` | a busier page, vs dropping the line saying what was searched |
+| T9-B | **Design gap**: the button callback carries no league, so a naive build sweeps the DEFAULT league for five minutes and fills the page with plausible wrong proposals. League carried as `State` via a hidden `dcc.Store` | a different State mechanism; cosmetic |
+| T9-C | The ~330s timed browser sweep is not agent-runnable; proved offline that navigation invokes no builder and the click invokes it exactly once | wall-clock behaviour stays unmeasured |
+| T10-A | **Trap in the plan**: "mirror `fetch_json` exactly" would have reused helpers that `json.loads` every cache read, silently killing the stale fallback for XML while still looking healthy. Parse step parameterised; a test must return the stale BODY | a different factoring; cosmetic |
+| T10-B | **My feed verification was wrong** — probed with `curl -A "Mozilla/5.0"` while the code sends `python-requests`. ESPN 403s the real client. Replaced with CBS; rejected UA-spoofing in shared fetch infra, and Yahoo's "NFL" feed (200, 50 items, college football content) | a different national source; cosmetic |
+| T10-C | Accepted `cache_dir` on `load_headlines` beyond the brief's signature | one extra keyword argument |
+| T10-D | Folded two Minors into the round, against the skill's "minors never enter the loop" — one was a guard half of which no mutation could reach | two fixtures and a mutation entry |
+| T11-A | Step 6's browser check not agent-runnable; proved the four mechanisable facts offline | rendered output stays unverified by any agent |
+| T11-B | Folded three Minors in, including `rel="noopener noreferrer"` on `target="_blank"` — not deferred for tidiness | three assertions, one attribute |
+
+**Owed to the user, not claimable by any agent.** No agent in this phase verified
+rendered browser output; every page was proved by calling its registered layout
+function directly, which is the same code path the browser drives but is not the
+same as looking at the page. In priority order: **(a) click RUN on `/trades` and
+time it end-to-end** — a 5.5-minute blocking Dash callback against Werkzeug's and
+the browser's timeouts is the one thing no test can cover, and the plan's own
+instruction on failure was "stop and report"; (b) `/lineup?league=sleeper-main`
+line-for-line against the CLI on real data; (c) `/` and `/lineup` at ~390px for
+the page shell; (d) the week-0 preseason state of the status strip, live now.
+
+**Phase 6 is finished. Merging is the user's.**
 
 ### 2026-09-03 — Phase 5 closed out. The final review's fix wave, and a handle that was in five files, not one.
 

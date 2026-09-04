@@ -122,9 +122,6 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "return False"),
     ],
     "cli.py": [
-        ("waivers builds the pool from my roster only",
-         "pool = season_mod.free_agent_pool(players, rosters, projected)",
-         "pool = season_mod.free_agent_pool(players, rosters[:1], projected)"),
         ("empty waiver board renders as a blank",
          'lines.append("  nothing on the wire beats what you already have.")',
          "pass"),
@@ -300,42 +297,20 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "            except ZeroDivisionError as exc:              "
          "# noqa: BLE001 - degrade, never fabricate\n"
          "                # The last unguarded fetch in this function"),
+    ],
+    "pipeline.py": [
+        ("waivers builds the pool from my roster only",
+         "pool = season_mod.free_agent_pool(players, rosters, projected)",
+         "pool = season_mod.free_agent_pool(players, rosters[:1], projected)"),
         ("the trade deadline is ignored, so it offers trades you cannot make",
          "if deadline is not None and week > deadline:",
          "if deadline is not None and week > 999:"),
-        ("trades' horizon runs to the NFL's last week instead of the league's",
-         "print(\"no roster resolved, so there is nothing to trade -- \"\n"
-         "              + \"; \".join(notes))\n"
-         "        return 1\n"
-         "\n"
-         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
-         "    failed: list[int] = []\n"
-         "    for w in range(week, last_week + 1):",
-         "print(\"no roster resolved, so there is nothing to trade -- \"\n"
-         "              + \"; \".join(notes))\n"
-         "        return 1\n"
-         "\n"
-         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
-         "    failed: list[int] = []\n"
-         "    for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
+        ("both horizons run to the NFL's last week instead of the league's",
+         "for w in range(week, last_week + 1):",
+         "for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
         ("an ambiguous --player silently takes the first match",
          "        if len(matches) > 1:",
          "        if len(matches) > 99:"),
-        ("waivers' horizon runs to the NFL's last week instead of the league's",
-         "print(\"no roster resolved, so there is nothing to upgrade -- \"\n"
-         "              + \"; \".join(notes))\n"
-         "        return 1\n"
-         "\n"
-         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
-         "    failed: list[int] = []\n"
-         "    for w in range(week, last_week + 1):",
-         "print(\"no roster resolved, so there is nothing to upgrade -- \"\n"
-         "              + \"; \".join(notes))\n"
-         "        return 1\n"
-         "\n"
-         "    weekly_by_week: dict[int, dict[str, float]] = {}\n"
-         "    failed: list[int] = []\n"
-         "    for w in range(week, season_mod.LAST_REGULAR_WEEK + 1):"),
         ("trades' best-per-opponent row is their WORST qualifying offer, not their best",
          "best.append(max(options, key=lambda p: p.gain_me))",
          "best.append(min(options, key=lambda p: p.gain_me))"),
@@ -515,8 +490,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "    return next_pick_number(\n        state.current_pick - 1, league.draft_slot, num_teams) == state.current_pick",
          "    return next_pick_number(\n        state.current_pick, league.draft_slot, num_teams) == state.current_pick"),
         ("build_app drops the configured interval on the floor",
-         "        layout=_layout(league_names, default_league, poll_ms))",
-         "        layout=_layout(league_names, default_league))"),
+         "            league_names, league_from_kwargs(kw, league_names, default_league), poll_ms))",
+         "            league_names, league_from_kwargs(kw, league_names, default_league)))"),
         ("refresh interval ignores config (back to a hardcoded 5s)",
          'return max(tunables.poll_seconds.get(platform, 5), 1) * 1000',
          "return 5000"),
@@ -532,6 +507,40 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "        pass"),
         ("bench picks hidden -- you cannot see your own bench",
          '    out += [("BN", p.name) for p in remaining]', "    pass"),
+        ("snapshot_recorded returns False instead of None when unreadable",
+         "        return None\n    return row is not None",
+         "        return False\n    return row is not None"),
+        ("season page renders an error view as data instead of stopping",
+         '    if view.error:\n        return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})\n    if name == "lineup":',
+         '    if name == "lineup":'),
+        ("/trades builds a view on page load -- the ~330s sweep hangs the browser",
+         '            return html.Div(className="page", children=[\n'
+         '                nav(name, league), dcc.Loading(trades_landing(league))])',
+         '            leagues, tunables = load_config(CONFIG_PATH)\n'
+         '            lg = get_league(leagues, league)\n'
+         '            view = pipeline.build_trades(lg, tunables)\n'
+         '            return html.Div(className="page", children=[\n'
+         '                nav(name, league), season_page_children(name, view)])'),
+        ("/trades sweeps on navigation -- the n_clicks guard is removed",
+         '        if n_clicks is None:\n            # Dash fires every callback once at page load, using each\n            # Input\'s value at that moment -- the button\'s n_clicks stays\n            # unset (None) until it is actually clicked, because the layout\n            # never gives it a starting n_clicks=0 the way "undo" does above.\n            # This is the entire guard against an accidental navigation\n            # costing the ~330s sweep (pipeline.py\'s build_trades ponytail\n            # note): the state is returned unchanged.\n            return dash.no_update\n',
+         ''),
+        ("unprojected starter's invented 0.0 sort value prints as a real projection",
+         '"team": p.team or "", "proj": "--",',
+         '"team": p.team or "", "proj": f"{p.proj_pts:.1f}",'),
+        ("empty waiver board loses its wording -- reads as a failed fetch, not a result",
+         'html.P("nothing on the wire beats what you already have.",',
+         'html.P("wording was mutated -- this should never render.",'),
+        ("trending panel silently drops an id load_players can't resolve "
+         "(non-negotiable #3)",
+         '        label = f"{p.name} ({p.position}-{p.team or \'--\'})" if p '
+         'else f"player {player_id} (unresolved)"\n'
+         '        rows.append(html.Li(f"{label}: +{count:,} adds NATIONALLY '
+         '-- NOT your league"))',
+         '        if p is None:\n'
+         '            continue\n'
+         '        label = f"{p.name} ({p.position}-{p.team or \'--\'})"\n'
+         '        rows.append(html.Li(f"{label}: +{count:,} adds NATIONALLY '
+         '-- NOT your league"))'),
     ],
     "season.py": [
         ("free agent pool subtracts only my roster",
@@ -648,6 +657,13 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("the playoff_weight override leaks onto regular-season weeks",
          "        if wk not in out:\n            continue",
          "        if wk not in out:\n            pass"),
+    ],
+
+    "news.py": [
+        ("parse_rss link guard -- linkless items rendered as clickable headlines",
+         "if not title or not link:", "if not title:"),
+        ("parse_rss title guard -- titleless items rendered as blank headlines",
+         "if not title or not link:", "if not link:"),
     ],
 
     "ffhelper/trade.py": [

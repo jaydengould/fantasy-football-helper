@@ -182,7 +182,7 @@ earns a second occurrence.
 
 ## Current state
 
-Both drafts are done (2026-09-01); the 2026 season started Sept 9. Phases 0–5 are
+Both drafts are done (2026-09-01); the 2026 season starts Sept 9. Phases 0–5 are
 complete except Phase 0 (Yahoo OAuth, blocked on Yahoo's approval since
 2026-08-24) and Phase 3.7 (the `DataTable` swap, offseason). Full table and the
 open risks are in `docs/decisions.md`; the queue is `TODO.md`.

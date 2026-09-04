@@ -26,20 +26,30 @@ def _requests_get(url: str) -> str:
     return resp.text
 
 
-def _try_read_cache(path: Path, ttl_seconds: float | None) -> tuple[bool, Any]:
+def _try_read_cache(
+    path: Path, ttl_seconds: float | None, parse: Callable[[str], Any] = json.loads
+) -> tuple[bool, Any]:
     """Read+parse path if present and parseable. ttl_seconds=None skips the freshness
-    check (a stale read). Returns (usable, value); usable=False covers missing/stale/corrupt."""
+    check (a stale read). Returns (usable, value); usable=False covers missing/stale/corrupt.
+
+    `parse` defaults to json.loads for every existing (JSON) caller; `fetch_text`
+    passes `str` (identity on the text already read) so a corrupt-read failure
+    means the same thing -- "not usable" -- for text as it does for JSON, instead
+    of a second copy of this function that never parses at all.
+    """
     if not path.exists() or (ttl_seconds is not None and (time.time() - path.stat().st_mtime) >= ttl_seconds):
         return False, None
     try:
-        return True, json.loads(path.read_text())
+        return True, parse(path.read_text())
     except Exception:
         return False, None
 
 
-def _stale_fallback(path: Path, exc: Exception, label: str) -> Any:
+def _stale_fallback(
+    path: Path, exc: Exception, label: str, parse: Callable[[str], Any] = json.loads
+) -> Any:
     """On fetch failure: return the stale cache if still parseable, else re-raise exc."""
-    ok, value = _try_read_cache(path, None)
+    ok, value = _try_read_cache(path, None, parse)
     if ok:
         log.warning("fetch failed for %s (%s); using stale cache", label, exc)
         return value
@@ -54,7 +64,10 @@ def _write_cache_atomic(path: Path, text: str) -> None:
     fd = None
     tmp_path = None
     try:
-        fd, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix=path.stem, suffix=".json")
+        # suffix from the caller's own path (".json", ".txt", ...) so two callers
+        # writing different cache_keys under the same stem can never collide on
+        # a shared ".json" temp suffix while a write is in flight.
+        fd, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix=path.stem, suffix=path.suffix)
         os.write(fd, text.encode("utf-8"))
         os.close(fd)
         fd = None
@@ -102,6 +115,36 @@ def fetch_json(
 
     _write_cache_atomic(path, text)
     return json.loads(text)
+
+
+def fetch_text(
+    url: str,
+    cache_key: str,
+    ttl_seconds: int = 86_400,
+    cache_dir: Path = CACHE_DIR,
+    fetcher: Callable[[str], str] | None = None,
+) -> str:
+    """`fetch_json`'s sibling for a non-JSON body (RSS/XML): same disk cache,
+    same TTL handling, same stale-on-failure fallback, via the same
+    `_try_read_cache` / `_stale_fallback` helpers -- just with `parse=str`
+    (identity) instead of `json.loads`, and its own `.txt` cache file so it
+    never collides with a JSON cache_key sharing the same stem.
+    """
+    fetcher = fetcher or _requests_get
+    cache_dir = Path(cache_dir)
+    path = cache_dir / f"{cache_key}.txt"
+
+    fresh, value = _try_read_cache(path, ttl_seconds, parse=str)
+    if fresh:
+        return value
+
+    try:
+        text = fetcher(url)
+    except Exception as exc:
+        return _stale_fallback(path, exc, cache_key, parse=str)
+
+    _write_cache_atomic(path, text)
+    return text
 
 
 SLEEPER_PLAYERS_URL = "https://api.sleeper.app/v1/players/nfl"
