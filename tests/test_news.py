@@ -16,42 +16,42 @@ SAMPLE = """<?xml version="1.0"?>
 
 def test_parse_rss_skips_items_without_a_link():
     """A headline with no URL is not a headline -- it is an unclickable claim."""
-    out = parse_rss(SAMPLE, "espn")
+    out = parse_rss(SAMPLE, "cbs")
     assert len(out) == 1
     assert out[0].title == "Bears sign a kicker"
     assert out[0].url == "https://example.com/a"
-    assert out[0].source == "espn"
+    assert out[0].source == "cbs"
 
 
 def test_parse_rss_returns_empty_on_malformed_xml():
     """A broken feed is an absent panel, never a crashed homepage."""
-    assert parse_rss("<not xml", "espn") == []
+    assert parse_rss("<not xml", "cbs") == []
 
 
 def test_parse_rss_captures_pubdate():
-    out = parse_rss(SAMPLE, "espn")
+    out = parse_rss(SAMPLE, "cbs")
     assert out[0].published == "Wed, 03 Sep 2026 12:00:00 GMT"
 
 
 def test_load_headlines_across_feeds(tmp_path: Path):
     """Two feeds, both good: headlines from each, tagged with their own source,
     and no failure notes."""
-    feeds = {"espn": "http://espn.example/rss", "pft": "http://pft.example/rss"}
+    feeds = {"cbs": "http://cbs.example/rss", "pft": "http://pft.example/rss"}
 
     def fetcher(url: str) -> str:
-        source = "espn" if "espn" in url else "pft"
+        source = "cbs" if "cbs" in url else "pft"
         return SAMPLE.replace("Bears sign a kicker", f"{source} headline")
 
     hs, notes = load_headlines(feeds, fetcher=fetcher, cache_dir=tmp_path)
     assert notes == []
-    assert {h.source for h in hs} == {"espn", "pft"}
+    assert {h.source for h in hs} == {"cbs", "pft"}
     assert len(hs) == 2
 
 
 def test_load_headlines_one_feed_down_notes_it_and_keeps_the_other(tmp_path: Path):
     """A dead feed is a note, not a crash, and does not take the healthy feed
     down with it."""
-    feeds = {"espn": "http://espn.example/rss", "pft": "http://pft.example/rss"}
+    feeds = {"cbs": "http://cbs.example/rss", "pft": "http://pft.example/rss"}
 
     def fetcher(url: str) -> str:
         if "pft" in url:
@@ -60,10 +60,10 @@ def test_load_headlines_one_feed_down_notes_it_and_keeps_the_other(tmp_path: Pat
 
     hs, notes = load_headlines(feeds, fetcher=fetcher, cache_dir=tmp_path)
     assert len(hs) == 1
-    assert hs[0].source == "espn"
+    assert hs[0].source == "cbs"
     assert len(notes) == 1
     assert "pft" in notes[0]
 
 
 def test_feeds_has_the_three_verified_sources():
-    assert set(FEEDS) == {"espn", "pft", "bears"}
+    assert set(FEEDS) == {"cbs", "pft", "bears"}

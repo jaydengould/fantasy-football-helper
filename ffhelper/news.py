@@ -16,13 +16,23 @@ from typing import Callable
 
 from ffhelper.data import CACHE_DIR, fetch_text
 
-# Verified 2026-09-03 by fetching each: 200, plain RSS 2.0, item/title/link/
-# pubDate as direct children, no Atom <entry> anywhere. The spec's PFT
-# candidate (profootballtalk.nbcsports.com/feed/) 301-redirects to this one --
-# hardcoded as the resolved URL, since a redirect is a hop that can stop being
-# served.
+# Verified 2026-09-03 through requests.get(url) -- the client this project's
+# _requests_get actually sends (python-requests/2.x UA), not curl or a browser.
+# All three: 200, plain RSS 2.0, item/title/link/pubDate as direct children,
+# no Atom <entry> anywhere. The spec's PFT candidate
+# (profootballtalk.nbcsports.com/feed/) 301-redirects to this one -- hardcoded
+# as the resolved URL, since a redirect is a hop that can stop being served.
+#
+# ESPN's https://www.espn.com/espn/rss/nfl/news (and /rss/news) 403s this UA
+# specifically -- verified reproducibly, not a fluke -- while a browser UA
+# gets a 200. Do not re-add it and do not set a browser User-Agent on
+# _requests_get to route around the refusal: that's shared fetch infra every
+# other source in data.py rides on, and dressing up the client to get past a
+# deliberate block works around the refusal rather than fixing anything.
+# CBS replaces it; also checked and rejected: Yahoo's NFL RSS returns 200 but
+# its "NFL" feed is actually college football content.
 FEEDS = {
-    "espn": "https://www.espn.com/espn/rss/nfl/news",
+    "cbs": "https://www.cbssports.com/rss/headlines/nfl/",
     "pft": "https://www.nbcsports.com/profootballtalk.rss",
     "bears": "https://www.chicagobears.com/rss/news",
 }
@@ -39,7 +49,12 @@ class Headline:
 def parse_rss(xml_text: str, source: str) -> list[Headline]:
     """Every `<item>` with both a title and a link. A headline with no URL is
     not a headline -- it is an unclickable claim -- so it is skipped, not
-    rendered with a dead link. Malformed XML yields no headlines at all."""
+    rendered with a dead link. Malformed XML yields no headlines at all.
+
+    The `.strip()` calls below are load-bearing, not decorative: CBS wraps
+    its <title> text in newlines and indentation, so dropping the strip would
+    put literal whitespace padding around every CBS headline on the page.
+    """
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
