@@ -467,7 +467,8 @@ def headlines_panel(headlines: list, notes: list[str]) -> html.Div:
     children = [html.P("HEADLINES", style={"fontWeight": "700"})]
     if headlines:
         children.append(html.Ul([
-            html.Li(dcc.Link(f"[{h.source}] {h.title}", href=h.url, target="_blank"))
+            html.Li(html.A(f"[{h.source}] {h.title}", href=h.url, target="_blank",
+                          rel="noopener noreferrer"))
             for h in headlines
         ]))
     if notes:

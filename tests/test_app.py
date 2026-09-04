@@ -1548,6 +1548,24 @@ def test_headlines_panel_says_unavailable_rather_than_showing_nothing():
     assert "unavailable" in rendered.lower()
 
 
+def test_headlines_panel_says_no_headlines_when_every_feed_fetched_clean():
+    """Every feed answered and none had anything -- a true empty result, not
+    a fetch failure. Must not say 'unavailable', which would be a lie."""
+    rendered = str(headlines_panel([], []))
+    assert "no headlines right now" in rendered
+    assert "unavailable" not in rendered.lower()
+
+
+def test_headlines_panel_shows_headlines_and_the_partial_failure_note_together():
+    """Some feeds came through, one didn't -- both facts belong on screen,
+    and dropping either would misstate what actually happened."""
+    headline = Headline(title="Big trade", url="http://x", source="cbs", published=None)
+    rendered = str(headlines_panel([headline], ["pft: could not reach feed"]))
+    assert "Big trade" in rendered
+    assert "partially unavailable" in rendered
+    assert "pft: could not reach feed" in rendered
+
+
 def test_trending_panel_labels_counts_as_national():
     """These counts are national and must never read as a claim prediction."""
     players = {"4046": Player(sleeper_id="4046", name="Some Guy",
@@ -1555,6 +1573,16 @@ def test_trending_panel_labels_counts_as_national():
     rendered = str(trending_panel({"4046": 12345}, players))
     assert "NATIONALLY" in rendered or "national" in rendered.lower()
     assert "NOT your league" in rendered
+
+
+def test_trending_panel_falls_back_to_dashes_when_team_is_none():
+    """team=None is a real Player state -- undrafted and practice-squad
+    additions carry it -- so the '--' fallback needs its own proof, not just
+    correctness by inspection of the f-string."""
+    players = {"4046": Player(sleeper_id="4046", name="Free Agent Guy",
+                              position="WR", team=None)}
+    rendered = str(trending_panel({"4046": 7}, players))
+    assert "Free Agent Guy (WR---)" in rendered
 
 
 def test_trending_panel_prints_unresolved_id_rather_than_dropping():
@@ -1584,17 +1612,26 @@ def test_home_layout_headlines_fetch_failure_renders_unavailable_not_empty(
     monkeypatch, tmp_path,
 ):
     """A fetcher exception must not crash home_layout, and must not render as
-    an empty box -- the panel says 'unavailable'."""
+    an empty box -- the headlines panel says 'unavailable'.
+
+    `load_trending`/`load_players` are given a resolvable, non-empty result
+    here on purpose -- `trending_panel` has its OWN "trending data
+    unavailable" text (app.py:509-511), and an empty-dict mock would let
+    that string satisfy this assertion too, proving nothing about
+    `headlines_panel` specifically (review round 1, ruling T11-B).
+    """
     monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
     monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
 
     def boom(feeds):
         raise RuntimeError("all feeds down")
     monkeypatch.setattr(app.news, "load_headlines", boom)
-    monkeypatch.setattr(app, "load_trending", lambda kind, cache_dir=None: {})
-    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {})
+    monkeypatch.setattr(app, "load_trending", lambda kind, cache_dir=None: {"4046": 10})
+    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {
+        "4046": Player(sleeper_id="4046", name="Some Guy", position="RB", team="CHI")})
     rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
-    assert "unavailable" in rendered.lower()
+    assert "headlines unavailable" in rendered
+    assert "trending data unavailable" not in rendered
 
 
 def test_home_layout_dead_trending_fetch_does_not_take_down_status_strip(
