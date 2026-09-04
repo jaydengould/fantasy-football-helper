@@ -24,8 +24,8 @@ from ffhelper.board import (
     BoardState, auto_mine, board_state, explicit_not_mine, marks_in_entry_order,
 )
 from ffhelper.cli import (
-    DRAFT_LOG_DIR, DROP_CAVEAT, ROOT, ROSTER_DIR, SEASON, _draft_log_path, _matchup_note,
-    _restore_marks, _select_feed, _status_note, load_board_inputs, render_trades,
+    DRAFT_LOG_DIR, DROP_CAVEAT, ROOT, ROSTER_DIR, SEASON, TRADE_CAVEAT, _draft_log_path,
+    _matchup_note, _restore_marks, _select_feed, _status_note, load_board_inputs,
     roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
@@ -462,11 +462,6 @@ def home_layout(league: str, league_names: list[str]) -> html.Div:
     return html.Div([nav("home", league), status_strip(league)])
 
 
-_MONO = {"fontFamily": "ui-monospace, SFMono-Regular, Menlo, monospace",
-         "fontSize": "13px", "whiteSpace": "pre", "overflowX": "auto",
-         "margin": "0"}
-
-
 _LINEUP_HEADERS = ["slot", "player", "pos", "team", "proj", "flags"]
 
 
@@ -688,15 +683,105 @@ def waivers_children(view) -> list:
     return children
 
 
-def season_page_children(name: str, view):
-    """One season view as page content. /lineup and /waivers render as HTML
-    tables (tasks 7-8); /trades still goes through the CLI's own text
-    renderer, in html.Pre, until task 9.
+def _package_html(players) -> str:
+    """`give`/`get`'s player list, exactly as `cli._package` renders it."""
+    return " + ".join(f"{p.name} ({p.position})" for p in players)
 
-    ponytail: html.Pre of the CLI's own renderer for trades. Ceiling is that
-    80-column output needs horizontal scrolling on a phone, which is the
-    whole reason task 9 exists. Upgrade path is to replace this function's
-    trades branch too; the text renderer stays as the CLI's output either way.
+
+def trades_children(view) -> list:
+    """Every `render_trades` section as HTML: the weeks-scored header, '!!'
+    notes, the mode line, one block per proposal (opponent, gains, shape,
+    give, get, the forced `their_drop`), the empty-result line, and
+    TRADE_CAVEAT. SPEC GAP ruling for task 9, same shape as tasks 7-8's
+    `_lineup_children`/`waivers_children`: the brief's proposal fields cover
+    only the per-trade blocks, but `render_trades` (cli.py) also prints the
+    header count, the notes, the mode line, the empty result, and the
+    caveat, and an HTML page that dropped them would quietly show less than
+    the text page it replaces.
+
+    Handles `view.error` itself rather than trusting every caller to check
+    first -- `season_page_children` already gates on it, but a direct call
+    (as this module's own tests make) must not crash on a deadline-passed or
+    platform-refusal view, which never carries a `best` list, a `week`, or
+    `names` to render.
+    """
+    if view.error:
+        return [html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})]
+
+    who = f" ({view.owner})" if view.owner else ""
+    children = [
+        html.P(f"TRADES -- {view.league_name}{who} -- week {view.week}, "
+              f"{view.weeks_scored} weeks scored",
+              style={"fontFamily": _SANS, "fontWeight": "700"}),
+    ]
+    if view.notes:
+        children.append(html.Ul([html.Li(f"!! {n}") for n in view.notes]))
+
+    best = view.best
+    pinned = view.pinned
+    if pinned is None:
+        mode = "best offer per opponent"
+    elif best and any(p.sleeper_id == pinned.sleeper_id for p in best[0].give):
+        mode = f"best return for {pinned.name}"
+    elif best and any(p.sleeper_id == pinned.sleeper_id for p in best[0].get):
+        mode = f"cost to acquire {pinned.name}"
+    else:
+        mode = f"trade search for {pinned.name}"
+    children.append(html.P(mode, style={"fontWeight": "700", "marginTop": "16px"}))
+
+    if not best:
+        children.append(html.P(
+            "no trade with any opponent clears the floor for both sides.",
+            style={"marginTop": "16px"}))
+    else:
+        for p in best:
+            name = view.names.get(p.opponent, f"roster {p.opponent}")
+            shape = f"{len(p.give)}-for-{len(p.get)}"
+            children.append(html.P(
+                f"{name}   you +{p.gain_me:.1f}   them +{p.gain_them:.1f}   [{shape}]",
+                style={"fontWeight": "700", "marginTop": "16px"}))
+            children.append(html.P(f"give {_package_html(p.give)}"))
+            children.append(html.P(f"get  {_package_html(p.get)}"))
+            if p.their_drop is not None:
+                # Part of the offer, not a footnote -- mirrors render_trades'
+                # own comment (cli.py): the counterparty notices the cut
+                # before they notice the gain.
+                children.append(html.P(f"they must also drop {p.their_drop.name} "
+                                       f"({p.their_drop.position})"))
+
+    children.append(html.P(TRADE_CAVEAT,
+                           style={"marginTop": "16px", "whiteSpace": "pre-wrap"}))
+    return children
+
+
+def trades_landing(league: str) -> html.Div:
+    """The /trades landing state, before the sweep runs: TRADE_CAVEAT, the
+    expected-wait line, and the RUN button -- never followed automatically.
+    `build_trades`'s full sweep is a measured ~330s (pipeline.py's own
+    ponytail note), so a page that computed on navigation would hang the
+    browser for five minutes; an accidental visit to /trades must cost
+    nothing.
+
+    Carries the league in a hidden `dcc.Store`: the callback below is wired
+    to `Input("trades-run", "n_clicks")` alone, which carries no league, so
+    without this a click would always sweep the DEFAULT league regardless of
+    `?league=` -- silent, and a wasted 330s on the wrong league.
+    """
+    return html.Div([
+        dcc.Store(id="trades-league", data=league),
+        html.P(TRADE_CAVEAT, style={"whiteSpace": "pre-wrap", "maxWidth": "60ch"}),
+        html.P("the full sweep takes about five minutes -- eleven opponents, "
+              "three shapes each",
+              style={"fontWeight": "700", "marginTop": "12px"}),
+        html.Button("RUN THE SEARCH", id="trades-run"),
+    ], id="trades-content")
+
+
+def season_page_children(name: str, view):
+    """One season view as page content. /lineup, /waivers and /trades all
+    render as HTML (tasks 7-9): `trades_children` carries `render_trades`'s
+    header, notes, mode line, per-proposal blocks and TRADE_CAVEAT, exactly
+    as `_lineup_children`/`waivers_children` do for their own text renderers.
     """
     if view.error:
         return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})
@@ -704,23 +789,7 @@ def season_page_children(name: str, view):
         return html.Div(_lineup_children(view))
     elif name == "waivers":
         return html.Div(waivers_children(view))
-    else:
-        text = render_trades(view.best, view.week, view.league_name, view.owner,
-                             view.names, view.notes, view.weeks_scored, view.pinned)
-    return html.Pre(text, style=_MONO)
-
-
-# /trades never builds a view on page load: build_trades' full sweep is a
-# measured ~330s (see pipeline.py), and a page that computes on navigation
-# hangs the browser for five minutes. Task 9 wires a button that calls
-# pipeline.build_trades and feeds the result through season_page_children;
-# until then this is the whole page.
-TRADES_CAVEAT = (
-    "A full trade search checks every opponent across three trade shapes and "
-    "takes several minutes -- too slow to run on every page load. This page "
-    "does not yet have a way to trigger it; in the meantime, run "
-    "`python -m ffhelper.cli trades --league <name>` from a terminal."
-)
+    return html.Div(trades_children(view))
 
 
 def _season_layout_for(name: str, league_names: list[str], default_league: str):
@@ -734,9 +803,10 @@ def _season_layout_for(name: str, league_names: list[str], default_league: str):
     def layout(**kw) -> html.Div:
         league = league_from_kwargs(kw, league_names, default_league)
         if name == "trades":
-            return html.Div([nav(name, league),
-                             html.Div(TRADES_CAVEAT,
-                                      style={"padding": "16px", "maxWidth": "60ch"})])
+            # No view built here -- build_trades' full sweep is ~330s
+            # (pipeline.py's ponytail note); the button below is the only
+            # thing allowed to trigger it (see _register_callbacks).
+            return html.Div([nav(name, league), dcc.Loading(trades_landing(league))])
         leagues, tunables = load_config(CONFIG_PATH)
         lg = get_league(leagues, league)
         builder = pipeline.build_lineup if name == "lineup" else pipeline.build_waivers
@@ -976,9 +1046,32 @@ def _register_callbacks(app, leagues, tunables, cache):
         # does nothing -- reported live as "sometimes clicks don't register".
         return status, (n or 0) + 1, None, last_marked
 
-    # Both exposed for direct testing: a callback sealed inside this function is
-    # code no test can reach, and untestable code is untested code.
-    return _refresh, _write
+    @app.callback(
+        Output("trades-content", "children"),
+        Input("trades-run", "n_clicks"),
+        dash.State("trades-league", "data"),
+    )
+    def _run_trades(n_clicks, league_name):
+        if n_clicks is None:
+            # Dash fires every callback once at page load, using each
+            # Input's value at that moment -- the button's n_clicks stays
+            # unset (None) until it is actually clicked, because the layout
+            # never gives it a starting n_clicks=0 the way "undo" does above.
+            # This is the entire guard against an accidental navigation
+            # costing the ~330s sweep (pipeline.py's build_trades ponytail
+            # note): the state is returned unchanged.
+            return dash.no_update
+        # league_name comes from the State store trades_landing wrote, not
+        # from a default -- a callback wired to n_clicks alone carries no
+        # league, and get_league(leagues, DEFAULT) would silently sweep the
+        # wrong one.
+        league = get_league(leagues, league_name)
+        view = pipeline.build_trades(league, tunables, progress=None)
+        return trades_children(view)
+
+    # All three exposed for direct testing: a callback sealed inside this
+    # function is code no test can reach, and untestable code is untested code.
+    return _refresh, _write, _run_trades
 
 
 def main(argv: list[str] | None = None) -> int:

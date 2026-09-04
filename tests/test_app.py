@@ -246,7 +246,7 @@ def _make_write(monkeypatch, tmp_path, league_name="write-test"):
     path = tmp_path / "log.jsonl"
     monkeypatch.setattr(app, "_draft_log_path", lambda league: path)
     league = League(name=league_name, platform="sleeper", league_id="1")
-    _refresh, write = app._register_callbacks(
+    _refresh, write, _trades = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         [league], Tunables(), lambda lg: None,
     )
@@ -462,7 +462,7 @@ def _make_refresh(monkeypatch, tmp_path, players, draft_slot=5, has_feed=True):
     monkeypatch.setattr(app, "_draft_log_path", lambda league: tmp_path / "log.jsonl")
     league = League(name="refresh-test", platform="sleeper", league_id="1",
                     draft_slot=draft_slot)
-    refresh, _write = app._register_callbacks(
+    refresh, _write, _trades = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         [league], Tunables(),
         lambda lg: (players, _settings(), FakeFeed(), has_feed),
@@ -1337,3 +1337,200 @@ def test_season_page_children_waivers_routes_to_the_table():
     rendered = str(season_page_children("waivers", view))
     assert "Table Guy" in rendered
     assert "Table" in rendered
+
+
+# --- /trades as HTML, button-triggered ---
+
+from ffhelper.app import trades_children, trades_landing
+from ffhelper.trade import Proposal
+
+
+def test_trades_landing_warns_before_running():
+    """The page must not start a five-minute sweep on navigation."""
+    rendered = str(trades_landing("sleeper-main"))
+    assert "minutes" in rendered
+    assert "trades-run" in rendered
+
+
+def test_trades_landing_carries_the_league_for_the_callback_to_read():
+    """A callback wired to n_clicks alone carries no league -- trades_landing
+    must hand it off some other way (a hidden dcc.Store), or a click always
+    sweeps the default league regardless of ?league=.
+    """
+    rendered = str(trades_landing("yahoo-main"))
+    assert "trades-league" in rendered
+    assert "yahoo-main" in rendered
+
+
+def test_trades_children_error_view_renders_the_message_not_a_crash():
+    """`build_trades` returns an error view for a passed trade deadline and
+    for a platform refusal -- trades_children must handle it directly (task 9
+    ruling), the same as season_page_children already does, since this
+    module's own tests call it without going through that gate.
+    """
+    view = pipeline.TradeView(league_name="sleeper-main",
+                              error="the trade deadline for sleeper-main passed")
+    rendered = str(trades_children(view))
+    assert "the trade deadline for sleeper-main passed" in rendered
+
+
+def test_trades_children_header_carries_the_weeks_scored_count():
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, weeks_scored=11, best=[])
+    rendered = str(trades_children(view))
+    assert "11 weeks scored" in rendered
+
+
+def test_trades_children_carries_notes():
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[],
+                              notes=["trade_deadline is unknown for this league"])
+    rendered = str(trades_children(view))
+    assert "trade_deadline is unknown for this league" in rendered
+
+
+def test_trades_children_empty_result_states_the_floor_was_not_cleared():
+    """An empty result is a RESULT, not a blank -- same project rule /waivers
+    holds for a healthy roster (non-negotiable: never lower a bar to keep a
+    feature visible).
+    """
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[])
+    rendered = str(trades_children(view))
+    assert "no trade with any opponent clears the floor for both sides." in rendered
+
+
+def test_trades_children_default_mode_is_best_offer_per_opponent():
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[], pinned=None)
+    rendered = str(trades_children(view))
+    assert "best offer per opponent" in rendered
+
+
+def test_trades_children_mode_names_the_cost_to_acquire_a_pinned_player():
+    """pinned appears in a proposal's `get`, not its `give` -- the mode line
+    must say COST TO ACQUIRE, distinct from BEST RETURN FOR.
+    """
+    pin = Player(sleeper_id="9", name="Pinned Guy", position="WR", team="KC", proj_pts=10.0)
+    give_player = Player(sleeper_id="1", name="Give Guy", position="RB", team="SF",
+                         proj_pts=8.0)
+    proposal = Proposal(opponent=7, give=(give_player,), get=(pin,),
+                        gain_me=3.0, gain_them=2.0)
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[proposal],
+                              pinned=pin, names={})
+    rendered = str(trades_children(view))
+    assert "cost to acquire Pinned Guy" in rendered
+    assert "best return for" not in rendered
+
+
+def test_trades_children_proposal_block_carries_opponent_gains_shape_give_get():
+    """Every field render_trades prints per proposal, anchored on strings
+    exclusive to this block: a named opponent, both gain numbers, the shape,
+    and the give/get packages.
+    """
+    give_player = Player(sleeper_id="1", name="Give Guy", position="RB", team="SF",
+                         proj_pts=8.0)
+    get_player = Player(sleeper_id="2", name="Get Guy", position="WR", team="KC",
+                        proj_pts=9.0)
+    proposal = Proposal(opponent=7, give=(give_player,), get=(get_player,),
+                        gain_me=4.5, gain_them=3.5)
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[proposal],
+                              names={7: "leaguemate"})
+    rendered = str(trades_children(view))
+    assert "leaguemate" in rendered
+    assert "you +4.5" in rendered and "them +3.5" in rendered
+    assert "[1-for-1]" in rendered
+    assert "Give Guy (RB)" in rendered
+    assert "Get Guy (WR)" in rendered
+
+
+def test_trades_children_opponent_falls_back_to_roster_id_when_unnamed():
+    """An unnamed opponent still renders, never disappears -- mirrors cli.py's
+    own fallback, `names.get(p.opponent, f"roster {p.opponent}")`.
+    """
+    give_player = Player(sleeper_id="1", name="Give Guy", position="RB", team="SF",
+                         proj_pts=8.0)
+    get_player = Player(sleeper_id="2", name="Get Guy", position="WR", team="KC",
+                        proj_pts=9.0)
+    proposal = Proposal(opponent=9, give=(give_player,), get=(get_player,),
+                        gain_me=1.0, gain_them=1.0)
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[proposal], names={})
+    rendered = str(trades_children(view))
+    assert "roster 9" in rendered
+
+
+def test_trades_children_names_the_forced_drop():
+    """Part of the offer, not a footnote -- the counterparty notices the cut
+    before the gain (cli.py's own comment on Proposal.their_drop).
+    """
+    give_player = Player(sleeper_id="1", name="Give Guy", position="RB", team="SF",
+                         proj_pts=8.0)
+    get_player = Player(sleeper_id="2", name="Get Guy", position="WR", team="KC",
+                        proj_pts=9.0)
+    cut = Player(sleeper_id="3", name="Cut Guy", position="TE", team="CHI", proj_pts=1.0)
+    proposal = Proposal(opponent=7, give=(give_player,), get=(get_player,),
+                        gain_me=1.0, gain_them=1.0, their_drop=cut)
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[proposal], names={})
+    rendered = str(trades_children(view))
+    assert "they must also drop Cut Guy (TE)" in rendered
+
+
+def test_trades_children_no_forced_drop_line_when_roster_neutral():
+    give_player = Player(sleeper_id="1", name="Give Guy", position="RB", team="SF",
+                         proj_pts=8.0)
+    get_player = Player(sleeper_id="2", name="Get Guy", position="WR", team="KC",
+                        proj_pts=9.0)
+    proposal = Proposal(opponent=7, give=(give_player,), get=(get_player,),
+                        gain_me=1.0, gain_them=1.0)
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[proposal], names={})
+    rendered = str(trades_children(view))
+    assert "must also drop" not in rendered
+
+
+def test_trades_children_carries_the_trade_caveat():
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[])
+    rendered = str(trades_children(view))
+    assert "this league has never" in rendered   # from cli.TRADE_CAVEAT
+
+
+def test_season_page_children_trades_routes_to_the_table():
+    """Confirms season_page_children wires /trades through trades_children
+    now, not the old html.Pre(render_trades(...)) path.
+    """
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[])
+    rendered = str(season_page_children("trades", view))
+    assert "no trade with any opponent clears the floor for both sides." in rendered
+
+
+def test_trades_callback_ignores_none_n_clicks_so_navigation_costs_nothing(monkeypatch):
+    """The callback fires once at page load (Dash's default), with the
+    button's n_clicks still unset -- proving that alone must not invoke the
+    ~330s sweep (pipeline.py's build_trades ponytail note).
+    """
+    def boom(*a, **k):
+        raise AssertionError("build_trades must not run when n_clicks is None")
+    monkeypatch.setattr(pipeline, "build_trades", boom)
+    _refresh, _write, run_trades = app._register_callbacks(
+        _dash.Dash(__name__, suppress_callback_exceptions=True),
+        [League(name="sleeper-main", platform="sleeper", league_id="1")],
+        Tunables(), lambda lg: None,
+    )
+    assert run_trades(None, "sleeper-main") is _dash.no_update
+
+
+def test_trades_callback_sweeps_the_league_the_url_named_exactly_once(monkeypatch):
+    """A naive callback wired to n_clicks alone carries no league and would
+    always sweep the default. Clicking on /trades?league=yahoo-main must
+    sweep yahoo, not the default -- and exactly once per click, never a
+    second pass over the same league.
+    """
+    calls = []
+
+    def fake_build_trades(league, tunables, **kw):
+        calls.append(league.name)
+        return pipeline.TradeView(league_name=league.name, best=[])
+    monkeypatch.setattr(pipeline, "build_trades", fake_build_trades)
+    leagues = [League(name="sleeper-main", platform="sleeper", league_id="1"),
+               League(name="yahoo-main", platform="yahoo", league_id="2")]
+    _refresh, _write, run_trades = app._register_callbacks(
+        _dash.Dash(__name__, suppress_callback_exceptions=True),
+        leagues, Tunables(), lambda lg: None,
+    )
+    run_trades(1, "yahoo-main")
+    assert calls == ["yahoo-main"]
