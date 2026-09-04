@@ -933,18 +933,27 @@ def test_build_app_registers_all_five_routes_and_keeps_the_board_key():
     }
 
 
-def test_season_page_layout_resolves_the_league_from_the_url_not_the_default():
+def test_season_page_layout_resolves_the_league_from_the_url_not_the_default(monkeypatch):
     # Dash calls a registered page's layout with the query string ALREADY
     # parsed into kwargs (e.g. league="b"), not the raw "?league=b" string.
     # league_from_kwargs hands that bare value straight to the shared
     # _resolve_league fallback -- without it, every season page would silently
     # ignore ?league= and always show the default league, which would defeat
     # the entire point of carrying the league in the URL.
+    #
+    # config/build_lineup are stubbed so this stays offline and independent of
+    # config.toml's real league names -- "b" only has to satisfy
+    # league_from_kwargs's fallback list, not an actual league.
     import dash
+    fake_league = League(name="b", platform="sleeper", league_id="1")
+    monkeypatch.setattr(app, "load_config", lambda path: ([fake_league], Tunables()))
+    monkeypatch.setattr(pipeline, "build_lineup",
+                        lambda league, tunables, **kw: pipeline.LineupView(
+                            league_name=league.name, error="stub"))
     app.build_app(["a", "b"], "a", poll_ms=1000)
     layout = dash.page_registry["lineup"]["layout"]
     rendered = layout(league="b")
-    links = rendered.children.children
+    links = rendered.children[0].children
     waivers_link = next(link for link in links if link.children == "WAIVERS")
     assert waivers_link.href == "/waivers?league=b"
 
@@ -1035,3 +1044,54 @@ def test_status_strip_shows_roster_age_only_when_the_file_exists(monkeypatch, tm
 
     (tmp_path / "yahoo-main.txt").write_text("Bijan Robinson\n")
     assert "roster file" in str(status_strip("yahoo-main"))
+
+
+# --- season pages render the CLI's text ---
+
+from ffhelper.app import season_page_children
+from ffhelper import pipeline
+
+
+def test_season_page_renders_error_without_calling_renderer():
+    """A view carrying an error renders the message, not an empty table.
+
+    The refusal text IS the deliverable for a Yahoo waiver page -- an empty
+    table would read as 'nothing available', which is a different claim.
+    """
+    view = pipeline.WaiverView(league_name="yahoo-main",
+                               error="waivers needs every team's roster")
+    children = season_page_children("waivers", view)
+    rendered = str(children)
+    assert "waivers needs every team's roster" in rendered
+    assert "Table" not in rendered
+
+
+def test_trades_page_builds_no_view_on_load(monkeypatch):
+    """The one thing this task must not get wrong: a page render must never
+    trigger the ~330s full sweep (pipeline.py's `build_trades` ponytail note).
+    Task 9 wires a button; until then the page shows the caveat text only.
+    """
+    import dash
+
+    def boom(*a, **k):
+        raise AssertionError("build_trades must not run on page load")
+    monkeypatch.setattr(pipeline, "build_trades", boom)
+    app.build_app(["a", "b"], "a", poll_ms=1000)
+    layout = dash.page_registry["trades"]["layout"]
+    rendered = layout(league="b")
+    assert "minutes" in str(rendered)
+
+
+def test_waivers_page_layout_builds_its_view(monkeypatch):
+    """Unlike /trades, /waivers builds its view in the layout itself."""
+    import dash
+
+    fake_league = League(name="b", platform="sleeper", league_id="1")
+    monkeypatch.setattr(app, "load_config", lambda path: ([fake_league], Tunables()))
+    monkeypatch.setattr(pipeline, "build_waivers",
+                        lambda league, tunables, **kw: pipeline.WaiverView(
+                            league_name=league.name, error="stub waivers view"))
+    app.build_app(["a", "b"], "a", poll_ms=1000)
+    layout = dash.page_registry["waivers"]["layout"]
+    rendered = layout(league="b")
+    assert "stub waivers view" in str(rendered)

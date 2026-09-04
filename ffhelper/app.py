@@ -19,13 +19,14 @@ from urllib.parse import parse_qs
 import dash
 from dash import Input, Output, dash_table, dcc, html
 
-from ffhelper import store
+from ffhelper import pipeline, store
 from ffhelper.board import (
     BoardState, auto_mine, board_state, explicit_not_mine, marks_in_entry_order,
 )
 from ffhelper.cli import (
     DRAFT_LOG_DIR, ROOT, ROSTER_DIR, SEASON, _draft_log_path, _restore_marks,
-    _select_feed, load_board_inputs, roster_file_age_days,
+    _select_feed, load_board_inputs, render_lineup, render_trades, render_waivers,
+    roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import Player, load_nfl_state
@@ -461,8 +462,51 @@ def home_layout(league: str, league_names: list[str]) -> html.Div:
     return html.Div([nav("home", league), status_strip(league)])
 
 
+_MONO = {"fontFamily": "ui-monospace, SFMono-Regular, Menlo, monospace",
+         "fontSize": "13px", "whiteSpace": "pre", "overflowX": "auto",
+         "margin": "0"}
+
+
+def season_page_children(name: str, view):
+    """One season view as page content. Text for now; tables in tasks 7-9.
+
+    ponytail: html.Pre of the CLI's own renderer. Ceiling is that 80-column
+    output needs horizontal scrolling on a phone, which is the whole reason
+    tasks 7-9 exist. Upgrade path is to replace this function per page; the
+    text renderers stay as the CLI's output either way.
+    """
+    if view.error:
+        return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})
+    if name == "lineup":
+        text = render_lineup(view.state, view.week, view.league_name,
+                             view.owner, view.notes, view.matchups)
+        text += f"\n{view.matchup_line}\n{view.practice_line}"
+    elif name == "waivers":
+        text = render_waivers(view.this_week, view.ros, view.week, view.last_week,
+                              view.league_name, view.owner, view.position,
+                              view.teams, view.trending, view.notes,
+                              view.weeks_scored)
+    else:
+        text = render_trades(view.best, view.week, view.league_name, view.owner,
+                             view.names, view.notes, view.weeks_scored, view.pinned)
+    return html.Pre(text, style=_MONO)
+
+
+# /trades never builds a view on page load: build_trades' full sweep is a
+# measured ~330s (see pipeline.py), and a page that computes on navigation
+# hangs the browser for five minutes. Task 9 wires a button that calls
+# pipeline.build_trades and feeds the result through season_page_children;
+# until then this is the whole page.
+TRADES_CAVEAT = (
+    "A full trade search checks every opponent across three trade shapes and "
+    "takes several minutes -- too slow to run on every page load. This page "
+    "does not yet have a way to trigger it; in the meantime, run "
+    "`python -m ffhelper.cli trades --league <name>` from a terminal."
+)
+
+
 def _season_layout_for(name: str, league_names: list[str], default_league: str):
-    """Stub layout factory for /lineup, /waivers, /trades -- Tasks 6-9 fill these in.
+    """Layout factory for /lineup, /waivers, /trades.
 
     Returns the Dash page-layout callable itself (not the layout), since
     `register_page` needs a function it can call once per request with that
@@ -471,7 +515,15 @@ def _season_layout_for(name: str, league_names: list[str], default_league: str):
     """
     def layout(**kw) -> html.Div:
         league = league_from_kwargs(kw, league_names, default_league)
-        return html.Div(nav(name, league))
+        if name == "trades":
+            return html.Div([nav(name, league),
+                             html.Div(TRADES_CAVEAT,
+                                      style={"padding": "16px", "maxWidth": "60ch"})])
+        leagues, tunables = load_config(CONFIG_PATH)
+        lg = get_league(leagues, league)
+        builder = pipeline.build_lineup if name == "lineup" else pipeline.build_waivers
+        view = builder(lg, tunables)
+        return html.Div([nav(name, league), season_page_children(name, view)])
     return layout
 
 

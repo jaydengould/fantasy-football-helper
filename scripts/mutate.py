@@ -535,6 +535,12 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("snapshot_recorded returns False instead of None when unreadable",
          "        return None\n    return row is not None",
          "        return False\n    return row is not None"),
+        ("season page renders an error view as data instead of stopping",
+         '    if view.error:\n        return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})\n    if name == "lineup":',
+         '    if name == "lineup":'),
+        ("/trades builds a view on page load -- the ~330s sweep hangs the browser",
+         '        if name == "trades":\n            return html.Div([nav(name, league),\n                             html.Div(TRADES_CAVEAT,\n                                      style={"padding": "16px", "maxWidth": "60ch"})])',
+         '        if name == "trades":\n            leagues, tunables = load_config(CONFIG_PATH)\n            lg = get_league(leagues, league)\n            view = pipeline.build_trades(lg, tunables)\n            return html.Div([nav(name, league), season_page_children(name, view)])'),
     ],
     "season.py": [
         ("free agent pool subtracts only my roster",
