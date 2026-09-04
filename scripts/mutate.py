@@ -668,6 +668,11 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "        if wk not in out:\n            pass"),
     ],
 
+    "news.py": [
+        ("parse_rss link guard -- linkless items rendered as clickable headlines",
+         "if not title or not link:", "if not title:"),
+    ],
+
     "ffhelper/trade.py": [
         ("the floor is checked on my side only, so their side can lose",
          "        if gain_them <= floor:\n            return",
