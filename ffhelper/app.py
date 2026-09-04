@@ -424,16 +424,24 @@ def status_strip(league: str) -> html.Div:
     platform, without a config load this page has no other reason to do.
     """
     lines = []
+    state: dict = {}
     week = season = None
     try:
         state = load_nfl_state()
         week = state.get("week")
         season = str(state.get("season") or SEASON)
-        lines.append(f"nfl week {week} ({season} {state.get('season_type')})")
     except Exception:                          # noqa: BLE001 - degrade, never fabricate
-        lines.append("week unavailable")
+        pass
 
-    if week is not None:
+    # `not week` rather than `week is not None` is deliberate, matching
+    # cli._resolve_week -- Sleeper serves "week": 0 in the offseason, and the
+    # two guards disagreeing is a defect this project already shipped once.
+    if not week:
+        lines.append("week unavailable")
+    else:
+        lines.append(f"nfl week {week} ({season} {state.get('season_type')})")
+
+    if week:
         conn = None
         try:
             conn = store.connect()

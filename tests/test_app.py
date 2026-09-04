@@ -1046,6 +1046,37 @@ def test_status_strip_shows_roster_age_only_when_the_file_exists(monkeypatch, tm
     assert "roster file" in str(status_strip("yahoo-main"))
 
 
+def test_status_strip_treats_week_0_as_unavailable_like_cli_resolve_week(
+    monkeypatch, tmp_path,
+):
+    # Sleeper serves "week": 0 in the offseason (today, pre-2026-09-09). 0 is
+    # not None, so a `week is not None` guard would print "nfl week 0" and
+    # then nudge toward a snapshot run that build_lineup refuses with
+    # NO_WEEK -- cli._resolve_week's `not week` guard is the one this must
+    # match.
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 0, "season": "2026",
+                                                         "season_type": "pre"})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    rendered = str(status_strip("sleeper-main"))
+    assert "week unavailable" in rendered
+    assert "snapshot" not in rendered
+    assert "week 0" not in rendered
+
+
+def test_status_strip_treats_an_empty_state_payload_as_unavailable(
+    monkeypatch, tmp_path,
+):
+    # A {} payload (no exception, no "week" key) must not fall through to
+    # "nfl week None (2026 None)" -- a fabricated-looking line where a
+    # measured one is expected.
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    rendered = str(status_strip("sleeper-main"))
+    assert "week unavailable" in rendered
+    assert "None" not in rendered
+    assert "snapshot" not in rendered
+
+
 # --- season pages render the CLI's text ---
 
 from ffhelper.app import season_page_children
