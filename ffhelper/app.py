@@ -19,7 +19,7 @@ from urllib.parse import parse_qs
 import dash
 from dash import Input, Output, dash_table, dcc, html
 
-from ffhelper import pipeline, store
+from ffhelper import news, pipeline, store
 from ffhelper.board import (
     BoardState, auto_mine, board_state, explicit_not_mine, marks_in_entry_order,
 )
@@ -29,7 +29,7 @@ from ffhelper.cli import (
     roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
-from ffhelper.data import Player, load_nfl_state
+from ffhelper.data import CACHE_DIR, Player, load_nfl_state, load_players, load_trending
 from ffhelper.value import FLEX_ELIGIBLE, is_bench_only, next_pick_number, optimal_lineup
 
 log = logging.getLogger(__name__)
@@ -457,9 +457,90 @@ def status_strip(league: str) -> html.Div:
                     style={"fontFamily": _SANS, "fontSize": "13px", "padding": "8px 0"})
 
 
+def headlines_panel(headlines: list, notes: list[str]) -> html.Div:
+    """Recent NFL headlines. Decorative only -- see news.py's module docstring:
+    nothing here is wired to a player, a projection or a recommendation.
+
+    An unreachable feed says so ("unavailable") instead of rendering an empty
+    box, which would read as "no news" rather than "could not fetch".
+    """
+    children = [html.P("HEADLINES", style={"fontWeight": "700"})]
+    if headlines:
+        children.append(html.Ul([
+            html.Li(dcc.Link(f"[{h.source}] {h.title}", href=h.url, target="_blank"))
+            for h in headlines
+        ]))
+    if notes:
+        prefix = "headlines unavailable" if not headlines else "partially unavailable"
+        children.append(html.P(f"{prefix}: {'; '.join(notes)}",
+                               style={"fontSize": "12px", "color": "#8b95a3",
+                                      "marginTop": "8px"}))
+    elif not headlines:
+        children.append(html.P("no headlines right now",
+                               style={"fontSize": "12px", "color": "#8b95a3"}))
+    return html.Div(children, style=_PANEL_STYLE)
+
+
+def trending_panel(counts: dict[str, int], players: dict) -> html.Div:
+    """Top ten Sleeper adds by count, over the last 24h (load_trending's
+    default lookback).
+
+    NATIONAL counts, repeated here on the panel itself (not just a header the
+    user can miss) -- `load_trending`'s docstring requires it, and an
+    unlabelled count next to waiver advice reads as a claim prediction.
+
+    Ids that don't resolve through `load_players` are printed as the raw id,
+    never dropped (non-negotiable #3) -- a stale or cold player cache must not
+    silently shrink the list.
+    """
+    top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    rows = []
+    for player_id, count in top:
+        p = players.get(player_id)
+        label = f"{p.name} ({p.position}-{p.team or '--'})" if p else f"player {player_id} (unresolved)"
+        rows.append(html.Li(f"{label}: +{count:,} adds NATIONALLY -- NOT your league"))
+    children = [
+        html.P("TRENDING ADDS", style={"fontWeight": "700"}),
+        html.P("counts are NATIONALLY across all of Sleeper -- NOT your league",
+              style={"fontSize": "12px", "color": "#8b95a3"}),
+    ]
+    children.append(html.Ul(rows) if rows else
+                    html.P("trending data unavailable", style={"fontSize": "12px",
+                                                                "color": "#8b95a3"}))
+    return html.Div(children, style=_PANEL_STYLE)
+
+
 def home_layout(league: str, league_names: list[str]) -> html.Div:
-    """Nav plus the status strip: current week, snapshot status, roster age."""
-    return html.Div([nav("home", league), status_strip(league)])
+    """Nav, status strip, then two decorative panels: headlines and national
+    trending adds.
+
+    Each panel catches its own fetch failure independently -- a dead feed or
+    a Sleeper outage must not take down the status strip, the one part of
+    this page that has to work.
+    """
+    headlines, notes = [], []
+    try:
+        headlines, notes = news.load_headlines(news.FEEDS)
+    except Exception:                          # noqa: BLE001 - degrade, never crash the homepage
+        notes = ["headlines: could not load"]
+
+    counts, players = {}, {}
+    try:
+        counts = load_trending("add", cache_dir=CACHE_DIR)
+        # ponytail: cold-cache load_players is a ~560-player fetch on the
+        # first page view after a cache miss; data.py's own disk TTL cache
+        # (not reimplemented here) makes every request after the first cheap.
+        # No extra caching layer added for this task.
+        players = load_players(cache_dir=CACHE_DIR)
+    except Exception:                          # noqa: BLE001 - degrade, never crash the homepage
+        pass
+
+    return html.Div([
+        nav("home", league),
+        status_strip(league),
+        headlines_panel(headlines, notes),
+        trending_panel(counts, players),
+    ])
 
 
 _LINEUP_HEADERS = ["slot", "player", "pos", "team", "proj", "flags"]
@@ -849,6 +930,12 @@ def poll_interval_ms(tunables: Tunables, platform: str) -> int:
 
 _SANS = ('-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, '
          '"Helvetica Neue", Arial, sans-serif')
+
+_PANEL_STYLE = {
+    "fontFamily": _SANS, "fontSize": "13px",
+    "border": "1px solid #262c35", "borderRadius": "6px",
+    "padding": "12px 14px", "margin": "12px 0",
+}
 
 # Numbers are the reason the board was monospace. tabular-nums gives a
 # proportional font fixed-width DIGITS, so the columns still line up and the

@@ -550,6 +550,17 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("empty waiver board loses its wording -- reads as a failed fetch, not a result",
          'html.P("nothing on the wire beats what you already have.",',
          'html.P("wording was mutated -- this should never render.",'),
+        ("trending panel silently drops an id load_players can't resolve "
+         "(non-negotiable #3)",
+         '        label = f"{p.name} ({p.position}-{p.team or \'--\'})" if p '
+         'else f"player {player_id} (unresolved)"\n'
+         '        rows.append(html.Li(f"{label}: +{count:,} adds NATIONALLY '
+         '-- NOT your league"))',
+         '        if p is None:\n'
+         '            continue\n'
+         '        label = f"{p.name} ({p.position}-{p.team or \'--\'})"\n'
+         '        rows.append(html.Li(f"{label}: +{count:,} adds NATIONALLY '
+         '-- NOT your league"))'),
     ],
     "season.py": [
         ("free agent pool subtracts only my roster",

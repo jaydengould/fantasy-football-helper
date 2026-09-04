@@ -1534,3 +1534,81 @@ def test_trades_callback_sweeps_the_league_the_url_named_exactly_once(monkeypatc
     )
     run_trades(1, "yahoo-main")
     assert calls == ["yahoo-main"]
+
+
+# --- homepage: headlines and national trending panels ---
+
+from ffhelper.app import headlines_panel, home_layout, trending_panel
+from ffhelper.news import Headline
+
+
+def test_headlines_panel_says_unavailable_rather_than_showing_nothing():
+    """An empty box reads as 'no news'. The truth is 'could not fetch'."""
+    rendered = str(headlines_panel([], ["espn: connection refused"]))
+    assert "unavailable" in rendered.lower()
+
+
+def test_trending_panel_labels_counts_as_national():
+    """These counts are national and must never read as a claim prediction."""
+    players = {"4046": Player(sleeper_id="4046", name="Some Guy",
+                              position="RB", team="CHI")}
+    rendered = str(trending_panel({"4046": 12345}, players))
+    assert "NATIONALLY" in rendered or "national" in rendered.lower()
+    assert "NOT your league" in rendered
+
+
+def test_trending_panel_prints_unresolved_id_rather_than_dropping():
+    """Non-negotiable #3: unmatched players are printed, never silently
+    dropped. A cold or stale player cache must not quietly shrink the list."""
+    rendered = str(trending_panel({"999999": 42}, {}))
+    assert "999999" in rendered
+
+
+def test_home_layout_renders_both_panels(monkeypatch, tmp_path):
+    """Same code path the browser drives -- calling the function directly."""
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    monkeypatch.setattr(app.news, "load_headlines", lambda feeds: (
+        [Headline(title="Big trade", url="http://x", source="cbs", published=None)], []))
+    monkeypatch.setattr(app, "load_trending", lambda kind, cache_dir=None: {"4046": 10})
+    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {
+        "4046": Player(sleeper_id="4046", name="Some Guy", position="RB", team="CHI")})
+    rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
+    assert "HEADLINES" in rendered
+    assert "TRENDING ADDS" in rendered
+    assert "Big trade" in rendered
+    assert "Some Guy" in rendered
+
+
+def test_home_layout_headlines_fetch_failure_renders_unavailable_not_empty(
+    monkeypatch, tmp_path,
+):
+    """A fetcher exception must not crash home_layout, and must not render as
+    an empty box -- the panel says 'unavailable'."""
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+
+    def boom(feeds):
+        raise RuntimeError("all feeds down")
+    monkeypatch.setattr(app.news, "load_headlines", boom)
+    monkeypatch.setattr(app, "load_trending", lambda kind, cache_dir=None: {})
+    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {})
+    rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
+    assert "unavailable" in rendered.lower()
+
+
+def test_home_layout_dead_trending_fetch_does_not_take_down_status_strip(
+    monkeypatch, tmp_path,
+):
+    """The status strip -- current week, snapshot, roster age -- is the part
+    of this page that has to work regardless of what the panels below it do."""
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    monkeypatch.setattr(app.news, "load_headlines", lambda feeds: ([], []))
+
+    def boom(kind, cache_dir=None):
+        raise RuntimeError("sleeper trending endpoint down")
+    monkeypatch.setattr(app, "load_trending", boom)
+    rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
+    assert "nfl week 3" in rendered
+    assert "TRENDING ADDS" in rendered
