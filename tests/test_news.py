@@ -3,7 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from ffhelper.news import FEEDS, Headline, load_headlines, parse_rss
+from ffhelper.news import (
+    FEEDS, Headline, load_headlines, parse_rss, top_headlines,
+)
 
 SAMPLE = """<?xml version="1.0"?>
 <rss version="2.0"><channel>
@@ -97,3 +99,46 @@ def test_load_headlines_one_feed_down_notes_it_and_keeps_the_other(tmp_path: Pat
 
 def test_feeds_has_the_three_verified_sources():
     assert set(FEEDS) == {"cbs", "pft", "bears"}
+
+
+# --- top_headlines ---
+
+def _h(title, published, source="cbs"):
+    return Headline(title=title, url=f"https://example.com/{title}",
+                    source=source, published=published)
+
+
+def test_top_headlines_keeps_the_newest_and_caps_the_count():
+    """The three feeds together return ~90 items and load_headlines returns
+    all of them, so the homepage panel ran longer than the rest of the page.
+    Cut by date, not per source."""
+    items = [
+        _h("old", "Mon, 01 Sep 2026 09:00:00 GMT"),
+        _h("newest", "Thu, 03 Sep 2026 18:00:00 GMT", "pft"),
+        _h("middle", "Wed, 02 Sep 2026 12:00:00 GMT", "bears"),
+    ]
+    assert [h.title for h in top_headlines(items, limit=2)] == ["newest", "middle"]
+
+
+def test_top_headlines_sorts_an_undated_item_last_rather_than_dropping_it():
+    """A feed that omits pubDate still filed a real headline. Sorting it last
+    is honest -- it cannot claim to be recent; dropping it is the silent
+    shrink non-negotiable #3 exists to stop."""
+    items = [_h("no date", None), _h("dated", "Mon, 01 Sep 2026 09:00:00 GMT")]
+    assert [h.title for h in top_headlines(items)] == ["dated", "no date"]
+
+
+def test_top_headlines_treats_an_unparseable_date_as_undated_not_a_crash():
+    """A malformed pubDate must not take down the homepage. RFC 822 is what
+    RSS 2.0 specifies, and a feed that ignores it is a feed, not an outage."""
+    items = [_h("junk date", "last tuesday"),
+             _h("dated", "Mon, 01 Sep 2026 09:00:00 GMT")]
+    assert [h.title for h in top_headlines(items)] == ["dated", "junk date"]
+
+
+def test_top_headlines_keeps_feed_order_for_a_tie():
+    """Stable sort. Two items filed at the same second must not reorder
+    between renders -- a list that reshuffles on refresh reads as new news."""
+    same = "Mon, 01 Sep 2026 09:00:00 GMT"
+    items = [_h("first", same, "cbs"), _h("second", same, "pft")]
+    assert [h.title for h in top_headlines(items)] == ["first", "second"]

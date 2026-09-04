@@ -11,6 +11,7 @@ sections on purpose, so its presence cannot imply the advice read it.
 """
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Callable
 
@@ -93,3 +94,34 @@ def load_headlines(
             continue
         headlines.extend(parse_rss(text, source))
     return headlines, notes
+
+
+def _published_key(headline: Headline) -> float:
+    """Seconds since the epoch, or -inf when the feed gave no usable date.
+
+    RSS 2.0 dates are RFC 822, which `email.utils` parses exactly -- stdlib,
+    no dependency, and no hand-rolled format list that a feed will eventually
+    fall outside of. An undated or unparseable item sorts LAST rather than
+    being dropped: it is still a real headline, it just cannot claim to be
+    recent.
+    """
+    if not headline.published:
+        return float("-inf")
+    try:
+        return parsedate_to_datetime(headline.published).timestamp()
+    except (TypeError, ValueError):        # None on old Pythons, raises on 3.10+
+        return float("-inf")
+
+
+def top_headlines(headlines: list[Headline], limit: int = 8) -> list[Headline]:
+    """The newest `limit` headlines across every feed.
+
+    The three feeds together return ~90 items and `load_headlines` returns all
+    of them, so the homepage panel was longer than the rest of the page put
+    together. Cut by DATE rather than round-robin per source: a quiet week for
+    the Bears feed should not hold slots it has nothing recent to fill.
+
+    Sorting is stable, so same-timestamp items keep FEEDS order rather than
+    shuffling between renders.
+    """
+    return sorted(headlines, key=_published_key, reverse=True)[:limit]

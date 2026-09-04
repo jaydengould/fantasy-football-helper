@@ -39,6 +39,31 @@ closed them and the condition that would reopen them.
   carries the full reopen note, including what the 2026-08-25 rejection got right
   and what it got wrong. Board ordering barely moves; the SURV column changes a
   lot.
+- **`--live` and `--error` mean STATE on the board and DIRECTION on the
+  homepage wire, and that is a scoped exception, not a repeal.** `board.css`'s
+  original rule -- state colours are the only saturated ones, so hue always
+  means position and never means state -- was written about the DRAFT BOARD,
+  where forty rows each carrying a saturated colour would drown the one row
+  that matters. The homepage wire panel is on `/`, the board is on `/draft`,
+  and the two never render on one screen. Reusing the tokens beat inventing a
+  second green a shade away from the first: two near-identical greens is a
+  worse defect than one colour with a stated scope. In the wire the colour is
+  REDUNDANT and never the signal -- the group heading says "Added" or
+  "Dropped", because a drop count is a positive number of drops and carries no
+  sign to separate it from an add count, which would leave a red-green
+  colourblind reader with nothing. If the board and the wire ever share a
+  screen, this reopens.
+
+- **The "NATIONALLY -- NOT your league" qualifier is dropped from the homepage
+  trending panel, and kept in the waivers table.** User ruling 2026-09-04, not
+  a measurement. `load_trending`'s docstring had required the words next to
+  every displayed count; `app.py` satisfied it twice on one panel -- as a
+  subtitle AND appended to all ten rows -- to explain something the magnitude
+  already says, since a 12-team league cannot produce a six-figure add count.
+  The rule still holds in `waiver_rows`, where the count sits in a table of
+  league-specific advice and the misreading "my leaguemates want him" is
+  genuinely available. `load_trending`'s docstring carries the split.
+
 - **Engine is VBD + survival-weighted VONA.** Rejected: a static VBD board (a
   printed cheatsheet that never answers the question at the clock) and
   Monte-Carlo simulation (no data to fit an opponent model, too slow for a 120s

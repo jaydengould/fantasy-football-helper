@@ -14,6 +14,7 @@ import argparse
 import logging
 import sys
 import time
+from urllib.parse import parse_qs
 
 import dash
 from dash import Input, Output, dash_table, dcc, html
@@ -24,7 +25,7 @@ from ffhelper.board import (
 )
 from ffhelper.cli import (
     DRAFT_LOG_DIR, DROP_CAVEAT, ROOT, ROSTER_DIR, SEASON, TRADE_CAVEAT, _draft_log_path,
-    _matchup_note, _package, _restore_marks, _select_feed, _status_note, load_board_inputs,
+    _matchup_note, _restore_marks, _select_feed, _status_note, load_board_inputs,
     roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
@@ -374,32 +375,79 @@ def league_from_kwargs(kw: dict, names: list[str], default: str) -> str:
     return _resolve_league(kw.get("league", ""), names, default)
 
 
-def league_picker(current: str, league_names: list[str]) -> html.Div:
-    """A row of links to `/?league=<name>`, one per configured league.
+def league_control(current: str, league_names: list[str]) -> html.Div:
+    """The league picker: one dropdown, in the same top-bar slot /draft uses.
 
-    Needs no callback: every page already resolves its league from the query
-    string (`league_from_kwargs`), so a plain `dcc.Link` per league is the
-    whole feature. Without this, `nav()` only ever emits `?league=<current>`
-    and there is no path through the UI to a second league -- see the spec's
-    route table for `/`: "League picker, nav, status strip, headlines,
-    trending."
+    Was a row of `dcc.Link`s, one per league. A dropdown instead because
+    /draft already puts a dropdown in exactly this slot -- two different
+    affordances for one choice is what made five pages read as five apps --
+    and because a link row grows with the league list while a dropdown does
+    not.
+
+    Navigation is `_switch_league` (see `_register_callbacks`), which rewrites
+    only the query string. Every page already resolves its league from
+    `?league=` via `league_from_kwargs`, so nothing else has to change.
     """
-    return html.Div([
-        dcc.Link(name, href=f"/?league={name}",
-                 style={"marginRight": "18px",
-                        "fontWeight": "700" if name == current else "400"})
-        for name in league_names
-    ], style={"padding": "12px 0"})
+    return html.Div(className="topbar__league", children=[
+        dcc.Dropdown(id="league-nav", options=league_names, value=current,
+                     clearable=False, searchable=False),
+    ])
 
 
-def nav(active: str, league: str) -> html.Div:
-    """The same five links on every page, with the league carried across."""
-    return html.Div([
+def nav(active: str, league: str) -> html.Nav:
+    """The same five links on every page, with the league carried across.
+
+    Rendered as pills rather than bare links. A `dcc.Link` is an `<a href>`,
+    so an unstyled nav picked up the UA's :visited rule and every route you
+    had already opened turned purple -- the nav read as browsing history
+    instead of a set of tabs. The colour fix is in board.css (.nav__tab),
+    stated for :link and :visited explicitly, because a bare `color` loses to
+    the UA's own :visited selector.
+    """
+    return html.Nav(className="nav", children=[
         dcc.Link(label.upper(), href=f"{path}?league={league}",
-                 style={"marginRight": "18px",
-                        "fontWeight": "700" if label == active else "400"})
+                 className="nav__tab nav__tab--on" if label == active
+                 else "nav__tab")
         for path, label in ROUTES
-    ], style={"padding": "12px 0"})
+    ])
+
+
+def shell(active: str, league: str, league_names: list[str], children: list,
+          centre=None, page_id: str | None = None) -> html.Div:
+    """The frame every route shares: brand mark, league picker, nav tabs.
+
+    /draft grew a design in board.css -- top bar, grid, cards, tokens -- and
+    the other four routes never got it, which is the whole of "the layout is
+    atrocious": four of five pages rendered as unstyled links and default
+    bullets on a bare body while the fifth had a design system. One frame,
+    one stylesheet, five pages.
+
+    `centre` fills the top bar's middle track, which exists so the draft
+    clock is centred against the PAGE rather than against whatever the brand
+    and the picker leave over. The season pages have nothing time-critical to
+    put there, so they pass nothing and the track collapses.
+
+    `page_id` exists for /draft alone: `_refresh` writes this root's
+    className to swing the whole page into the on-the-clock state, and a
+    callback Output needs an id to write to.
+    """
+    # `id` is passed only when there is one -- Dash rejects id=None outright
+    # rather than treating it as absent.
+    return html.Div(**({"id": page_id} if page_id else {}), className="page", children=[
+        html.Header(className="topbar", children=[
+            html.Div(className="topbar__brand", children=[
+                # Literal path: Dash serves ffhelper/assets/ at /assets/ and
+                # this app never reconfigures assets_url_path.
+                html.Img(src="/assets/logo.png", className="topbar__logo",
+                         alt=""),
+                html.Span("FFHelper"),
+            ]),
+            centre if centre is not None else html.Div(),
+            league_control(league, league_names),
+        ]),
+        nav(active, league),
+        *children,
+    ])
 
 
 def snapshot_recorded(conn, league: str, season: str, week: int) -> bool | None:
@@ -472,8 +520,11 @@ def status_strip(league: str) -> html.Div:
     if age is not None:
         lines.append(f"roster file: {age}d old")
 
-    return html.Div([html.P(line, style={"margin": "4px 0"}) for line in lines],
-                    style={"fontFamily": _SANS, "fontSize": "13px", "padding": "8px 0"})
+    return html.Div(className="card", children=[
+        html.P(league, className="page-title"),
+        html.Div(className="facts",
+                 children=[html.P(line) for line in lines]),
+    ])
 
 
 def headlines_panel(headlines: list, notes: list[str]) -> html.Div:
@@ -482,57 +533,157 @@ def headlines_panel(headlines: list, notes: list[str]) -> html.Div:
 
     An unreachable feed says so ("unavailable") instead of rendering an empty
     box, which would read as "no news" rather than "could not fetch".
+
+    Capped by `news.top_headlines`. Uncapped, the three feeds returned every
+    item they carry -- around ninety -- and the panel was longer than the rest
+    of the homepage put together.
     """
-    children = [html.P("HEADLINES", style={"fontWeight": "700"})]
-    if headlines:
-        children.append(html.Ul([
-            html.Li(html.A(f"[{h.source}] {h.title}", href=h.url, target="_blank",
-                          rel="noopener noreferrer"))
-            for h in headlines
+    children = [html.P("Headlines", className="card__title")]
+    top = news.top_headlines(headlines)
+    if top:
+        children.append(html.Ul(className="headlines", children=[
+            html.Li([
+                html.Span(h.source, className="headlines__src"),
+                html.A(h.title, href=h.url, target="_blank",
+                       rel="noopener noreferrer"),
+            ])
+            for h in top
         ]))
     if notes:
-        prefix = "headlines unavailable" if not headlines else "partially unavailable"
-        children.append(html.P(f"{prefix}: {'; '.join(notes)}",
-                               style={"fontSize": "12px", "color": "#8b95a3",
-                                      "marginTop": "8px"}))
-    elif not headlines:
-        children.append(html.P("no headlines right now",
-                               style={"fontSize": "12px", "color": "#8b95a3"}))
-    return html.Div(children, style=_PANEL_STYLE)
+        prefix = "headlines unavailable" if not top else "partially unavailable"
+        children.append(html.P(f"{prefix}: {'; '.join(notes)}", className="note"))
+    elif not top:
+        children.append(html.P("no headlines right now", className="note"))
+    return html.Div(children, className="card")
 
 
-def trending_panel(counts: dict[str, int], players: dict) -> html.Div:
-    """Top ten Sleeper adds by count, over the last 24h (load_trending's
-    default lookback).
+# Sleeper hosts a headshot per player id and a logo per team, both public and
+# both already the source of every id on this page -- no new dependency, no
+# key, no second vendor. DEF "players" carry the team abbreviation as their
+# sleeper_id, which is also the logo's filename, so the two URLs are the same
+# lookup with a different shape.
+SLEEPER_HEADSHOT_URL = "https://sleepercdn.com/content/nfl/players/{pid}.jpg"
+SLEEPER_TEAM_LOGO_URL = "https://sleepercdn.com/images/team_logos/nfl/{team}.png"
 
-    NATIONAL counts, repeated here on the panel itself (not just a header the
-    user can miss) -- `load_trending`'s docstring requires it, and an
-    unlabelled count next to waiver advice reads as a claim prediction.
+
+def headshot_url(player_id: str, position: str | None) -> str:
+    """The image for one Sleeper id. Always a URL, never None.
+
+    A DEF has no face; its "player" is the team, so it gets the team logo.
+    Everything else gets the headshot endpoint, INCLUDING ids Sleeper has no
+    photo for -- a 404 renders as the empty circle .trending__face draws
+    (board.css carries the reasoning), which is the same neutral result a
+    None-returning branch would need its own rendering path to produce.
+    """
+    if position == "DEF":
+        return SLEEPER_TEAM_LOGO_URL.format(team=str(player_id).lower())
+    return SLEEPER_HEADSHOT_URL.format(pid=player_id)
+
+
+def face(player_id: str, position: str | None, large: bool = False) -> html.Img:
+    """One headshot. `alt=""` on purpose -- the name is always beside it, so a
+    screen reader announcing the photo would read every player twice.
+
+    `large` is the homepage trending panel, which is a browsing surface; the
+    season tables use the small size so a face does not set the row height.
+    """
+    return html.Img(src=headshot_url(player_id, position), alt="",
+                    className="face face--lg" if large else "face")
+
+
+def named(player_id: str, position: str, label: str) -> html.Div:
+    """A player's face and name as one cell. The name stays the text the row
+    dict already carried, so `lineup_rows`/`waiver_rows` keep mirroring the
+    CLI renderers exactly and their assertions stay string comparisons."""
+    return html.Div(className="who", children=[face(player_id, position),
+                                               html.Span(label)])
+
+
+def _trending_rows(counts: dict[str, int], players: dict, limit: int) -> list:
+    """The `limit` biggest counts, as list items. Order is by count alone.
 
     Ids that don't resolve through `load_players` are printed as the raw id,
     never dropped (non-negotiable #3) -- a stale or cold player cache must not
     silently shrink the list.
     """
-    top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
     rows = []
     for player_id, count in top:
         p = players.get(player_id)
-        label = f"{p.name} ({p.position}-{p.team or '--'})" if p else f"player {player_id} (unresolved)"
-        rows.append(html.Li(f"{label}: +{count:,} adds NATIONALLY -- NOT your league"))
-    children = [
-        html.P("TRENDING ADDS", style={"fontWeight": "700"}),
-        html.P("counts are NATIONALLY across all of Sleeper -- NOT your league",
-              style={"fontSize": "12px", "color": "#8b95a3"}),
+        name = p.name if p else f"player {player_id}"
+        # "CHI RB", the way a roster line reads out loud -- not "RB, CHI" and
+        # not a middle-dot join. team=None is a real Player state (undrafted
+        # and practice-squad additions carry it), so it degrades to FA rather
+        # than printing an empty gap.
+        meta = f"{p.team or 'FA'} {p.position}" if p else "not in the player cache"
+        rows.append(html.Li([
+            # No loading="lazy": Dash's html.Img does not carry the prop, and
+            # every row here sits above the fold anyway.
+            face(player_id, p.position if p else None, large=True),
+            html.Div(className="trending__who", children=[
+                html.Span(name, className="trending__name"),
+                html.Span(meta, className="trending__meta"),
+            ]),
+            html.Span(f"{count:,}", className="trending__count"),
+        ]))
+    return rows
+
+
+def _trending_group(heading: str, counts: dict[str, int], players: dict,
+                    kind: str, limit: int) -> list:
+    """One direction of the wire, headed and colour-keyed.
+
+    The HEADING carries the meaning; the colour repeats it. That order matters
+    -- red and green alone would leave the two halves of this card
+    indistinguishable to a red-green colourblind reader, and the counts
+    themselves cannot separate them (a drop count is a positive number of
+    drops, not a negative number of adds, so there is no sign to lean on).
+    """
+    if not counts:
+        return [html.P(f"{heading.lower()}: unavailable", className="note")]
+    return [
+        html.P(heading, className=f"wire__heading wire__heading--{kind}"),
+        html.Ol(_trending_rows(counts, players, limit),
+                className=f"trending wire--{kind}"),
     ]
-    children.append(html.Ul(rows) if rows else
-                    html.P("trending data unavailable", style={"fontSize": "12px",
-                                                                "color": "#8b95a3"}))
-    return html.Div(children, style=_PANEL_STYLE)
+
+
+def trending_panel(adds: dict[str, int], drops: dict[str, int], players: dict,
+                   limit: int = 6) -> html.Div:
+    """The national wire in both directions, in one card.
+
+    One card and not two: adds and drops are the same measurement pointed
+    opposite ways, and a reader comparing them wants them adjacent. They are
+    NOT merged into one ranked list -- the two are separate rankings, and
+    ordering them together by magnitude would produce a sequence that means
+    nothing, with whichever side happens to carry bigger numbers on top.
+
+    Each direction degrades on its own: `home_layout` fetches them in separate
+    `try` blocks, so a dead drops endpoint shows "dropped: unavailable" beside
+    a working adds list rather than blanking the card.
+
+    The "NATIONALLY -- NOT your league" qualifier that used to sit on the
+    panel AND on all ten rows is gone from both. User ruling, 2026-09-04: a
+    12-team league cannot produce 300,000 adds, so the label was explaining
+    something the number already says, twice. `load_trending`'s docstring is
+    amended to record the reversal -- the rule still holds for `waiver_rows`,
+    where the count shares a table with league-specific advice.
+    """
+    if not adds and not drops:
+        return html.Div(className="card", children=[
+            html.P("Trending", className="card__title"),
+            html.P("trending data unavailable", className="note"),
+        ])
+    return html.Div(className="card", children=[
+        html.P("Trending", className="card__title"),
+        *_trending_group("Added", adds, players, "add", limit),
+        *_trending_group("Dropped", drops, players, "drop", limit),
+    ])
 
 
 def home_layout(league: str, league_names: list[str]) -> html.Div:
-    """Nav, status strip, then two decorative panels: headlines and national
-    trending adds.
+    """Status strip, then two decorative panels: headlines and the national
+    add/drop wire.
 
     Each panel catches its own fetch failure independently -- a dead feed or
     a Sleeper outage must not take down the status strip, the one part of
@@ -544,9 +695,20 @@ def home_layout(league: str, league_names: list[str]) -> html.Div:
     except Exception:                          # noqa: BLE001 - degrade, never crash the homepage
         notes = ["headlines: could not load"]
 
-    counts, players = {}, {}
+    # Three fetches, three `try` blocks. One block around all of them would
+    # mean a dead drops endpoint blanked the adds list too, and an empty
+    # `players` blanked both -- the panel degrades per direction and prints
+    # the raw id when a name cannot be resolved.
+    adds, drops, players = {}, {}, {}
     try:
-        counts = load_trending("add", cache_dir=CACHE_DIR)
+        adds = load_trending("add", cache_dir=CACHE_DIR)
+    except Exception:                          # noqa: BLE001 - degrade, never crash the homepage
+        pass
+    try:
+        drops = load_trending("drop", cache_dir=CACHE_DIR)
+    except Exception:                          # noqa: BLE001 - degrade, never crash the homepage
+        pass
+    try:
         # ponytail: cold-cache load_players downloads Sleeper's FULL player DB
         # (~14.6 MB, ~3231 players -- 560 is the filtered draft-pool size, not
         # this), which is nearly all of the spec's measured 4.57s cold page
@@ -557,12 +719,14 @@ def home_layout(league: str, league_names: list[str]) -> html.Div:
     except Exception:                          # noqa: BLE001 - degrade, never crash the homepage
         pass
 
-    return html.Div(className="page", children=[
-        league_picker(league, league_names),
-        nav("home", league),
+    return shell("home", league, league_names, [
         status_strip(league),
-        headlines_panel(headlines, notes),
-        trending_panel(counts, players),
+        html.Div(className="grid", style={"marginTop": "16px"}, children=[
+            html.Main(className="col-main",
+                      children=[headlines_panel(headlines, notes)]),
+            html.Aside(className="col-side",
+                       children=[trending_panel(adds, drops, players)]),
+        ]),
     ])
 
 
@@ -592,11 +756,13 @@ def lineup_rows(view) -> list[dict]:
         total += p.proj_pts
         if p.sleeper_id in unprojected_ids:
             unprojected_starters += 1
-            rows.append({"slot": slot, "player": p.name, "pos": p.position,
+            rows.append({"id": p.sleeper_id,
+                        "slot": slot, "player": p.name, "pos": p.position,
                         "team": p.team or "", "proj": "--",
                         "flags": f"NO PROJECTION{_status_note(p)}".strip()})
         else:
-            rows.append({"slot": slot, "player": p.name, "pos": p.position,
+            rows.append({"id": p.sleeper_id,
+                        "slot": slot, "player": p.name, "pos": p.position,
                         "team": p.team or "", "proj": f"{p.proj_pts:.1f}",
                         "flags": f"{_matchup_note(p, view.matchups)}"
                                 f"{_status_note(p)}".strip()})
@@ -619,7 +785,12 @@ def bench_rows(view) -> list[dict]:
     """
     state = view.state
     projected_bench = [p for p in state.bench if p not in state.unprojected]
-    return [{"slot": "", "player": p.name, "pos": p.position, "team": p.team or "",
+    # "BN", not "": every section repeats the header row, so a blank SLOT
+    # column reads as a missing value rather than as "no starting slot". The
+    # text renderer can leave it out because its BENCH heading is the whole
+    # context; a table cannot.
+    return [{"id": p.sleeper_id,
+            "slot": "BN", "player": p.name, "pos": p.position, "team": p.team or "",
             "proj": f"{p.proj_pts:.1f}",
             "flags": f"{_matchup_note(p, view.matchups)}{_status_note(p)}".strip()}
            for p in projected_bench]
@@ -631,24 +802,57 @@ def unprojected_player_rows(view) -> list[dict]:
     Mirrors `render_lineup`'s own section of that name: a stash can carry no
     number for months, so this is a quiet list, never a '!!' note.
     """
-    return [{"slot": "", "player": p.name, "pos": p.position, "team": p.team or "",
+    # SLOT stays blank here, unlike BENCH. `state.unprojected` is not a bench
+    # list: a STARTER with no projection is in it too (see lineup_rows, which
+    # reads the same set), so stamping "BN" on these rows would assert
+    # something false about a player the tool is telling you to start.
+    return [{"id": p.sleeper_id,
+            "slot": "", "player": p.name, "pos": p.position, "team": p.team or "",
             "proj": "--", "flags": _status_note(p).strip()}
            for p in view.state.unprojected]
 
 
-def simple_table(headers: list[str], rows: list[dict]) -> html.Div:
+def simple_table(headers: list[str], rows: list[dict],
+                 face_column: str | None = None,
+                 pos_columns: tuple[str, ...] = ()) -> html.Div:
     """A read-only `html.Table` from plain dicts.
 
     Not `dash_table.DataTable` -- these rows take no clicks, and DataTable's
     styling machinery would be dead weight here. Wrapped in its own
     `overflowX: auto` div so a wide table scrolls inside its own container,
     never the page body.
+
+    Widths are board.css's job (`.data-table`), which spreads the columns
+    across the card. An inline `width` here would beat any rule in that file.
+
+    `face_column` names the column whose cells get a headshot, drawn from the
+    row's own `"id"`. A row with no id -- the projected-total line, an EMPTY
+    slot -- renders as plain text, which is why the face is attached HERE and
+    not in the row builders: those mirror the CLI renderers line for line and
+    their values have to stay strings.
+
+    `pos_columns` names the columns whose values are POSITIONS and get the
+    board's hue. Colour comes from `POSITION_COLORS`, the same dict the
+    DataTable reads, because two tables disagreeing about what an RB looks
+    like is the drift this project keeps paying for. A value that is not a key
+    -- FLEX, BN, the blank on a total row -- falls through uncoloured: FLEX is
+    not a position, and inventing a colour for it would say it is.
     """
     head = html.Tr([html.Th(h.upper(), style=_TABLE_HEADER) for h in headers])
-    body = [html.Tr([html.Td(row.get(h, ""), style=_TABLE_CELL) for h in headers])
-           for row in rows]
-    table = html.Table([html.Thead(head), html.Tbody(body)],
-                       style={"borderCollapse": "collapse", "width": "100%"})
+    body = []
+    for row in rows:
+        cells = []
+        for h in headers:
+            value = row.get(h, "")
+            style = _TABLE_CELL
+            if h in pos_columns and value in POSITION_COLORS:
+                style = {**_TABLE_CELL, "color": POSITION_COLORS[value],
+                         "fontWeight": "600"}
+            if h == face_column and row.get("id"):
+                value = named(row["id"], row.get("pos", ""), value)
+            cells.append(html.Td(value, style=style))
+        body.append(html.Tr(cells))
+    table = html.Table([html.Thead(head), html.Tbody(body)], className="data-table")
     return html.Div(table, style={"overflowX": "auto"})
 
 
@@ -665,25 +869,28 @@ def _lineup_children(view) -> list:
     who = f"  ({view.owner})" if view.owner else ""
     children = [
         html.P(f"{view.league_name}{who}   week {view.week}",
-              style={"fontFamily": _SANS, "fontWeight": "700"}),
-        simple_table(_LINEUP_HEADERS, lineup_rows(view)),
+              className="page-title"),
+        simple_table(_LINEUP_HEADERS, lineup_rows(view), face_column="player",
+                     pos_columns=("slot", "pos")),
     ]
 
     bench = bench_rows(view)
     if bench:
-        children += [html.P("BENCH", style={"fontWeight": "700", "marginTop": "16px"}),
-                     simple_table(_LINEUP_HEADERS, bench)]
+        children += [html.P("Bench", className="section-title"),
+                     simple_table(_LINEUP_HEADERS, bench, face_column="player",
+                                  pos_columns=("slot", "pos"))]
 
     unprojected = unprojected_player_rows(view)
     if unprojected:
-        children += [html.P("NO PROJECTION THIS WEEK -- not started, and not a zero",
-                            style={"fontWeight": "700", "marginTop": "16px"}),
-                     simple_table(_LINEUP_HEADERS, unprojected)]
+        children += [html.P("No projection this week -- not started, and not a zero",
+                            className="section-title"),
+                     simple_table(_LINEUP_HEADERS, unprojected, face_column="player",
+                                  pos_columns=("slot", "pos"))]
 
     if state.close_calls:
         children += [
-            html.P("CLOSE CALLS -- worth your own read",
-                  style={"fontWeight": "700", "marginTop": "16px"}),
+            html.P("Close calls -- worth your own read",
+                  className="section-title"),
             html.Ul([
                 html.Li(f"{c.slot}: starting {c.starter.name} over {c.challenger.name} "
                        f"by {c.gap:.1f}{_status_note(c.challenger)}".strip())
@@ -692,8 +899,8 @@ def _lineup_children(view) -> list:
         ]
 
     if view.notes:
-        children.append(html.Ul([html.Li(f"!! {n}") for n in view.notes],
-                                style={"marginTop": "16px"}))
+        children.append(html.Ul([html.Li(n) for n in view.notes],
+                                className="flags"))
 
     # Unconditional, matching the pre-table text renderer: both
     # cli._matchup_context and cli._practice_status are contracted to
@@ -701,8 +908,7 @@ def _lineup_children(view) -> list:
     # empty case to guard here -- only LineupView's dataclass defaults are
     # empty strings, and those never reach a view with `error` unset.
     children.append(html.P(f"{view.matchup_line}  {view.practice_line}",
-                           style={"fontSize": "12px", "color": "#8b95a3",
-                                  "marginTop": "16px"}))
+                           className="note"))
     return children
 
 
@@ -726,6 +932,7 @@ def waiver_rows(view, section: str) -> list[dict]:
         count = view.trending.get(t.player.sleeper_id)
         trending = (f"+{count:,} adds NATIONALLY -- NOT your league" if count else "")
         rows.append({
+            "id": t.player.sleeper_id,
             "pos": t.player.position, "player": t.player.name,
             "gain": f"+{t.gain:.1f}", "drop": t.drop.name,
             "starts": f"{t.weeks_started} of {of} starts",
@@ -745,30 +952,33 @@ def waivers_children(view) -> list:
     """
     who = f" ({view.owner})" if view.owner else ""
     children = [
-        html.P(f"WAIVERS -- {view.league_name}{who} -- week {view.week}",
-              style={"fontFamily": _SANS, "fontWeight": "700"}),
+        html.P(f"Waivers -- {view.league_name}{who} -- week {view.week}",
+              className="page-title"),
     ]
     if view.notes:
-        children.append(html.Ul([html.Li(f"!! {n}") for n in view.notes]))
+        children.append(html.Ul([html.Li(n) for n in view.notes],
+                                className="flags"))
     if view.position is not None and view.teams:
         children.append(html.P(
             f"waiver priority {view.position} of {view.teams} -- a successful "
-            f"claim sends you to {view.teams}th"))
+            f"claim sends you to {view.teams}th", className="note"))
 
     this_week = waiver_rows(view, "this_week")
     if this_week:
         children += [
-            html.P(f"THIS WEEK -- upgrade to your week {view.week} lineup",
-                  style={"fontWeight": "700", "marginTop": "16px"}),
-            simple_table(_WAIVER_HEADERS, this_week),
+            html.P(f"This week -- upgrade to your week {view.week} lineup",
+                  className="section-title"),
+            simple_table(_WAIVER_HEADERS, this_week, face_column="player",
+                         pos_columns=("pos",)),
         ]
 
     ros = waiver_rows(view, "ros")
     if ros:
         children += [
-            html.P(f"REST OF SEASON -- upgrade over weeks {view.week}-{view.last_week}",
-                  style={"fontWeight": "700", "marginTop": "16px"}),
-            simple_table(_WAIVER_HEADERS, ros),
+            html.P(f"Rest of season -- upgrade over weeks {view.week}-{view.last_week}",
+                  className="section-title"),
+            simple_table(_WAIVER_HEADERS, ros, face_column="player",
+                         pos_columns=("pos",)),
         ]
 
     if not this_week and not ros:
@@ -776,15 +986,30 @@ def waivers_children(view) -> list:
         # is inside the measured weekly error, and saying nothing at all
         # would read as a failed fetch.
         children += [
-            html.P("nothing on the wire beats what you already have.",
-                  style={"marginTop": "16px"}),
-            html.P("(a target must gain more than the weekly projection error "
-                  "to be listed.)"),
+            html.P("Nothing on the wire beats what you already have.",
+                  className="section-title"),
+            html.P("A target must gain more than the weekly projection error "
+                  "to be listed.", className="note"),
         ]
     else:
-        children.append(html.P(DROP_CAVEAT, style={"marginTop": "16px",
-                                                    "whiteSpace": "pre-wrap"}))
+        children.append(html.P(DROP_CAVEAT, className="note"))
     return children
+
+
+def package_line(label: str, players) -> html.Div:
+    """One side of an offer, as face-and-name chips.
+
+    Mirrors `cli._package`'s content exactly -- name and position, in the
+    proposal's own order -- and differs only in carrying the headshot, which
+    a terminal cannot. `cli._package` still renders the text page; this is not
+    a second formatting RULE, it is the same fields in a medium that has
+    images, which is why the join is on `p.sleeper_id` and not on a name.
+    """
+    return html.Div(className="package", children=[
+        html.Span(label, className="package__label"),
+        *[named(pl.sleeper_id, pl.position, f"{pl.name} ({pl.position})")
+          for pl in players],
+    ])
 
 
 def trades_children(view) -> list:
@@ -809,12 +1034,13 @@ def trades_children(view) -> list:
 
     who = f" ({view.owner})" if view.owner else ""
     children = [
-        html.P(f"TRADES -- {view.league_name}{who} -- week {view.week}, "
+        html.P(f"Trades -- {view.league_name}{who} -- week {view.week}, "
               f"{view.weeks_scored} weeks scored",
-              style={"fontFamily": _SANS, "fontWeight": "700"}),
+              className="page-title"),
     ]
     if view.notes:
-        children.append(html.Ul([html.Li(f"!! {n}") for n in view.notes]))
+        children.append(html.Ul([html.Li(n) for n in view.notes],
+                                className="flags"))
 
     best = view.best
     pinned = view.pinned
@@ -826,21 +1052,21 @@ def trades_children(view) -> list:
         mode = f"cost to acquire {pinned.name}"
     else:
         mode = f"trade search for {pinned.name}"
-    children.append(html.P(mode, style={"fontWeight": "700", "marginTop": "16px"}))
+    children.append(html.P(mode, className="section-title"))
 
     if not best:
         children.append(html.P(
-            "no trade with any opponent clears the floor for both sides.",
-            style={"marginTop": "16px"}))
+            "No trade with any opponent clears the floor for both sides.",
+            className="note"))
     else:
         for p in best:
             name = view.names.get(p.opponent, f"roster {p.opponent}")
             shape = f"{len(p.give)}-for-{len(p.get)}"
             children.append(html.P(
                 f"{name}   you +{p.gain_me:.1f}   them +{p.gain_them:.1f}   [{shape}]",
-                style={"fontWeight": "700", "marginTop": "16px"}))
-            children.append(html.P(f"give {_package(p.give)}"))
-            children.append(html.P(f"get  {_package(p.get)}"))
+                className="section-title"))
+            children.append(package_line("give", p.give))
+            children.append(package_line("get", p.get))
             if p.their_drop is not None:
                 # Part of the offer, not a footnote -- mirrors render_trades'
                 # own comment (cli.py): the counterparty notices the cut
@@ -848,13 +1074,12 @@ def trades_children(view) -> list:
                 children.append(html.P(f"they must also drop {p.their_drop.name} "
                                        f"({p.their_drop.position})"))
 
-    children.append(html.P(TRADE_CAVEAT,
-                           style={"marginTop": "16px", "whiteSpace": "pre-wrap"}))
+    children.append(html.P(TRADE_CAVEAT, className="note"))
     # This replaces trades-content's own RUN button and Store (trades_landing),
     # so there is nothing left on screen to trigger a second search -- reload
     # the page to run another.
-    children.append(html.P("reload the page to run another search.",
-                           style={"marginTop": "16px", "fontStyle": "italic"}))
+    children.append(html.P("Reload the page to run another search.",
+                           className="note"))
     return children
 
 
@@ -873,12 +1098,13 @@ def trades_landing(league: str) -> html.Div:
     """
     return html.Div([
         dcc.Store(id="trades-league", data=league),
-        html.P(TRADE_CAVEAT, style={"whiteSpace": "pre-wrap", "maxWidth": "60ch"}),
-        html.P("the full sweep takes about five minutes -- eleven opponents, "
-              "three shapes each",
-              style={"fontWeight": "700", "marginTop": "12px"}),
-        html.Button("RUN THE SEARCH", id="trades-run"),
-    ], id="trades-content")
+        html.P("Find a trade", className="page-title"),
+        html.P("The full sweep takes about five minutes -- eleven opponents, "
+              "three shapes each.", className="note"),
+        html.P(TRADE_CAVEAT, className="note"),
+        html.Button("Run the search", id="trades-run",
+                    style={"marginTop": "16px"}),
+    ], id="trades-content", className="card")
 
 
 def season_page_children(name: str, view):
@@ -890,10 +1116,10 @@ def season_page_children(name: str, view):
     if view.error:
         return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})
     if name == "lineup":
-        return html.Div(_lineup_children(view))
+        return html.Div(_lineup_children(view), className="card")
     elif name == "waivers":
-        return html.Div(waivers_children(view))
-    return html.Div(trades_children(view))
+        return html.Div(waivers_children(view), className="card")
+    return html.Div(trades_children(view), className="card")
 
 
 def _season_layout_for(name: str, league_names: list[str], default_league: str):
@@ -910,14 +1136,14 @@ def _season_layout_for(name: str, league_names: list[str], default_league: str):
             # No view built here -- build_trades' full sweep is ~330s
             # (pipeline.py's ponytail note); the button below is the only
             # thing allowed to trigger it (see _register_callbacks).
-            return html.Div(className="page", children=[
-                nav(name, league), dcc.Loading(trades_landing(league))])
+            return shell(name, league, league_names,
+                         [dcc.Loading(trades_landing(league))])
         leagues, tunables = load_config(CONFIG_PATH)
         lg = get_league(leagues, league)
         builder = pipeline.build_lineup if name == "lineup" else pipeline.build_waivers
         view = builder(lg, tunables)
-        return html.Div(className="page", children=[
-            nav(name, league), season_page_children(name, view)])
+        return shell(name, league, league_names,
+                     [season_page_children(name, view)])
     return layout
 
 
@@ -938,7 +1164,11 @@ def build_app(league_names: list[str], default_league: str,
         dash.register_page(
             name, path=path,
             layout=_season_layout_for(name, league_names, default_league))
-    app.layout = html.Div([dash.page_container])
+    # `dcc.Location` lives here, not in a page: `_switch_league` writes its
+    # `search` prop, and a Location that unmounted on navigation would take
+    # the callback's own output with it.
+    app.layout = html.Div([dcc.Location(id="url", refresh=False),
+                           dash.page_container])
     return app
 
 
@@ -956,12 +1186,6 @@ def poll_interval_ms(tunables: Tunables, platform: str) -> int:
 
 _SANS = ('-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, '
          '"Helvetica Neue", Arial, sans-serif')
-
-_PANEL_STYLE = {
-    "fontFamily": _SANS, "fontSize": "13px",
-    "border": "1px solid #262c35", "borderRadius": "6px",
-    "padding": "12px 14px", "margin": "12px 0",
-}
 
 # Numbers are the reason the board was monospace. tabular-nums gives a
 # proportional font fixed-width DIGITS, so the columns still line up and the
@@ -981,6 +1205,12 @@ _TABLE_CELL = {
 _TABLE_HEADER = {
     "backgroundColor": "#171b21",
     "color": "#8b95a3",
+    # Stated, not inherited. A <th> defaults to `center` where a <td> defaults
+    # to `start`, so leaving this out did not mean "same as the cell" -- it
+    # meant every simple_table header floated to the middle of its column
+    # while the value under it sat on the left edge. The DataTable hid the
+    # bug: there `style_cell` covers header and body alike.
+    "textAlign": "left",
     "fontFamily": _SANS,
     "fontSize": "11px",
     "fontWeight": "700",
@@ -1005,29 +1235,16 @@ DRAFT_NOTICE = ("LOCAL ONLY -- one process at a time. Do NOT run "
 
 
 def _layout(league_names: list[str], default_league: str, poll_ms: int = 5000):
-    return html.Div(id="page", className="page", children=[
-        nav("draft", default_league),
+    # `id="page"` and the className are on the shell's own root, because
+    # _refresh writes that className to swing the whole page into the
+    # on-the-clock state.
+    return shell("draft", default_league, league_names, page_id="page", centre=html.Pre(
+        id="clock", className="topbar__clock"), children=[
         html.Div(DRAFT_NOTICE, style={
             "fontFamily": _SANS, "fontSize": "13px", "fontWeight": "600",
             "color": "#ef4444", "border": "1px solid #ef4444",
             "borderRadius": "6px", "padding": "10px 14px", "margin": "0 0 12px",
         }),
-        # DOM order IS the grid order: brand, clock, league. The clock sits in
-        # the centre track, which is where the eye goes first on the clock.
-        html.Header(className="topbar", children=[
-            html.Div(className="topbar__brand", children=[
-                # Literal path: Dash serves ffhelper/assets/ at /assets/ and
-                # this app never reconfigures assets_url_path.
-                html.Img(src="/assets/logo.png", className="topbar__logo",
-                         alt="FFHelper"),
-                html.Span("FFHelper"),
-            ]),
-            html.Pre(id="clock", className="topbar__clock"),
-            html.Div(className="topbar__league", children=[
-                dcc.Dropdown(id="league", options=league_names,
-                             value=default_league, clearable=False),
-            ]),
-        ]),
         html.Pre(id="banners"),
         html.Div(className="grid", children=[
             html.Main(className="col-main", children=[
@@ -1081,7 +1298,7 @@ def _register_callbacks(app, leagues, tunables, cache):
         Output("banners", "children"), Output("clock", "children"),
         Output("roster", "children"), Output("page", "className"),
         Output("override", "style"),
-        Input("tick", "n_intervals"), Input("league", "value"),
+        Input("tick", "n_intervals"), Input("league-nav", "value"),
         Input("pos", "value"), Input("search", "value"),
     )
     def _refresh(_n, league_name, position, query):
@@ -1122,7 +1339,7 @@ def _register_callbacks(app, leagues, tunables, cache):
         Output("board", "active_cell"), Output("last_marked", "data"),
         Input("board", "active_cell"), Input("undo", "n_clicks"),
         Input("override", "n_clicks"),
-        dash.State("board", "data"), dash.State("league", "value"),
+        dash.State("board", "data"), dash.State("league-nav", "value"),
         dash.State("tick", "n_intervals"), dash.State("last_marked", "data"),
         prevent_initial_call=True,
     )
@@ -1182,9 +1399,35 @@ def _register_callbacks(app, leagues, tunables, cache):
         view = pipeline.build_trades(league, tunables, progress=None)
         return trades_children(view)
 
-    # All three exposed for direct testing: a callback sealed inside this
+    @app.callback(
+        Output("url", "search"),
+        Input("league-nav", "value"),
+        dash.State("url", "search"),
+        prevent_initial_call=True,
+    )
+    def _switch_league(name, search):
+        """The league dropdown, on every page. Rewrites only the query string.
+
+        `search` and not `href`: every layout already reads `?league=` through
+        `league_from_kwargs`, so changing the query is enough to re-render the
+        page client-side. Writing `href` would do the same thing via a full
+        browser reload, throwing away the warm process for no gain.
+
+        The no-op guard is the point of taking `search` as State. Dash fires a
+        callback when its Input first appears in the layout, so without it
+        every navigation would write back the league the URL already carries
+        -- a second render of every page, and on /lineup a second
+        `build_lineup`. Compared through `parse_qs` rather than a substring
+        test, because "main" is a substring of "main-alt".
+        """
+        current = parse_qs((search or "").lstrip("?")).get("league", [None])[0]
+        if not name or name == current:
+            return dash.no_update
+        return f"?league={name}"
+
+    # All four exposed for direct testing: a callback sealed inside this
     # function is code no test can reach, and untestable code is untested code.
-    return _refresh, _write, _run_trades
+    return _refresh, _write, _run_trades, _switch_league
 
 
 def main(argv: list[str] | None = None) -> int:

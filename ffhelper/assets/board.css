@@ -19,9 +19,21 @@
   --text: #e6e9ee;
   --muted: #8b95a3;
 
-  /* State. These are the ONLY saturated colours on the page. Position colours
-     are muted by design, so state and category can never be confused: they use
-     different channels -- intensity and area for state, hue for position. */
+  /* State. These are the ONLY saturated colours ON THE BOARD. Position colours
+     are muted by design, so state and category can never be confused there:
+     they use different channels -- intensity and area for state, hue for
+     position. Forty rows each carrying a saturated colour is noise, and it
+     would drown the one row that matters.
+
+     ONE EXCEPTION, added 2026-09-04: the homepage wire panel spends --live on
+     "added" and --error on "dropped". It cannot collide with the board rule,
+     because the board is on /draft and the wire is on /, and the two never
+     render on one screen. Reusing the tokens rather than inventing a second
+     near-identical green was the cheaper of two bad options -- two greens a
+     shade apart is worse than one green with a stated scope. In the wire the
+     colour is REDUNDANT, never the signal: the group heading says Added or
+     Dropped, because a drop count is a positive number of drops and carries no
+     sign to separate it from an add count. */
   --live: #22c55e;
   --warn: #f59e0b;
   --error: #ef4444;
@@ -261,9 +273,13 @@ html, body {
 
 .actions { display: flex; flex-direction: column; gap: 8px; }
 
-.actions button {
-  width: 100%;
-  padding: 9px 14px;
+/* Bare `button`, not `.actions button`: /trades' RUN button lives outside
+   .actions and was rendering as an unstyled OS button -- grey, 13px Times, on
+   a dark card. A rule scoped to the container the last button happened to sit
+   in is the same "fixed the file the finding named" pattern this project
+   keeps hitting. */
+button {
+  padding: 9px 16px;
   background: var(--card-hi);
   color: var(--text);
   border: 1px solid var(--border);
@@ -275,8 +291,9 @@ html, body {
   transition: background 0.12s, border-color 0.12s;
 }
 
-.actions button:hover { background: #252b34; border-color: var(--muted); }
-.actions button:active { transform: translateY(1px); }
+button:hover { background: #252b34; border-color: var(--muted); }
+button:active { transform: translateY(1px); }
+.actions button { width: 100%; }
 
 /* ---------- DataTable chrome ----------
 
@@ -330,3 +347,286 @@ html, body {
 .dash-dropdown { border-radius: 8px; }
 .dash-dropdown-content { border-radius: 8px; overflow: hidden; }
 .dash-dropdown-value { font-weight: 600; }
+
+/* ---------- type scale ----------
+
+   One family throughout (--sans, with the rounded stack reserved for the
+   brand mark). Sizes here rather than as inline styles in app.py: the season
+   pages set fontWeight/fontSize per element in Python, which is why five
+   pages that share one stylesheet still managed to disagree about what a
+   heading looks like. */
+
+body { line-height: 1.5; }
+
+.page-title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 22px 0 8px;
+}
+
+.section-title:first-child { margin-top: 0; }
+
+/* Every explanatory line under a heading or a table: matchup notes, caveats,
+   the "nothing on the wire" result. Measure capped so prose does not run the
+   full 1440px. */
+.note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  max-width: 68ch;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+
+/* The '!!' lines every season renderer emits. They are warnings, so they
+   borrow #banners' treatment rather than inventing a second one. */
+.flags {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  color: var(--warn);
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 3px solid var(--warn);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+}
+
+.flags li + li { margin-top: 4px; }
+
+/* ---------- nav tabs ----------
+
+   The five routes, as one control. They were bare dcc.Links -- default
+   browser blue, and default browser PURPLE for any page already visited, so
+   the nav read as a browsing history rather than a set of tabs. Declaring
+   :link and :visited to the same value is the fix, and it has to be stated
+   explicitly: `color` on the bare selector loses to the UA's own
+   :visited rule.
+
+   Shape is borrowed from #pos above, deliberately -- a pill row already means
+   "pick one of these" everywhere else in this app. */
+
+.nav {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 var(--gap);
+}
+
+.nav__tab,
+.nav__tab:link,
+.nav__tab:visited {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 15px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: transparent;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.nav__tab:hover,
+.nav__tab:focus-visible {
+  color: var(--text);
+  background: var(--card-hi);
+  border-color: var(--muted);
+}
+
+.nav__tab--on,
+.nav__tab--on:link,
+.nav__tab--on:visited {
+  color: var(--text);
+  background: var(--card-hi);
+  border-color: var(--muted);
+}
+
+/* ---------- links ----------
+
+   No link hue. --live/--warn/--error are the only saturated colours on this
+   page by design (see :root), and a blue would be a fourth one competing with
+   the position colours every row carries. So a visited headline reads as
+   INTENSITY instead: full-strength text unread, muted once followed. Same
+   channel the on-the-clock state uses, and it happens to be the affordance a
+   headline list actually wants. */
+
+a, a:link { color: var(--text); }
+a:visited { color: var(--muted); }
+a:hover { text-decoration: underline; }
+
+:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+
+/* ---------- homepage: status facts ---------- */
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.facts p { margin: 0; }
+
+/* ---------- homepage: headlines ----------
+
+   Source in its own fixed column so titles start on one edge and the list
+   scans as a list. news.top_headlines caps the count; the three feeds
+   together return ~90 items. */
+
+.headlines { list-style: none; margin: 0; padding: 0; }
+
+.headlines li {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+  max-width: 74ch;
+}
+
+.headlines li:last-child { border-bottom: none; }
+
+.headlines__src {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+/* ---------- homepage: trending adds ---------- */
+
+.trending { list-style: none; margin: 0; padding: 0; }
+
+.trending li {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.trending li:last-child { border-bottom: none; }
+
+/* ponytail: a headshot that 404s (rookies not yet shot, and any id Sleeper
+   has no photo for) shows this background as a plain circle, because alt=""
+   suppresses the browser's broken-image glyph. That is the whole fallback --
+   detecting the failure would need an onerror handler, which means a clientside
+   callback for a missing photo. Upgrade path if it looks bad in practice: a
+   position-initial SVG data URI as the background-image.
+
+   One class for every face on the site. --lg is the homepage trending panel,
+   which is a browsing surface; the plain size is sized so a face does not set
+   the height of a table row. */
+.face {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+  object-position: top center;
+  background: var(--card-hi);
+  flex: none;
+}
+
+.face--lg { width: 34px; height: 34px; }
+
+.trending__who { min-width: 0; flex: 1; }
+
+.trending__name {
+  display: block;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trending__meta {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trending__count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* ---------- simple_table ----------
+
+   The season pages' read-only tables. Cell colours and padding stay inline in
+   app.py (_TABLE_CELL / _TABLE_HEADER) because the DataTable shares them;
+   only the widths, which the DataTable sizes for itself, live here. */
+
+.data-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+/* No per-column width rule. Pushing all the slack into the last column was
+   the previous attempt and it over-corrected: the data bunched into the left
+   third and the rest of the card sat empty. `width: 100%` with the default
+   auto layout spreads the columns across the card in proportion to what is
+   actually in them, which is the behaviour wanted -- the original complaint
+   was never the spread, it was that _TABLE_HEADER had no textAlign and the
+   headings floated to the middle of columns whose values sat on the left. */
+
+/* Face and name as one cell. */
+.who { display: flex; align-items: center; gap: 9px; }
+
+/* One side of a trade offer: the label, then a chip per player. */
+.package {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 6px 0;
+}
+
+.package__label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  width: 3rem;
+  flex: none;
+}
+
+/* ---------- homepage: the wire ----------
+
+   Adds and drops in one card. Two rankings, kept apart -- merging them into
+   one list ordered by magnitude would put whichever side happens to carry
+   bigger numbers on top and mean nothing. */
+
+.wire__heading {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 14px 0 2px;
+}
+
+.wire__heading:first-of-type { margin-top: 0; }
+
+.wire__heading--add { color: var(--live); }
+.wire__heading--drop { color: var(--error); }
+
+/* The count, not the name: colouring the whole row would make the panel two
+   blocks of saturated text next to a headline list that is deliberately
+   quiet. */
+.wire--add .trending__count { color: var(--live); }
+.wire--drop .trending__count { color: var(--error); }

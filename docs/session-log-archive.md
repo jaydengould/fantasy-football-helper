@@ -6,7 +6,168 @@ rather than a diary. Every durable lesson here has already been promoted into
 learned. **Nothing reads this file to decide anything** — it is evidence, not
 authority.
 
-Entries run 2026-08-24 (Phase 0) to 2026-09-03 (Phase 6 closed out).
+Entries run 2026-08-24 (Phase 0) to 2026-09-04 (the web app's appearance pass).
+
+### 2026-09-04 — The season pages never got the design the board has. Nine notes off one evening's use.
+
+**State:** `main`, **601 tests** (from 574), **232 mutations, 0 STALE, 1
+survivor** (the documented `value.py` equivalent mutant), `git status`
+identical before and after the run. Five routes smoke-rendered against live
+config and live APIs.
+
+The user ran the web app for an evening and came back with a list: "layout is
+atrocious", coloring, font, too many headlines, drop a disclaimer, add a league
+dropdown, an error in the console, visited links going purple, header buttons,
+and a maybe on headshots. Nine symptoms.
+
+**They were mostly one defect.** `/draft` has a design — `board.css`, with
+tokens, a top bar, a grid, cards, and a stated rule that only state colours may
+be saturated. The four season routes opted out of all of it: `home_layout` and
+`_season_layout_for` each built their own `html.Div(className="page")`, put a
+row of bare `dcc.Link`s at the top, and styled everything else with inline
+dicts written per element. So four of five pages rendered as unstyled links and
+default `<ul>` bullets on a bare body while the fifth had a design system. That
+single gap produced the layout complaint, the colour and font complaints, the
+purple visited links (an unstyled `dcc.Link` is an `<a href>`, so the UA's
+`:visited` rule applied and the nav read as browsing history), and the header
+buttons — plus `/trades`' RUN button, which was styled by `.actions button`, a
+rule scoped to a container that button does not sit in. **The lazy fix and the
+root-cause fix were the same fix:** one `shell()` every route calls, and the
+existing stylesheet extended rather than a second one written.
+
+**Two of the nine were not bugs.**
+
+- The console line — `no usable stale cache for injuries_2026_wk1; raising
+  original fetch error` — is `load_nfl_injuries` degrading exactly as its
+  docstring says it will. Verified: `injuries_2026.csv` 404s, `injuries_2025.csv`
+  is 200. nflverse does not publish the file until week 1 has been played, and
+  week 1 kicks off 2026-09-09. `_practice_status` already catches it and prints
+  "practice report : unavailable". **Not fixed, deliberately:** the WARNING comes
+  from `_stale_fallback`, which every cached fetch in `data.py` rides on, so
+  lowering the level there to quiet a known-benign preseason case would also
+  quiet a real outage in five other loaders. It stops on its own in five days.
+- "Too many headlines" was not a display bug either. `load_headlines` returns
+  every item from all three feeds — about ninety — and nothing had ever capped
+  it. `news.top_headlines` now sorts by `pubDate` (RFC 822, `email.utils`,
+  stdlib) and takes eight. An undated or unparseable item sorts last rather than
+  being dropped.
+
+**The disclaimer question was worth asking rather than defaulting.**
+`load_trending`'s docstring requires the NATIONAL qualifier next to any
+displayed count, and `app.py` satisfied it twice on one panel — subtitle and
+all ten rows. Offered the user the split (drop the row copies, keep the
+subtitle) versus dropping both; they ruled both, on the grounds that a 12-team
+league cannot produce a six-figure add count. Recorded as a reversal in
+`docs/decisions.md` and in `load_trending`'s own docstring, scoped: it still
+holds for `waiver_rows`, where the count shares a table with league-specific
+advice and "my leaguemates want him" is a reading actually available.
+
+**Headshots were scoped down by the user, not by me.** Sleeper serves them at
+`content/nfl/players/<id>.jpg` and team logos at `images/team_logos/nfl/<abbr>.png`
+— no dependency, no key, verified 200 on three live ids and on `chi.png`. Asked
+where they should go; the answer was trending only, with lineup and waivers as a
+maybe. That maybe is `TODO.md` §10, not code written on spec.
+
+**`mutate.py`'s staleness guard earned its keep again.** Three app.py mutations
+went STALE because their target strings were text I had just rewritten — the
+empty-waiver wording, the `/trades` landing branch, and the trending row. Every
+one was a mutation whose *question* was still valid and whose *anchor* was
+gone, which is precisely the failure mode the guard exists for: without it the
+run would have reported a smaller total and looked healthy. Targets re-anchored,
+not deleted.
+
+**Follow-up the same day, from a screenshot: table headings were centred over
+left-aligned values.** `_TABLE_HEADER` never set `textAlign`, and omitting it
+is not "inherit the cell" -- a `<th>` defaults to `center` where a `<td>`
+defaults to `start`. The `DataTable` on /draft hid it for months, because there
+`style_cell` covers header and body alike; `simple_table` writes the two dicts
+separately, so the season pages shipped every heading floating in the middle of
+its column. **The suite stayed green through the fix**, which is the finding:
+nothing asserted the two agreed. Now tested as agreement between the dicts
+rather than as a literal, plus a mutation. The same screenshot showed why it
+was so visible -- `simple_table` carried an inline `width: 100%`, which beats
+any stylesheet, so slack spread evenly and SLOT took a twelfth of a 1900px row.
+Widths moved to `.data-table` in board.css, with the slack going to the last
+column (free text in both callers).
+
+**Second follow-up, from the same screenshot round: three asks, and one of
+them was me over-correcting.** Pushing all the table slack into the last
+column bunched the data into the left third and left the rest of the card
+empty; `width: 100%` with the default auto layout was what the page wanted all
+along. The original complaint was never the spread -- it was the missing
+`textAlign`. Per-column width rules removed, not replaced.
+
+Bench rows now read `BN` in SLOT instead of blank, because every section
+repeats the header row and an empty cell under a heading reads as a missing
+value rather than as "no starting slot"; the text renderer can leave it out
+because its BENCH heading is the whole context. **`state.unprojected` did NOT
+get the same treatment and that is the interesting half:** it is not a bench
+list -- `lineup_rows` reads the same set to mark STARTERS with no projection --
+so stamping BN there would assert something false about a player the tool is
+telling you to start. Both behaviours are now tested and mutated, in opposite
+directions.
+
+Headshots went to `/lineup`, `/waivers` and `/trades` (closing what had been
+queued that morning as a "decide in a week" item -- the user decided in an
+hour). **The row dicts stay pure strings.** They mirror the CLI renderers line
+for line and their assertions are string comparisons, so the face is attached
+in `simple_table` from a new non-column `"id"` key rather than by making
+`player` a component. That is also what makes the projected-total row and an
+EMPTY starting slot render as plain text: no id, no face, no empty circle
+beside a number. `/trades` needed its own `package_line`, since `cli._package`
+returns one flat string a terminal needs and this page does not -- same fields,
+same order, joined on `sleeper_id`, never on a name.
+
+**Nearly filed the new work as `TODO.md` §10, which is already taken** --
+`docs/todo-archive.md`'s index points §10 at "later phases". Since the item
+opened and closed inside one session it never needed a number at all; the
+queue is a queue, not a record.
+
+**Third round: the wire in both directions, and coloured position cells.**
+Asked for adds and drops as one panel in red and green. **That collides head-on
+with `board.css`'s own rule** -- `--live` and `--error` are declared there as
+the only saturated colours precisely so hue can never mean two things. Built it
+anyway, with the rule rescoped rather than repealed: that rule was written
+about the BOARD, where forty saturated rows would drown the one that matters,
+and the wire is on `/` while the board is on `/draft`, so they never share a
+screen. Reusing the tokens beat inventing a second green a shade off the first.
+The colour is redundant by construction -- the group heading says Added or
+Dropped, because a drop count is a positive number of drops and has no sign to
+separate it from an add count, which would leave a red-green colourblind reader
+with nothing at all. Recorded in `docs/decisions.md` with the condition that
+reopens it. The two lists are also kept as two rankings and NOT merged: ordering
+them together by magnitude would put whichever side happens to carry bigger
+numbers on top and mean nothing.
+
+**Two mutations survived, and only one of them was a coverage gap.** The real
+one: I wrote three separate `try` blocks in `home_layout` so each fetch
+degrades alone, and nothing tested it -- both "endpoint is down" tests make the
+fetch RAISE, so a statement that drops the other direction's result on the
+SUCCESS path never executes and they cannot see it. A third test with both
+endpoints healthy and DIFFERENT players per direction killed it; reusing one
+player id would have been just as blind, since the name would still be on the
+page from the other list. The second survivor was my own bad mutation --
+appending `drops = {}` to the adds block is overwritten by the drops block on
+the very next line, an equivalent mutant that would have sat in the list
+forever looking like a gap. Replaced with a question the code can answer, and
+the reasoning left in `mutate.py` beside it.
+
+Position cells on `/lineup` and `/waivers` now take the board's hue, read from
+`POSITION_COLORS` rather than restated -- two tables disagreeing about what an
+RB looks like is the drift this project keeps paying for. **FLEX and BN stay
+grey on purpose:** neither is a position, and giving them a colour would say
+they are. The POS column beside them already carries the player's real
+position, in its real colour, which is what makes "a WR in the FLEX" a
+one-glance read.
+
+**Smaller things.** The league picker is now the same `dcc.Dropdown` `/draft`
+already had, sharing one id across all five pages, so switching leagues also
+rewrites `?league=` and the nav links stop going stale — one `_switch_league`
+callback writing `Location.search` (not `href`, which would be a full browser
+reload for the same result). Its no-op guard compares through `parse_qs` rather
+than a substring test, because "main" is a substring of "main-alt". Two tests
+that read the nav as `rendered.children[0].children` broke the moment a top bar
+went above it; both now find it by class, which is what they meant.
 
 ### 2026-09-03 (second block) — Phase 6 shipped: season mode on the web. 28 rulings, and seven mutations I read past for eleven tasks.
 

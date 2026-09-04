@@ -246,7 +246,7 @@ def _make_write(monkeypatch, tmp_path, league_name="write-test"):
     path = tmp_path / "log.jsonl"
     monkeypatch.setattr(app, "_draft_log_path", lambda league: path)
     league = League(name=league_name, platform="sleeper", league_id="1")
-    _refresh, write, _trades = app._register_callbacks(
+    _refresh, write, _trades, _switch = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         [league], Tunables(), lambda lg: None,
     )
@@ -462,7 +462,7 @@ def _make_refresh(monkeypatch, tmp_path, players, draft_slot=5, has_feed=True):
     monkeypatch.setattr(app, "_draft_log_path", lambda league: tmp_path / "log.jsonl")
     league = League(name="refresh-test", platform="sleeper", league_id="1",
                     draft_slot=draft_slot)
-    refresh, _write, _trades = app._register_callbacks(
+    refresh, _write, _trades, _switch = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         [league], Tunables(),
         lambda lg: (players, _settings(), FakeFeed(), has_feed),
@@ -934,6 +934,28 @@ def test_build_app_registers_all_five_routes_and_keeps_the_board_key():
     }
 
 
+def _walk(node):
+    """Every component in a rendered tree, root first."""
+    yield node
+    children = getattr(node, "children", None)
+    if isinstance(children, list):
+        for c in children:
+            yield from _walk(c)
+    elif children is not None:
+        yield from _walk(children)
+
+
+def _nav_link(rendered, label):
+    """The nav tab reading `label`, found by class rather than by position.
+
+    Was `rendered.children[0].children` in two tests, which broke the moment
+    the shared page shell put a top bar above the nav. The nav is identified
+    by what it IS, not by where it currently sits.
+    """
+    return next(n for n in _walk(rendered)
+                if isinstance(n, _dash.dcc.Link) and n.children == label)
+
+
 def test_season_page_layout_resolves_the_league_from_the_url_not_the_default(monkeypatch):
     # Dash calls a registered page's layout with the query string ALREADY
     # parsed into kwargs (e.g. league="b"), not the raw "?league=b" string.
@@ -954,8 +976,7 @@ def test_season_page_layout_resolves_the_league_from_the_url_not_the_default(mon
     app.build_app(["a", "b"], "a", poll_ms=1000)
     layout = dash.page_registry["lineup"]["layout"]
     rendered = layout(league="b")
-    links = rendered.children[0].children
-    waivers_link = next(link for link in links if link.children == "WAIVERS")
+    waivers_link = _nav_link(rendered, "WAIVERS")
     assert waivers_link.href == "/waivers?league=b"
     assert rendered.className == "page"
 
@@ -992,9 +1013,7 @@ def test_draft_page_nav_reflects_the_url_league_not_the_default():
     app.build_app(["a", "b"], "a", poll_ms=1000)
     layout = dash.page_registry["board"]["layout"]
     rendered = layout(league="b")
-    links = rendered.children[0].children
-    waivers_link = next(link for link in links if link.children == "WAIVERS")
-    assert waivers_link.href == "/waivers?league=b"
+    assert _nav_link(rendered, "WAIVERS").href == "/waivers?league=b"
 
 
 # --- homepage status strip ---
@@ -1230,7 +1249,7 @@ def test_lineup_page_carries_close_calls_and_notes_not_just_starters():
                                    gap=1.0)],
             unprojected=[]))
     rendered = str(season_page_children("lineup", view))
-    assert "BENCH" in rendered and "Bench Only Guy" in rendered   # BENCH section
+    assert "Bench" in rendered and "Bench Only Guy" in rendered   # BENCH section
     assert "Challenger Guy" in rendered and "1.0" in rendered     # CLOSE CALLS
     assert "FAAB bid due Wednesday" in rendered                   # !! notes
 
@@ -1242,7 +1261,102 @@ def test_lineup_page_carries_the_unprojected_section():
         league_name="sleeper-main", week=3,
         state=StartSit(lineup=[("TE", p)], bench=[], close_calls=[], unprojected=[p]))
     rendered = str(season_page_children("lineup", view))
-    assert "NO PROJECTION THIS WEEK" in rendered
+    assert "No projection this week" in rendered
+
+
+def test_table_headers_and_cells_agree_on_alignment():
+    """A <th> defaults to `center`, a <td> to `start`. Omitting textAlign from
+    _TABLE_HEADER therefore did not mean "same as the cell" -- it meant every
+    header floated to the middle of its column while the value under it sat on
+    the left edge, which is what the season pages shipped. Asserted as
+    agreement between the two dicts rather than as a literal, because the
+    defect is the disagreement, not the value.
+    """
+    assert app._TABLE_HEADER["textAlign"] == app._TABLE_CELL["textAlign"]
+
+
+def test_simple_table_hands_its_widths_to_the_stylesheet():
+    """Inline width beats any rule in board.css, so a table that carried its
+    own `width: 100%` could not be told where to put the slack -- it went to
+    every column evenly and SLOT took a twelfth of the row."""
+    table = simple_table(["a", "flags"], [{"a": "1", "flags": ""}]).children
+    assert table.className == "data-table"
+    # Dash omits an unset prop entirely rather than storing None.
+    assert not hasattr(table, "style")
+
+
+def test_simple_table_attaches_a_face_only_where_the_row_has_an_id():
+    """The projected-total line and an EMPTY starting slot are rows with no
+    player, so they must render as plain text. A face there would request
+    .../players/.jpg and draw an empty circle beside a number."""
+    rows = [{"id": "4046", "player": "Some Guy", "pos": "RB"},
+            {"player": "projected total", "pos": ""}]
+    body = simple_table(["player"], rows, face_column="player").children.children[1]
+    named_cell, plain_cell = (tr.children[0].children for tr in body.children)
+    assert named_cell.className == "who"
+    assert plain_cell == "projected total"
+
+
+def test_simple_table_leaves_every_cell_alone_without_a_face_column():
+    """The default has to stay text -- season_page_children calls this for
+    tables that carry no player at all."""
+    cell = simple_table(["player"], [{"id": "4046", "player": "Some Guy"}]
+                        ).children.children[1].children[0].children[0].children
+    assert cell == "Some Guy"
+
+
+def test_simple_table_colours_position_cells_from_the_boards_own_dict():
+    """One source of truth for the hues. A second table with its own idea of
+    what an RB looks like is the drift this project keeps paying for, so the
+    colour is read from POSITION_COLORS -- the same dict the DataTable's
+    style_cell_conditional is built from."""
+    rows = [{"id": "1", "slot": "RB", "player": "Guy", "pos": "RB"}]
+    body = simple_table(["slot", "pos"], rows,
+                        pos_columns=("slot", "pos")).children.children[1]
+    slot_cell, pos_cell = body.children[0].children
+    assert slot_cell.style["color"] == app.POSITION_COLORS["RB"]
+    assert pos_cell.style["color"] == app.POSITION_COLORS["RB"]
+
+
+def test_simple_table_leaves_flex_and_bn_uncoloured():
+    """FLEX is not a position and BN is not a position. Inventing a colour for
+    either would say they are -- and the POS column beside them already
+    carries the player's real position, in its real colour."""
+    rows = [{"slot": "FLEX", "pos": "WR"}, {"slot": "BN", "pos": "RB"}]
+    body = simple_table(["slot"], rows, pos_columns=("slot",)).children.children[1]
+    # _TABLE_CELL already carries a `color`, so "uncoloured" means unchanged
+    # from the default, not absent.
+    assert all(tr.children[0].style["color"] == app._TABLE_CELL["color"]
+               for tr in body.children)
+
+
+def test_simple_table_leaves_positions_alone_without_pos_columns():
+    """The default stays plain -- season_page_children calls simple_table for
+    tables whose columns are not positions at all."""
+    body = simple_table(["slot"], [{"slot": "RB"}]).children.children[1]
+    assert body.children[0].children[0].style["color"] == app._TABLE_CELL["color"]
+
+
+def test_bench_rows_label_the_slot_bn_rather_than_leaving_it_blank():
+    """Every section repeats the header row, so a blank SLOT column reads as a
+    missing value. The text renderer can leave it out because its BENCH
+    heading is the whole context; a table cannot."""
+    p = Player(sleeper_id="9", name="Bench Guy", position="RB", team="KC",
+               proj_pts=6.0)
+    state = StartSit(lineup=[], bench=[p], unprojected=[], close_calls=[])
+    view = pipeline.LineupView(league_name="sleeper-main", week=3, state=state)
+    assert app.bench_rows(view)[0]["slot"] == "BN"
+
+
+def test_unprojected_rows_leave_the_slot_blank_because_a_starter_can_be_in_them():
+    """Not a bench list. lineup_rows reads the same `state.unprojected` set to
+    mark STARTERS with no projection, so stamping "BN" on these rows would
+    assert something false about a player the tool is telling you to start."""
+    p = Player(sleeper_id="9", name="Stash", position="WR", team="KC")
+    state = StartSit(lineup=[("WR", p)], bench=[], unprojected=[p],
+                            close_calls=[])
+    view = pipeline.LineupView(league_name="sleeper-main", week=3, state=state)
+    assert app.unprojected_player_rows(view)[0]["slot"] == ""
 
 
 def test_simple_table_wraps_in_a_scrolling_div_not_a_datatable():
@@ -1267,7 +1381,7 @@ def test_waivers_empty_board_states_the_result():
     view = pipeline.WaiverView(league_name="sleeper-main", week=3, last_week=17,
                                this_week=[], ros=[], weeks_scored=15)
     rendered = str(waivers_children(view))
-    assert "nothing on the wire beats what you already have" in rendered
+    assert "Nothing on the wire beats what you already have" in rendered
 
 
 def test_waivers_empty_board_also_carries_the_floor_caveat():
@@ -1279,7 +1393,7 @@ def test_waivers_empty_board_also_carries_the_floor_caveat():
     view = pipeline.WaiverView(league_name="sleeper-main", week=3, last_week=17,
                                this_week=[], ros=[], weeks_scored=15)
     rendered = str(waivers_children(view))
-    assert "a target must gain more than the weekly projection error" in rendered
+    assert "A target must gain more than the weekly projection error" in rendered
     assert "does not know about handcuffs" not in rendered
 
 
@@ -1294,7 +1408,10 @@ def test_waiver_rows_this_week_uses_denominator_of_one():
         this_week=[WaiverTarget(player=p, gain=4.0, drop=d, weeks_started=1)],
         ros=[], weeks_scored=15)
     rows = waiver_rows(view, "this_week")
-    assert rows[0] == {"pos": "RB", "player": "Guy", "gain": "+4.0",
+    # "id" is not a column -- _WAIVER_HEADERS does not list it, so it never
+    # renders. simple_table reads it to attach the headshot, which keeps every
+    # visible value a plain string that can still be compared to the CLI's.
+    assert rows[0] == {"id": "1", "pos": "RB", "player": "Guy", "gain": "+4.0",
                        "drop": "Drop Guy", "starts": "1 of 1 starts", "trending": ""}
 
 
@@ -1368,7 +1485,7 @@ def test_waivers_page_carries_every_section_not_just_the_tables():
     )
     rendered = str(waivers_children(view))
     assert "This Week Guy" in rendered and "1 of 1 starts" in rendered
-    assert "REST OF SEASON" in rendered
+    assert "Rest of season" in rendered
     assert "Ros Guy" in rendered and "9 of 15 starts" in rendered
     assert "FAAB bid due Wednesday" in rendered                              # !! notes
     assert "waiver priority 4 of 12" in rendered                             # priority line
@@ -1443,7 +1560,25 @@ def test_trades_children_says_reload_to_run_another_search():
     # sweep, so the results page has to say so (review finding 11).
     view = pipeline.TradeView(league_name="sleeper-main", week=3, weeks_scored=11, best=[])
     rendered = str(trades_children(view))
-    assert "reload the page to run another search" in rendered
+    assert "Reload the page to run another search" in rendered
+
+
+def test_trades_children_shows_both_packages_with_a_face_per_player():
+    """`cli._package` returns one flat string, which a terminal needs and this
+    page does not. package_line emits the same fields -- name and position, in
+    the proposal's order -- as one chip per player, joined on sleeper_id.
+    """
+    mine = Player(sleeper_id="1", name="My Guy", position="RB", team="KC")
+    theirs = Player(sleeper_id="2", name="Their Guy", position="WR", team="SF")
+    view = pipeline.TradeView(
+        league_name="sleeper-main", week=3, weeks_scored=11,
+        names={7: "Rival"},
+        best=[Proposal(opponent=7, give=(mine,), get=(theirs,),
+                       gain_me=3.0, gain_them=2.0)])
+    rendered = str(trades_children(view))
+    assert "My Guy (RB)" in rendered and "Their Guy (WR)" in rendered
+    assert "players/1.jpg" in rendered and "players/2.jpg" in rendered
+    assert rendered.count("className='package'") == 2      # give and get
 
 
 def test_trades_children_carries_notes():
@@ -1460,7 +1595,7 @@ def test_trades_children_empty_result_states_the_floor_was_not_cleared():
     """
     view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[])
     rendered = str(trades_children(view))
-    assert "no trade with any opponent clears the floor for both sides." in rendered
+    assert "No trade with any opponent clears the floor for both sides." in rendered
 
 
 def test_trades_children_default_mode_is_best_offer_per_opponent():
@@ -1561,7 +1696,7 @@ def test_season_page_children_trades_routes_to_the_table():
     """
     view = pipeline.TradeView(league_name="sleeper-main", week=3, best=[])
     rendered = str(season_page_children("trades", view))
-    assert "no trade with any opponent clears the floor for both sides." in rendered
+    assert "No trade with any opponent clears the floor for both sides." in rendered
 
 
 def test_trades_callback_ignores_none_n_clicks_so_navigation_costs_nothing(monkeypatch):
@@ -1572,7 +1707,7 @@ def test_trades_callback_ignores_none_n_clicks_so_navigation_costs_nothing(monke
     def boom(*a, **k):
         raise AssertionError("build_trades must not run when n_clicks is None")
     monkeypatch.setattr(pipeline, "build_trades", boom)
-    _refresh, _write, run_trades = app._register_callbacks(
+    _refresh, _write, run_trades, _switch = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         [League(name="sleeper-main", platform="sleeper", league_id="1")],
         Tunables(), lambda lg: None,
@@ -1594,7 +1729,7 @@ def test_trades_callback_sweeps_the_league_the_url_named_exactly_once(monkeypatc
     monkeypatch.setattr(pipeline, "build_trades", fake_build_trades)
     leagues = [League(name="sleeper-main", platform="sleeper", league_id="1"),
                League(name="yahoo-main", platform="yahoo", league_id="2")]
-    _refresh, _write, run_trades = app._register_callbacks(
+    _refresh, _write, run_trades, _switch = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         leagues, Tunables(), lambda lg: None,
     )
@@ -1632,29 +1767,98 @@ def test_headlines_panel_shows_headlines_and_the_partial_failure_note_together()
     assert "pft: could not reach feed" in rendered
 
 
-def test_trending_panel_labels_counts_as_national():
-    """These counts are national and must never read as a claim prediction."""
+def test_trending_panel_drops_the_national_qualifier_from_panel_and_rows():
+    """User ruling 2026-09-04, recorded in load_trending's docstring.
+
+    The qualifier was printed twice -- once as a panel subtitle and again
+    appended to all ten rows -- to say something the magnitude already says:
+    a 12-team league cannot generate a six-figure add count. Both copies are
+    gone HERE only; `waiver_rows` still carries it, because there the count
+    sits in a table of league-specific advice.
+    """
     players = {"4046": Player(sleeper_id="4046", name="Some Guy",
                               position="RB", team="CHI")}
-    rendered = str(trending_panel({"4046": 12345}, players))
-    assert "NATIONALLY" in rendered or "national" in rendered.lower()
-    assert "NOT your league" in rendered
+    rendered = str(trending_panel({"4046": 12345}, {}, players))
+    assert "NATIONALLY" not in rendered
+    assert "NOT your league" not in rendered
+    assert "12,345" in rendered and "Some Guy" in rendered
 
 
-def test_trending_panel_falls_back_to_dashes_when_team_is_none():
+def test_trending_panel_keeps_adds_and_drops_as_two_rankings():
+    """Not merged. They are separate rankings, so ordering them together by
+    magnitude would put whichever side happens to carry bigger numbers on top
+    and mean nothing -- here the top drop outnumbers every add."""
+    players = {
+        "1": Player(sleeper_id="1", name="Added Guy", position="RB", team="CHI"),
+        "2": Player(sleeper_id="2", name="Dropped Guy", position="WR", team="SF"),
+    }
+    panel = trending_panel({"1": 100}, {"2": 90000}, players)
+    lists = [n for n in _walk(panel) if isinstance(n, _dash.html.Ol)]
+    assert [l.className for l in lists] == ["trending wire--add",
+                                            "trending wire--drop"]
+    assert "Added Guy" in str(lists[0]) and "Dropped Guy" in str(lists[1])
+
+
+def test_trending_panel_names_each_direction_in_words_not_only_in_colour():
+    """--live and --error are the whole visual difference between the two
+    halves of this card, which leaves a red-green colourblind reader with
+    nothing -- the counts cannot separate them either, since a drop count is a
+    positive number of drops and carries no sign. The heading is the signal;
+    the colour repeats it."""
+    rendered = str(trending_panel({"1": 5}, {"2": 5}, {}))
+    assert "Added" in rendered and "Dropped" in rendered
+
+
+def test_trending_panel_one_dead_direction_does_not_blank_the_other():
+    """home_layout fetches the two kinds in separate try blocks, so a drops
+    outage must show beside a working adds list rather than emptying the
+    card."""
+    players = {"1": Player(sleeper_id="1", name="Added Guy", position="RB",
+                           team="CHI")}
+    rendered = str(trending_panel({"1": 100}, {}, players))
+    assert "Added Guy" in rendered
+    assert "dropped: unavailable" in rendered
+    assert "trending data unavailable" not in rendered
+
+
+def test_trending_panel_says_unavailable_only_when_both_directions_are_empty():
+    rendered = str(trending_panel({}, {}, {}))
+    assert "trending data unavailable" in rendered
+
+
+def test_trending_panel_says_fa_when_team_is_none():
     """team=None is a real Player state -- undrafted and practice-squad
-    additions carry it -- so the '--' fallback needs its own proof, not just
-    correctness by inspection of the f-string."""
+    additions carry it -- so the fallback needs its own proof, not just
+    correctness by inspection of the f-string. 'FA' and not an empty gap:
+    a blank there reads as a missing field rather than as a fact."""
     players = {"4046": Player(sleeper_id="4046", name="Free Agent Guy",
                               position="WR", team=None)}
-    rendered = str(trending_panel({"4046": 7}, players))
-    assert "Free Agent Guy (WR---)" in rendered
+    rendered = str(trending_panel({"4046": 7}, {}, players))
+    assert "FA WR" in rendered
+
+
+def test_trending_panel_uses_the_team_logo_for_a_defence_not_a_headshot():
+    """A DEF has no face. Its sleeper_id IS the team abbreviation, which is
+    also the logo's filename, so the wrong branch here would request
+    .../players/CHI.jpg and render every defence as an empty circle."""
+    players = {"CHI": Player(sleeper_id="CHI", name="Bears D/ST",
+                             position="DEF", team="CHI")}
+    rendered = str(trending_panel({"CHI": 900}, {}, players))
+    assert "team_logos/nfl/chi.png" in rendered
+    assert "content/nfl/players/CHI.jpg" not in rendered
+
+
+def test_headshot_url_is_never_none_so_the_row_needs_no_second_shape():
+    """An id Sleeper has no photo for still gets a URL -- the 404 renders as
+    the empty circle .trending__face draws. Returning None would mean a
+    second rendering branch for a case that already looks right."""
+    assert app.headshot_url("999999", None).endswith("/999999.jpg")
 
 
 def test_trending_panel_prints_unresolved_id_rather_than_dropping():
     """Non-negotiable #3: unmatched players are printed, never silently
     dropped. A cold or stale player cache must not quietly shrink the list."""
-    rendered = str(trending_panel({"999999": 42}, {}))
+    rendered = str(trending_panel({"999999": 42}, {}, {}))
     assert "999999" in rendered
 
 
@@ -1664,13 +1868,14 @@ def test_home_layout_renders_both_panels(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
     monkeypatch.setattr(app.news, "load_headlines", lambda feeds: (
         [Headline(title="Big trade", url="http://x", source="cbs", published=None)], []))
-    monkeypatch.setattr(app, "load_trending", lambda kind, cache_dir=None: {"4046": 10})
+    monkeypatch.setattr(app, "load_trending",
+                        lambda kind, cache_dir=None: {"4046": 10 if kind == "add" else 4})
     monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {
         "4046": Player(sleeper_id="4046", name="Some Guy", position="RB", team="CHI")})
     layout = home_layout("sleeper-main", ["sleeper-main"])
     rendered = str(layout)
-    assert "HEADLINES" in rendered
-    assert "TRENDING ADDS" in rendered
+    assert "Headlines" in rendered
+    assert "Trending" in rendered
     assert "Big trade" in rendered
     assert "Some Guy" in rendered
     assert layout.className == "page"
@@ -1694,7 +1899,8 @@ def test_home_layout_headlines_fetch_failure_renders_unavailable_not_empty(
     def boom(feeds):
         raise RuntimeError("all feeds down")
     monkeypatch.setattr(app.news, "load_headlines", boom)
-    monkeypatch.setattr(app, "load_trending", lambda kind, cache_dir=None: {"4046": 10})
+    monkeypatch.setattr(app, "load_trending",
+                        lambda kind, cache_dir=None: {"4046": 10 if kind == "add" else 4})
     monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {
         "4046": Player(sleeper_id="4046", name="Some Guy", position="RB", team="CHI")})
     rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
@@ -1716,15 +1922,95 @@ def test_home_layout_dead_trending_fetch_does_not_take_down_status_strip(
     monkeypatch.setattr(app, "load_trending", boom)
     rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
     assert "nfl week 3" in rendered
-    assert "TRENDING ADDS" in rendered
+    assert "Trending" in rendered
 
 
-def test_home_layout_shows_a_league_picker_linking_the_other_league(monkeypatch, tmp_path):
+def test_home_layout_renders_both_directions_when_both_endpoints_answer(
+    monkeypatch, tmp_path,
+):
+    """Distinct players per direction, on purpose.
+
+    The two "endpoint is down" tests below make a fetch RAISE, so a statement
+    that drops one direction's result on the SUCCESS path never runs and they
+    cannot see it -- both mutations for that survived until this test existed.
+    Reusing one player id across both directions would be just as blind: the
+    name would still be on the page, from the other list.
+    """
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    monkeypatch.setattr(app.news, "load_headlines", lambda feeds: ([], []))
+    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {
+        "1": Player(sleeper_id="1", name="Waiver Darling", position="RB", team="CHI"),
+        "2": Player(sleeper_id="2", name="Cut Everywhere", position="WR", team="SF")})
+    monkeypatch.setattr(app, "load_trending", lambda kind, cache_dir=None:
+                        {"1": 900} if kind == "add" else {"2": 700})
+
+    rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
+    assert "Waiver Darling" in rendered
+    assert "Cut Everywhere" in rendered
+    assert "unavailable" not in rendered
+
+
+def test_home_layout_keeps_adds_when_the_drops_endpoint_is_down(
+    monkeypatch, tmp_path,
+):
+    """Found by a surviving mutation, not by reading the code: nothing
+    covered `home_layout`'s FETCHING, only the panel it hands off to. Wrapping
+    both `load_trending` calls in one try block -- the obvious way to write
+    it -- kept the suite green while a dead drops endpoint silently took the
+    adds list down with it.
+    """
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    monkeypatch.setattr(app.news, "load_headlines", lambda feeds: ([], []))
+    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {
+        "4046": Player(sleeper_id="4046", name="Still Here", position="RB",
+                       team="CHI")})
+
+    def half_dead(kind, cache_dir=None):
+        if kind == "drop":
+            raise RuntimeError("sleeper trending drops endpoint down")
+        return {"4046": 10}
+    monkeypatch.setattr(app, "load_trending", half_dead)
+
+    rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
+    assert "Still Here" in rendered
+    assert "dropped: unavailable" in rendered
+    assert "trending data unavailable" not in rendered
+
+
+def test_home_layout_keeps_drops_when_the_adds_endpoint_is_down(
+    monkeypatch, tmp_path,
+):
+    """The mirror. One test covering only the add side would be satisfied by
+    an implementation that fetches drops first and swallows adds."""
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    monkeypatch.setattr(app.news, "load_headlines", lambda feeds: ([], []))
+    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {
+        "4046": Player(sleeper_id="4046", name="Cut Loose", position="WR",
+                       team="SF")})
+
+    def half_dead(kind, cache_dir=None):
+        if kind == "add":
+            raise RuntimeError("sleeper trending adds endpoint down")
+        return {"4046": 10}
+    monkeypatch.setattr(app, "load_trending", half_dead)
+
+    rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
+    assert "Cut Loose" in rendered
+    assert "added: unavailable" in rendered
+
+
+def test_home_layout_offers_every_league_in_one_dropdown(monkeypatch, tmp_path):
     # Spec's route table: "/" -- "League picker, nav, status strip, headlines,
-    # trending" -- and the Homepage section leads with "League picker and
-    # nav." The plan dropped it silently, and nav() only ever emits
-    # ?league=<current>, so there was NO path through the UI to reach a
-    # second league at all -- you had to hand-edit the URL.
+    # trending." nav() only ever emits ?league=<current>, so without a picker
+    # there is NO path through the UI to a second league at all -- you had to
+    # hand-edit the URL.
+    #
+    # It was a row of dcc.Links and is now the same dcc.Dropdown /draft
+    # already had in this slot: one affordance for one choice across all five
+    # pages. Navigation is _switch_league, tested separately.
     monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
     monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
     monkeypatch.setattr(app.news, "load_headlines", lambda feeds: ([], []))
@@ -1733,21 +2019,60 @@ def test_home_layout_shows_a_league_picker_linking_the_other_league(monkeypatch,
 
     rendered = home_layout("sleeper-main", ["sleeper-main", "yahoo-main"])
 
-    def find_links(node, found):
-        if isinstance(node, _dash.dcc.Link):
-            found.append(node)
-        children = getattr(node, "children", None)
-        if isinstance(children, list):
-            for c in children:
-                find_links(c, found)
-        elif children is not None:
-            find_links(children, found)
-        return found
+    picker = next(n for n in _walk(rendered)
+                  if isinstance(n, _dash.dcc.Dropdown))
+    assert picker.id == "league-nav"
+    assert picker.options == ["sleeper-main", "yahoo-main"]
+    assert picker.value == "sleeper-main"
+    # A cleared dropdown would resolve to the default league silently, which
+    # is the one thing _resolve_league exists to make explicit.
+    assert picker.clearable is False
 
-    links = find_links(rendered, [])
-    # Both league names appear as picker links (nav()'s links read HOME/DRAFT/
-    # etc, so a league-named link can only have come from the picker).
-    picker_labels = {l.children for l in links} & {"sleeper-main", "yahoo-main"}
-    assert picker_labels == {"sleeper-main", "yahoo-main"}
-    yahoo_link = next(l for l in links if l.children == "yahoo-main")
-    assert yahoo_link.href == "/?league=yahoo-main"
+
+def test_nav_tabs_declare_their_own_visited_colour_class():
+    """A dcc.Link is an <a href>, so the UA's :visited rule applied and every
+    route already opened turned purple -- the nav read as browsing history.
+    The colour lives in board.css keyed on .nav__tab; this asserts the hook
+    the stylesheet needs is actually emitted, on the active tab and the rest.
+    """
+    tabs = [n for n in _walk(app.nav("waivers", "b"))
+            if isinstance(n, _dash.dcc.Link)]
+    assert len(tabs) == len(app.ROUTES)
+    assert all("nav__tab" in t.className for t in tabs)
+    on = [t for t in tabs if "nav__tab--on" in t.className]
+    assert [t.children for t in on] == ["WAIVERS"]
+
+
+# --- league switching ---
+
+def _switch_callback(monkeypatch):
+    monkeypatch.setattr(app, "load_board_inputs", lambda *a, **k: ({}, None))
+    application = app.build_app(["a", "b"], "a", poll_ms=1000)
+    *_, switch = app._register_callbacks(
+        application, [League(name="a", platform="sleeper", league_id="1")],
+        Tunables(), lambda league: ({}, None, None, False))
+    return switch
+
+
+def test_switch_league_rewrites_only_the_query_string(monkeypatch):
+    """Not `href`: every layout already reads ?league= through
+    league_from_kwargs, so changing the query re-renders client-side. Writing
+    href would do the same thing via a full browser reload."""
+    assert _switch_callback(monkeypatch)("b", "?league=a") == "?league=b"
+
+
+def test_switch_league_is_a_no_op_when_the_url_already_names_that_league(
+    monkeypatch,
+):
+    """Dash fires a callback when its Input first appears in the layout, so
+    every navigation would otherwise write back the league the URL already
+    carries -- a second render of every page, and on /lineup a second
+    build_lineup."""
+    import dash
+    assert _switch_callback(monkeypatch)("a", "?league=a") is dash.no_update
+
+
+def test_switch_league_compares_by_parsed_key_not_by_substring(monkeypatch):
+    """"main" is a substring of "main-alt". A substring guard would treat a
+    switch from main-alt to main as a no-op and silently strand the user."""
+    assert _switch_callback(monkeypatch)("main", "?league=main-alt") == "?league=main"

@@ -434,6 +434,14 @@ def load_trending(
     whether your own leaguemates want a player, and must never be used to
     predict whether a claim wins. Price description only; see the spec.
 
+    The rule that every DISPLAY of a count must carry that qualifier in words
+    was reversed for the homepage panel on 2026-09-04 (user ruling): a
+    12-team league cannot produce a six-figure add count, so the label was
+    restating what the number already said -- and app.py printed it twice, on
+    the panel and again on all ten rows. It still holds for `waiver_rows`,
+    where the count shares a table with league-specific advice and the
+    reading "your leaguemates want him" is genuinely available.
+
     The cache key carries the kind. Without it the second caller is served the
     first one's answer and every drop count is silently an add count -- the same
     defect the weekly-projection key was fixed for.

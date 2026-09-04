@@ -425,6 +425,14 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "    if seat is None:\n        seat = 1"),
     ],
     "ffhelper/app.py": [
+        ("the league dropdown writes back the league the URL already names",
+         "        if not name or name == current:\n            return dash.no_update",
+         "        if not name:\n            return dash.no_update"),
+        ("the league guard compares by substring, stranding main vs main-alt",
+         '        current = parse_qs((search or "").lstrip("?")).get("league", [None])[0]',
+         '        current = name if f"league={name}" in (search or "") else None'),
+        ("a defence asks for a headshot, so every D/ST is an empty circle",
+         '    if position == "DEF":', "    if False:"),
         ("click resolves rows by name instead of id (non-negotiable #1)",
          '                last_marked = rows[active_cell["row"]]["id"]',
          '                last_marked = rows[active_cell["row"]]["player"]'),
@@ -514,33 +522,79 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          '    if view.error:\n        return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})\n    if name == "lineup":',
          '    if name == "lineup":'),
         ("/trades builds a view on page load -- the ~330s sweep hangs the browser",
-         '            return html.Div(className="page", children=[\n'
-         '                nav(name, league), dcc.Loading(trades_landing(league))])',
+         '            return shell(name, league, league_names,\n'
+         '                         [dcc.Loading(trades_landing(league))])',
          '            leagues, tunables = load_config(CONFIG_PATH)\n'
          '            lg = get_league(leagues, league)\n'
          '            view = pipeline.build_trades(lg, tunables)\n'
-         '            return html.Div(className="page", children=[\n'
-         '                nav(name, league), season_page_children(name, view)])'),
+         '            return shell(name, league, league_names,\n'
+         '                         [season_page_children(name, view)])'),
         ("/trades sweeps on navigation -- the n_clicks guard is removed",
          '        if n_clicks is None:\n            # Dash fires every callback once at page load, using each\n            # Input\'s value at that moment -- the button\'s n_clicks stays\n            # unset (None) until it is actually clicked, because the layout\n            # never gives it a starting n_clicks=0 the way "undo" does above.\n            # This is the entire guard against an accidental navigation\n            # costing the ~330s sweep (pipeline.py\'s build_trades ponytail\n            # note): the state is returned unchanged.\n            return dash.no_update\n',
          ''),
         ("unprojected starter's invented 0.0 sort value prints as a real projection",
          '"team": p.team or "", "proj": "--",',
          '"team": p.team or "", "proj": f"{p.proj_pts:.1f}",'),
+        ("adds and drops merged into one ranking ordered by magnitude",
+         '        *_trending_group("Added", adds, players, "add", limit),\n'
+         '        *_trending_group("Dropped", drops, players, "drop", limit),',
+         '        *_trending_group("Added", {**adds, **drops}, players, "add", limit),'),
+        ("the wire names its two directions only in colour, never in words",
+         '        html.P(heading, className=f"wire__heading wire__heading--{kind}"),',
+         '        html.P("", className=f"wire__heading wire__heading--{kind}"),'),
+        ("an empty drops fetch blanks the whole wire, adds included",
+         "    if not adds and not drops:", "    if not adds or not drops:"),
+        ("one try block for both directions, so a dead drops endpoint hides adds",
+         '    try:\n        drops = load_trending("drop", cache_dir=CACHE_DIR)',
+         '    try:\n        drops = load_trending("drop", cache_dir=CACHE_DIR)\n'
+         '        adds = {}'),
+        # The literal mirror of the mutation above -- appending `drops = {}` to
+        # the ADDS try block -- is an equivalent mutant: the drops block runs
+        # next and reassigns it, so the change has no observable effect and
+        # would have sat in this list forever looking like a coverage gap.
+        # Asking whether the drops fetch is load-bearing at all is the same
+        # question in a form the code can actually answer.
+        ("the drops fetch is dead weight -- the wire only ever shows adds",
+         '        drops = load_trending("drop", cache_dir=CACHE_DIR)',
+         "        drops = {}"),
+        ("position colour invented locally instead of read off the board's dict",
+         '            if h in pos_columns and value in POSITION_COLORS:\n'
+         '                style = {**_TABLE_CELL, "color": POSITION_COLORS[value],\n'
+         '                         "fontWeight": "600"}',
+         '            if h in pos_columns and value:\n'
+         '                style = {**_TABLE_CELL, "color": "#ffffff",\n'
+         '                         "fontWeight": "600"}'),
+        ("position cells never coloured at all",
+         "            if h in pos_columns and value in POSITION_COLORS:",
+         "            if False:"),
+        ("a trade package loses its faces and reverts to one flat string",
+         '            children.append(package_line("give", p.give))',
+         '            children.append(html.P(f"give {p.give}"))'),
+        ("bench SLOT left blank, so the column reads as a missing value",
+         '            "slot": "BN", "player": p.name', '            "slot": "", "player": p.name'),
+        ("an unprojected STARTER is labelled BN, asserting he is on the bench",
+         '            "slot": "", "player": p.name, "pos": p.position, "team": p.team or "",\n'
+         '            "proj": "--", "flags": _status_note(p).strip()}',
+         '            "slot": "BN", "player": p.name, "pos": p.position, "team": p.team or "",\n'
+         '            "proj": "--", "flags": _status_note(p).strip()}'),
+        ("a headshot is drawn for the projected-total row, which has no player",
+         '            if h == face_column and row.get("id"):',
+         "            if h == face_column:"),
+        ("face_column ignored, so no season table ever shows a headshot",
+         '            if h == face_column and row.get("id"):',
+         "            if False:"),
+        ("table headers drift to centre while their columns stay left",
+         '    "textAlign": "left",\n    "fontFamily": _SANS,',
+         '    "textAlign": "center",\n    "fontFamily": _SANS,'),
         ("empty waiver board loses its wording -- reads as a failed fetch, not a result",
-         'html.P("nothing on the wire beats what you already have.",',
+         'html.P("Nothing on the wire beats what you already have.",',
          'html.P("wording was mutated -- this should never render.",'),
         ("trending panel silently drops an id load_players can't resolve "
          "(non-negotiable #3)",
-         '        label = f"{p.name} ({p.position}-{p.team or \'--\'})" if p '
-         'else f"player {player_id} (unresolved)"\n'
-         '        rows.append(html.Li(f"{label}: +{count:,} adds NATIONALLY '
-         '-- NOT your league"))',
+         '        name = p.name if p else f"player {player_id}"',
          '        if p is None:\n'
          '            continue\n'
-         '        label = f"{p.name} ({p.position}-{p.team or \'--\'})"\n'
-         '        rows.append(html.Li(f"{label}: +{count:,} adds NATIONALLY '
-         '-- NOT your league"))'),
+         '        name = p.name'),
     ],
     "season.py": [
         ("free agent pool subtracts only my roster",
@@ -664,6 +718,20 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "if not title or not link:", "if not title:"),
         ("parse_rss title guard -- titleless items rendered as blank headlines",
          "if not title or not link:", "if not link:"),
+        ("top_headlines sorted oldest-first, so the panel shows last week",
+         "return sorted(headlines, key=_published_key, reverse=True)[:limit]",
+         "return sorted(headlines, key=_published_key)[:limit]"),
+        ("top_headlines cap ignored -- all ~90 items render",
+         "return sorted(headlines, key=_published_key, reverse=True)[:limit]",
+         "return sorted(headlines, key=_published_key, reverse=True)"),
+        ("an undated headline sorts FIRST instead of last",
+         '        return float("-inf")\n    try:',
+         '        return float("inf")\n    try:'),
+        ("an unparseable pubDate crashes the homepage instead of sorting last",
+         "    except (TypeError, ValueError):        # None on old Pythons, raises on 3.10+\n"
+         '        return float("-inf")',
+         "    except NotImplementedError:\n"
+         '        return float("-inf")'),
     ],
 
     "ffhelper/trade.py": [
