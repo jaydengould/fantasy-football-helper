@@ -24,7 +24,7 @@ lineup, waiver, and trade-finder commands all work end to end.
 | Terminal board with auto-refresh | working |
 | Hand-typed picks survive a crash or restart | working |
 | Yahoo API feed | blocked on Yahoo developer approval |
-| Web board (`python -m ffhelper.app`) | working |
+| Web app — draft board plus season pages (`python -m ffhelper.app`) | working |
 | Weekly start/sit lineup (`lineup`) | working |
 | Official practice report (nflverse) | working — the file appears once week 1 is played |
 | Opponent matchup context | working — a rank, not an adjustment: adjusting lost to plain projections on 2024 and 2025 |
@@ -179,7 +179,9 @@ known state behind a `FEED STALE` banner rather than dying.
 .venv/bin/python -m ffhelper.app --league my-sleeper-league
 ```
 
-The same engine, in a browser at `http://127.0.0.1:8050`. Click a row to mark that
+The same engine, in a browser at `http://127.0.0.1:8050/draft` (the root URL is
+the season homepage — league picker, status, headlines, trending; see below).
+Click a row to mark that
 player drafted; your own roster is derived from your `draft_slot` and the pick
 number rather than typed. On a league with no feed, a per-row override corrects
 attribution when entry has drifted — leagues that have a feed do not show it,
