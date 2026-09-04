@@ -671,6 +671,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
     "news.py": [
         ("parse_rss link guard -- linkless items rendered as clickable headlines",
          "if not title or not link:", "if not title:"),
+        ("parse_rss title guard -- titleless items rendered as blank headlines",
+         "if not title or not link:", "if not link:"),
     ],
 
     "ffhelper/trade.py": [

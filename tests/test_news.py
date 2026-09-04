@@ -33,6 +33,36 @@ def test_parse_rss_captures_pubdate():
     assert out[0].published == "Wed, 03 Sep 2026 12:00:00 GMT"
 
 
+def test_parse_rss_skips_items_without_a_title():
+    """A link with no title is not a headline either -- it would render as a
+    blank clickable row."""
+    xml = """<?xml version="1.0"?>
+<rss version="2.0"><channel>
+  <item><link>https://example.com/a</link></item>
+</channel></rss>"""
+    assert parse_rss(xml, "cbs") == []
+
+
+def test_parse_rss_strips_whitespace_padded_title_and_link():
+    """CBS wraps <title> (and, in practice, <link>) in newlines and
+    indentation -- the parsed values must come back clean, not padded."""
+    xml = """<?xml version="1.0"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>
+      Padded headline
+    </title>
+    <link>
+      https://example.com/padded
+    </link>
+  </item>
+</channel></rss>"""
+    out = parse_rss(xml, "cbs")
+    assert len(out) == 1
+    assert out[0].title == "Padded headline"
+    assert out[0].url == "https://example.com/padded"
+
+
 def test_load_headlines_across_feeds(tmp_path: Path):
     """Two feeds, both good: headlines from each, tagged with their own source,
     and no failure notes."""
