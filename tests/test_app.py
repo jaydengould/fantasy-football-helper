@@ -1,8 +1,12 @@
+import sqlite3
 import time
 from dataclasses import dataclass
 
 import ffhelper.app as app
-from ffhelper.app import banner_lines, board_rows, clock_line, read_state
+from ffhelper import store
+from ffhelper.app import (
+    banner_lines, board_rows, clock_line, read_state, snapshot_recorded, status_strip,
+)
 from ffhelper.board import board_state
 from ffhelper.config import League, Tunables
 from ffhelper.data import LeagueSettings, Player
@@ -969,12 +973,6 @@ def test_draft_page_shows_the_local_only_notice():
 
 # --- homepage status strip ---
 
-import sqlite3
-
-from ffhelper.app import roster_file_age, snapshot_recorded, status_strip
-from ffhelper import store
-
-
 def test_snapshot_recorded_true_when_rows_exist():
     conn = store.connect(":memory:")
     conn.execute(
@@ -1002,38 +1000,30 @@ def test_snapshot_recorded_none_when_unreadable():
     assert snapshot_recorded(Broken(), "sleeper-main", "2026", 3) is None
 
 
-def test_roster_file_age_none_when_absent(tmp_path):
-    assert roster_file_age(tmp_path / "no-such-league.txt") is None
-
-
-def test_roster_file_age_reports_days_old(tmp_path):
-    # An mtime nudged three days into the past, rather than sleeping for real
-    # days -- the function only reads stat().st_mtime, so backdating it is a
-    # faithful test of the same code path.
-    path = tmp_path / "yahoo-main.txt"
-    path.write_text("Bijan Robinson\n")
-    three_days_ago = time.time() - 3 * 86400
-    import os
-    os.utime(path, (three_days_ago, three_days_ago))
-    assert roster_file_age(path) == "3d old"
-
-
-def test_status_strip_omits_the_snapshot_line_when_the_week_is_unavailable(monkeypatch):
+def test_status_strip_omits_the_snapshot_line_when_the_week_is_unavailable(
+    monkeypatch, tmp_path,
+):
     # load_nfl_state down means there is no week to check the table against --
     # printing a snapshot line at all here would be a claim built on nothing.
     def broken(*a, **k):
         raise RuntimeError("state fetch failed")
     monkeypatch.setattr(app, "load_nfl_state", broken)
+    # Never the machine's real .roster/ -- an empty tmp_path keeps this test's
+    # pass/fail independent of whatever roster files happen to exist on disk.
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
     rendered = str(status_strip("sleeper-main"))
     assert "week unavailable" in rendered
     assert "snapshot" not in rendered
 
 
-def test_status_strip_reports_snapshot_not_recorded_for_an_empty_table(monkeypatch):
+def test_status_strip_reports_snapshot_not_recorded_for_an_empty_table(
+    monkeypatch, tmp_path,
+):
     # store.DB_PATH is redirected to a fresh, empty per-test file by
     # tests/conftest.py, so an ordinary call reads a real, table-having, but
     # row-less database -- exactly the False case, not the None case.
     monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
     rendered = str(status_strip("sleeper-main"))
     assert "snapshot NOT recorded for week 3" in rendered
 

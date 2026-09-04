@@ -14,7 +14,6 @@ import argparse
 import logging
 import sys
 import time
-from pathlib import Path
 from urllib.parse import parse_qs
 
 import dash
@@ -26,7 +25,7 @@ from ffhelper.board import (
 )
 from ffhelper.cli import (
     DRAFT_LOG_DIR, ROOT, ROSTER_DIR, SEASON, _draft_log_path, _restore_marks,
-    _select_feed, load_board_inputs,
+    _select_feed, load_board_inputs, roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import Player, load_nfl_state
@@ -408,21 +407,6 @@ def snapshot_recorded(conn, league: str, season: str, week: int) -> bool | None:
     return row is not None
 
 
-def roster_file_age(path) -> str | None:
-    """How old the hand-entered Yahoo roster is, or None if there is no file.
-
-    TODO item 3: there is no Yahoo API, so this file is the roster and it goes
-    stale silently after every add/drop. `lineup` and `preflight` both print
-    its age for exactly this reason; the homepage is the third place a human
-    will actually look.
-    """
-    try:
-        days = (time.time() - Path(path).stat().st_mtime) / 86400
-    except OSError:
-        return None
-    return f"{days:.0f}d old"
-
-
 def status_strip(league: str) -> html.Div:
     """Homepage line-per-fact summary: NFL week, snapshot status, roster age.
 
@@ -464,9 +448,9 @@ def status_strip(league: str) -> html.Div:
             lines.append(f"snapshot NOT recorded for week {week} -- run a snapshot")
         # recorded is None: could not check, so the line is omitted entirely.
 
-    age = roster_file_age(ROSTER_DIR / f"{league}.txt")
+    age = roster_file_age_days(ROSTER_DIR / f"{league}.txt")
     if age is not None:
-        lines.append(f"roster file: {age}")
+        lines.append(f"roster file: {age}d old")
 
     return html.Div([html.P(line, style={"margin": "4px 0"}) for line in lines],
                     style={"fontFamily": _SANS, "fontSize": "13px", "padding": "8px 0"})
