@@ -490,8 +490,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          "    return next_pick_number(\n        state.current_pick - 1, league.draft_slot, num_teams) == state.current_pick",
          "    return next_pick_number(\n        state.current_pick, league.draft_slot, num_teams) == state.current_pick"),
         ("build_app drops the configured interval on the floor",
-         "        layout=_layout(league_names, default_league, poll_ms))",
-         "        layout=_layout(league_names, default_league))"),
+         "            league_names, league_from_kwargs(kw, league_names, default_league), poll_ms))",
+         "            league_names, league_from_kwargs(kw, league_names, default_league)))"),
         ("refresh interval ignores config (back to a hardcoded 5s)",
          'return max(tunables.poll_seconds.get(platform, 5), 1) * 1000',
          "return 5000"),
@@ -514,8 +514,13 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          '    if view.error:\n        return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})\n    if name == "lineup":',
          '    if name == "lineup":'),
         ("/trades builds a view on page load -- the ~330s sweep hangs the browser",
-         '            return html.Div([nav(name, league), dcc.Loading(trades_landing(league))])',
-         '            leagues, tunables = load_config(CONFIG_PATH)\n            lg = get_league(leagues, league)\n            view = pipeline.build_trades(lg, tunables)\n            return html.Div([nav(name, league), season_page_children(name, view)])'),
+         '            return html.Div(className="page", children=[\n'
+         '                nav(name, league), dcc.Loading(trades_landing(league))])',
+         '            leagues, tunables = load_config(CONFIG_PATH)\n'
+         '            lg = get_league(leagues, league)\n'
+         '            view = pipeline.build_trades(lg, tunables)\n'
+         '            return html.Div(className="page", children=[\n'
+         '                nav(name, league), season_page_children(name, view)])'),
         ("/trades sweeps on navigation -- the n_clicks guard is removed",
          '        if n_clicks is None:\n            # Dash fires every callback once at page load, using each\n            # Input\'s value at that moment -- the button\'s n_clicks stays\n            # unset (None) until it is actually clicked, because the layout\n            # never gives it a starting n_clicks=0 the way "undo" does above.\n            # This is the entire guard against an accidental navigation\n            # costing the ~330s sweep (pipeline.py\'s build_trades ponytail\n            # note): the state is returned unchanged.\n            return dash.no_update\n',
          ''),

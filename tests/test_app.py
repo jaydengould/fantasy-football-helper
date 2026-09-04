@@ -897,25 +897,26 @@ def test_flex_filter_composes_with_search():
 # --- five routes, the league carried in the query string ---
 
 import pytest
-from ffhelper.app import league_from_search
+from ffhelper.app import _resolve_league
 
 
-@pytest.mark.parametrize("search,expected", [
-    ("?league=yahoo-main", "yahoo-main"),
-    ("?league=sleeper-main&x=1", "sleeper-main"),
+@pytest.mark.parametrize("value,expected", [
+    ("yahoo-main", "yahoo-main"),
+    ("sleeper-main", "sleeper-main"),
     ("", "sleeper-main"),
-    ("?league=", "sleeper-main"),
-    ("?league=not-a-league", "sleeper-main"),
+    ("not-a-league", "sleeper-main"),
 ])
-def test_league_from_search(search, expected):
+def test_resolve_league(value, expected):
     """An unknown or absent league falls back to the default, never raises.
 
-    The query string is user-editable, so a typo must not 500 the page. It
-    falls back rather than guessing at a near-match: a silently wrong league
-    would advise on someone else's team.
+    _resolve_league is the one place the fallback rule actually lives --
+    league_from_kwargs (what build_app wires up for every registered page)
+    calls straight through to it. A typo in the URL must not 500 the page,
+    and it never fuzzy-matches either: a silently wrong league would advise
+    on someone else's team.
     """
     names = ["sleeper-main", "yahoo-main"]
-    assert league_from_search(search, names, "sleeper-main") == expected
+    assert _resolve_league(value, names, "sleeper-main") == expected
 
 
 def test_build_app_registers_all_five_routes_and_keeps_the_board_key():
@@ -956,6 +957,7 @@ def test_season_page_layout_resolves_the_league_from_the_url_not_the_default(mon
     links = rendered.children[0].children
     waivers_link = next(link for link in links if link.children == "WAIVERS")
     assert waivers_link.href == "/waivers?league=b"
+    assert rendered.className == "page"
 
 
 def test_draft_page_shows_the_local_only_notice():
@@ -1126,6 +1128,9 @@ def test_trades_page_builds_no_view_on_load(monkeypatch):
     layout = dash.page_registry["trades"]["layout"]
     rendered = layout(league="b")
     assert "minutes" in str(rendered)
+    # board.css's .page sets the max-width/padding every season page needs --
+    # without it content sits flush against the viewport edge (review finding 8).
+    assert rendered.className == "page"
 
 
 def test_waivers_page_layout_builds_its_view(monkeypatch):
@@ -1141,6 +1146,7 @@ def test_waivers_page_layout_builds_its_view(monkeypatch):
     layout = dash.page_registry["waivers"]["layout"]
     rendered = layout(league="b")
     assert "stub waivers view" in str(rendered)
+    assert rendered.className == "page"
 
 
 # --- /lineup as an HTML table ---
@@ -1374,14 +1380,19 @@ def test_season_page_children_waivers_routes_to_the_table():
     """Confirms `season_page_children` wires /waivers through `waivers_children`
     now, not the old html.Pre(render_waivers(...)) path.
     """
-    p = Player(sleeper_id="1", name="Table Guy", position="RB", team="KC", proj_pts=10.0)
-    d = Player(sleeper_id="2", name="Table Drop", position="RB", team="SF", proj_pts=5.0)
+    p = Player(sleeper_id="1", name="Row Guy", position="RB", team="KC", proj_pts=10.0)
+    d = Player(sleeper_id="2", name="Cut Guy", position="RB", team="SF", proj_pts=5.0)
     view = pipeline.WaiverView(
         league_name="sleeper-main", week=3, last_week=17,
         this_week=[WaiverTarget(player=p, gain=4.0, drop=d, weeks_started=1)],
         ros=[], weeks_scored=15)
     rendered = str(season_page_children("waivers", view))
-    assert "Table Guy" in rendered
+    assert "Row Guy" in rendered
+    # Neither fixture player's name contains "Table" -- this can only come
+    # from an html.Table component's own repr (`Table([...])`), so it is a
+    # real check that the table rendered, not a restatement of the line above
+    # (review round 2: the old fixture, "Table Guy", made the second assertion
+    # vacuous -- it could not fail while the first passed).
     assert "Table" in rendered
 
 
@@ -1424,6 +1435,15 @@ def test_trades_children_header_carries_the_weeks_scored_count():
     view = pipeline.TradeView(league_name="sleeper-main", week=3, weeks_scored=11, best=[])
     rendered = str(trades_children(view))
     assert "11 weeks scored" in rendered
+
+
+def test_trades_children_says_reload_to_run_another_search():
+    # trades_children replaces trades-content's own RUN button and Store
+    # (trades_landing) -- there is nothing left on screen to trigger a second
+    # sweep, so the results page has to say so (review finding 11).
+    view = pipeline.TradeView(league_name="sleeper-main", week=3, weeks_scored=11, best=[])
+    rendered = str(trades_children(view))
+    assert "reload the page to run another search" in rendered
 
 
 def test_trades_children_carries_notes():
@@ -1647,11 +1667,13 @@ def test_home_layout_renders_both_panels(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "load_trending", lambda kind, cache_dir=None: {"4046": 10})
     monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {
         "4046": Player(sleeper_id="4046", name="Some Guy", position="RB", team="CHI")})
-    rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
+    layout = home_layout("sleeper-main", ["sleeper-main"])
+    rendered = str(layout)
     assert "HEADLINES" in rendered
     assert "TRENDING ADDS" in rendered
     assert "Big trade" in rendered
     assert "Some Guy" in rendered
+    assert layout.className == "page"
 
 
 def test_home_layout_headlines_fetch_failure_renders_unavailable_not_empty(

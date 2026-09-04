@@ -14,7 +14,6 @@ import argparse
 import logging
 import sys
 import time
-from urllib.parse import parse_qs
 
 import dash
 from dash import Input, Output, dash_table, dcc, html
@@ -25,7 +24,7 @@ from ffhelper.board import (
 )
 from ffhelper.cli import (
     DRAFT_LOG_DIR, DROP_CAVEAT, ROOT, ROSTER_DIR, SEASON, TRADE_CAVEAT, _draft_log_path,
-    _matchup_note, _restore_marks, _select_feed, _status_note, load_board_inputs,
+    _matchup_note, _package, _restore_marks, _select_feed, _status_note, load_board_inputs,
     roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
@@ -363,20 +362,14 @@ def _resolve_league(value: str, names: list[str], default: str) -> str:
     return value if value in names else default
 
 
-def league_from_search(search: str, names: list[str], default: str) -> str:
-    """The league named in `?league=`, or the default. See `_resolve_league`."""
-    got = parse_qs((search or "").lstrip("?")).get("league", [""])[0]
-    return _resolve_league(got, names, default)
-
-
 def league_from_kwargs(kw: dict, names: list[str], default: str) -> str:
     """`_resolve_league`, wired for how Dash actually calls a page layout.
 
     A registered page's layout callable is invoked with the URL's query
     parameters already parsed into individual kwargs (e.g. `league="x"`), not
     with the raw "?league=x" string, so the bare value is handed straight to
-    the shared fallback rule instead of round-tripping it back through a query
-    string just to have `league_from_search` decode it again.
+    the shared fallback rule instead of parsing a query string that Dash has
+    already parsed.
     """
     return _resolve_league(kw.get("league", ""), names, default)
 
@@ -554,15 +547,17 @@ def home_layout(league: str, league_names: list[str]) -> html.Div:
     counts, players = {}, {}
     try:
         counts = load_trending("add", cache_dir=CACHE_DIR)
-        # ponytail: cold-cache load_players is a ~560-player fetch on the
-        # first page view after a cache miss; data.py's own disk TTL cache
-        # (not reimplemented here) makes every request after the first cheap.
-        # No extra caching layer added for this task.
+        # ponytail: cold-cache load_players downloads Sleeper's FULL player DB
+        # (~14.6 MB, ~3231 players -- 560 is the filtered draft-pool size, not
+        # this), which is nearly all of the spec's measured 4.57s cold page
+        # load. data.py's own disk TTL cache (not reimplemented here) makes
+        # every request after the first cheap. No extra caching layer added
+        # for this task.
         players = load_players(cache_dir=CACHE_DIR)
     except Exception:                          # noqa: BLE001 - degrade, never crash the homepage
         pass
 
-    return html.Div([
+    return html.Div(className="page", children=[
         league_picker(league, league_names),
         nav("home", league),
         status_strip(league),
@@ -792,11 +787,6 @@ def waivers_children(view) -> list:
     return children
 
 
-def _package_html(players) -> str:
-    """`give`/`get`'s player list, exactly as `cli._package` renders it."""
-    return " + ".join(f"{p.name} ({p.position})" for p in players)
-
-
 def trades_children(view) -> list:
     """Every `render_trades` section as HTML: the weeks-scored header, '!!'
     notes, the mode line, one block per proposal (opponent, gains, shape,
@@ -849,8 +839,8 @@ def trades_children(view) -> list:
             children.append(html.P(
                 f"{name}   you +{p.gain_me:.1f}   them +{p.gain_them:.1f}   [{shape}]",
                 style={"fontWeight": "700", "marginTop": "16px"}))
-            children.append(html.P(f"give {_package_html(p.give)}"))
-            children.append(html.P(f"get  {_package_html(p.get)}"))
+            children.append(html.P(f"give {_package(p.give)}"))
+            children.append(html.P(f"get  {_package(p.get)}"))
             if p.their_drop is not None:
                 # Part of the offer, not a footnote -- mirrors render_trades'
                 # own comment (cli.py): the counterparty notices the cut
@@ -860,6 +850,11 @@ def trades_children(view) -> list:
 
     children.append(html.P(TRADE_CAVEAT,
                            style={"marginTop": "16px", "whiteSpace": "pre-wrap"}))
+    # This replaces trades-content's own RUN button and Store (trades_landing),
+    # so there is nothing left on screen to trigger a second search -- reload
+    # the page to run another.
+    children.append(html.P("reload the page to run another search.",
+                           style={"marginTop": "16px", "fontStyle": "italic"}))
     return children
 
 
@@ -915,12 +910,14 @@ def _season_layout_for(name: str, league_names: list[str], default_league: str):
             # No view built here -- build_trades' full sweep is ~330s
             # (pipeline.py's ponytail note); the button below is the only
             # thing allowed to trigger it (see _register_callbacks).
-            return html.Div([nav(name, league), dcc.Loading(trades_landing(league))])
+            return html.Div(className="page", children=[
+                nav(name, league), dcc.Loading(trades_landing(league))])
         leagues, tunables = load_config(CONFIG_PATH)
         lg = get_league(leagues, league)
         builder = pipeline.build_lineup if name == "lineup" else pipeline.build_waivers
         view = builder(lg, tunables)
-        return html.Div([nav(name, league), season_page_children(name, view)])
+        return html.Div(className="page", children=[
+            nav(name, league), season_page_children(name, view)])
     return layout
 
 
