@@ -833,7 +833,7 @@ def test_build_app_actually_constructs_and_carries_the_interval():
             found.append(node.interval)
 
     import dash
-    walk(dash.page_registry["board"]["layout"])
+    walk(dash.page_registry["board"]["layout"]())
     assert found == [1000], f"expected one 1s Interval, got {found}"
 
 
@@ -976,8 +976,23 @@ def test_draft_page_shows_the_local_only_notice():
         elif children is not None:
             walk(children)
 
-    walk(layout)
+    walk(layout())
     assert app.DRAFT_NOTICE in texts
+
+
+def test_draft_page_nav_reflects_the_url_league_not_the_default():
+    # lineup/waivers/trades/home all resolve the league from ?league= (see
+    # test_season_page_layout_resolves_the_league_from_the_url_not_the_default);
+    # /draft did not -- nav("draft", default_league) was baked in at
+    # registration time, so arriving from /lineup?league=b left every link on
+    # the board pointing at "a", the default. "Same rule, two implementations."
+    import dash
+    app.build_app(["a", "b"], "a", poll_ms=1000)
+    layout = dash.page_registry["board"]["layout"]
+    rendered = layout(league="b")
+    links = rendered.children[0].children
+    waivers_link = next(link for link in links if link.children == "WAIVERS")
+    assert waivers_link.href == "/waivers?league=b"
 
 
 # --- homepage status strip ---
@@ -1680,3 +1695,37 @@ def test_home_layout_dead_trending_fetch_does_not_take_down_status_strip(
     rendered = str(home_layout("sleeper-main", ["sleeper-main"]))
     assert "nfl week 3" in rendered
     assert "TRENDING ADDS" in rendered
+
+
+def test_home_layout_shows_a_league_picker_linking_the_other_league(monkeypatch, tmp_path):
+    # Spec's route table: "/" -- "League picker, nav, status strip, headlines,
+    # trending" -- and the Homepage section leads with "League picker and
+    # nav." The plan dropped it silently, and nav() only ever emits
+    # ?league=<current>, so there was NO path through the UI to reach a
+    # second league at all -- you had to hand-edit the URL.
+    monkeypatch.setattr(app, "load_nfl_state", lambda: {"week": 3, "season": "2026"})
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    monkeypatch.setattr(app.news, "load_headlines", lambda feeds: ([], []))
+    monkeypatch.setattr(app, "load_trending", lambda kind, cache_dir=None: {})
+    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: {})
+
+    rendered = home_layout("sleeper-main", ["sleeper-main", "yahoo-main"])
+
+    def find_links(node, found):
+        if isinstance(node, _dash.dcc.Link):
+            found.append(node)
+        children = getattr(node, "children", None)
+        if isinstance(children, list):
+            for c in children:
+                find_links(c, found)
+        elif children is not None:
+            find_links(children, found)
+        return found
+
+    links = find_links(rendered, [])
+    # Both league names appear as picker links (nav()'s links read HOME/DRAFT/
+    # etc, so a league-named link can only have come from the picker).
+    picker_labels = {l.children for l in links} & {"sleeper-main", "yahoo-main"}
+    assert picker_labels == {"sleeper-main", "yahoo-main"}
+    yahoo_link = next(l for l in links if l.children == "yahoo-main")
+    assert yahoo_link.href == "/?league=yahoo-main"

@@ -381,6 +381,24 @@ def league_from_kwargs(kw: dict, names: list[str], default: str) -> str:
     return _resolve_league(kw.get("league", ""), names, default)
 
 
+def league_picker(current: str, league_names: list[str]) -> html.Div:
+    """A row of links to `/?league=<name>`, one per configured league.
+
+    Needs no callback: every page already resolves its league from the query
+    string (`league_from_kwargs`), so a plain `dcc.Link` per league is the
+    whole feature. Without this, `nav()` only ever emits `?league=<current>`
+    and there is no path through the UI to a second league -- see the spec's
+    route table for `/`: "League picker, nav, status strip, headlines,
+    trending."
+    """
+    return html.Div([
+        dcc.Link(name, href=f"/?league={name}",
+                 style={"marginRight": "18px",
+                        "fontWeight": "700" if name == current else "400"})
+        for name in league_names
+    ], style={"padding": "12px 0"})
+
+
 def nav(active: str, league: str) -> html.Div:
     """The same five links on every page, with the league carried across."""
     return html.Div([
@@ -545,6 +563,7 @@ def home_layout(league: str, league_names: list[str]) -> html.Div:
         pass
 
     return html.Div([
+        league_picker(league, league_names),
         nav("home", league),
         status_strip(league),
         headlines_panel(headlines, notes),
@@ -913,7 +932,8 @@ def build_app(league_names: list[str], default_league: str,
     # the path is the user-visible thing this task actually changes.
     dash.register_page(
         "board", path="/draft",
-        layout=_layout(league_names, default_league, poll_ms))
+        layout=lambda **kw: _layout(
+            league_names, league_from_kwargs(kw, league_names, default_league), poll_ms))
     dash.register_page("home", path="/", layout=lambda **kw: home_layout(
         league_from_kwargs(kw, league_names, default_league), league_names))
     for path, name in [("/lineup", "lineup"), ("/waivers", "waivers"),
