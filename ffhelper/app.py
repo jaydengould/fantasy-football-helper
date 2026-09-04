@@ -24,9 +24,9 @@ from ffhelper.board import (
     BoardState, auto_mine, board_state, explicit_not_mine, marks_in_entry_order,
 )
 from ffhelper.cli import (
-    DRAFT_LOG_DIR, ROOT, ROSTER_DIR, SEASON, _draft_log_path, _restore_marks,
-    _select_feed, load_board_inputs, render_lineup, render_trades, render_waivers,
-    roster_file_age_days,
+    DRAFT_LOG_DIR, ROOT, ROSTER_DIR, SEASON, _draft_log_path, _matchup_note,
+    _restore_marks, _select_feed, _status_note, load_board_inputs, render_trades,
+    render_waivers, roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import Player, load_nfl_state
@@ -467,20 +467,157 @@ _MONO = {"fontFamily": "ui-monospace, SFMono-Regular, Menlo, monospace",
          "margin": "0"}
 
 
-def season_page_children(name: str, view):
-    """One season view as page content. Text for now; tables in tasks 7-9.
+_LINEUP_HEADERS = ["slot", "player", "pos", "team", "proj", "flags"]
 
-    ponytail: html.Pre of the CLI's own renderer. Ceiling is that 80-column
-    output needs horizontal scrolling on a phone, which is the whole reason
-    tasks 7-9 exist. Upgrade path is to replace this function per page; the
-    text renderers stay as the CLI's output either way.
+
+def lineup_rows(view) -> list[dict]:
+    """One row per starter slot, plus a projected-total row.
+
+    Mirrors `render_lineup`'s STARTERS section and total line branch for
+    branch (cli.py) -- two rules that can disagree is the defect this project
+    calls out repeatedly. `--`, never `0.0`, for an unprojected starter: the
+    0.0 is a sort value this code invented, and printing it as a projection
+    is the fabrication non-negotiable #7 bars, arriving in the one place a
+    user is most likely to trust it.
+    """
+    state = view.state
+    unprojected_ids = {p.sleeper_id for p in state.unprojected}
+    rows = []
+    total = 0.0
+    unprojected_starters = 0
+    for slot, p in state.lineup:
+        if p is None:
+            rows.append({"slot": slot, "player": "-- EMPTY --", "pos": "", "team": "",
+                        "proj": "", "flags": "no eligible player on this roster"})
+            continue
+        total += p.proj_pts
+        if p.sleeper_id in unprojected_ids:
+            unprojected_starters += 1
+            rows.append({"slot": slot, "player": p.name, "pos": p.position,
+                        "team": p.team or "", "proj": "--",
+                        "flags": f"NO PROJECTION{_status_note(p)}".strip()})
+        else:
+            rows.append({"slot": slot, "player": p.name, "pos": p.position,
+                        "team": p.team or "", "proj": f"{p.proj_pts:.1f}",
+                        "flags": f"{_matchup_note(p, view.matchups)}"
+                                f"{_status_note(p)}".strip()})
+    # Same caveat render_lineup prints next to the total, for the same reason:
+    # unprojected starters contribute their invented 0.0 to `total`, so an
+    # unqualified number would understate a lineup with a gap in it.
+    caveat = (f"(floor -- {unprojected_starters} starter"
+             f"{'s' if unprojected_starters != 1 else ''} unprojected)"
+             if unprojected_starters else "")
+    rows.append({"slot": "", "player": "projected total", "pos": "", "team": "",
+                "proj": f"{total:.1f}", "flags": caveat})
+    return rows
+
+
+def bench_rows(view) -> list[dict]:
+    """Projected bench, mirroring `render_lineup`'s BENCH section.
+
+    Excludes anything in `state.unprojected` -- those get their own section
+    below, same split the text renderer makes.
+    """
+    state = view.state
+    projected_bench = [p for p in state.bench if p not in state.unprojected]
+    return [{"slot": "", "player": p.name, "pos": p.position, "team": p.team or "",
+            "proj": f"{p.proj_pts:.1f}",
+            "flags": f"{_matchup_note(p, view.matchups)}{_status_note(p)}".strip()}
+           for p in projected_bench]
+
+
+def unprojected_player_rows(view) -> list[dict]:
+    """'NO PROJECTION THIS WEEK' -- not started, and not a zero.
+
+    Mirrors `render_lineup`'s own section of that name: a stash can carry no
+    number for months, so this is a quiet list, never a '!!' note.
+    """
+    return [{"slot": "", "player": p.name, "pos": p.position, "team": p.team or "",
+            "proj": "--", "flags": _status_note(p).strip()}
+           for p in view.state.unprojected]
+
+
+def simple_table(headers: list[str], rows: list[dict]) -> html.Div:
+    """A read-only `html.Table` from plain dicts.
+
+    Not `dash_table.DataTable` -- these rows take no clicks, and DataTable's
+    styling machinery would be dead weight here. Wrapped in its own
+    `overflowX: auto` div so a wide table scrolls inside its own container,
+    never the page body.
+    """
+    head = html.Tr([html.Th(h.upper(), style=_TABLE_HEADER) for h in headers])
+    body = [html.Tr([html.Td(row.get(h, ""), style=_TABLE_CELL) for h in headers])
+           for row in rows]
+    table = html.Table([html.Thead(head), html.Tbody(body)],
+                       style={"borderCollapse": "collapse", "width": "100%"})
+    return html.Div(table, style={"overflowX": "auto"})
+
+
+def _lineup_children(view) -> list:
+    """Every `render_lineup` section as HTML: starters, bench, unprojected,
+    close calls, notes. SPEC GAP ruling for task 7 -- the brief's
+    `lineup_rows` covers only STARTERS and the total, but `render_lineup`
+    also prints BENCH, an unprojected list, CLOSE CALLS, and '!!' notes, and
+    an HTML page that dropped them would quietly show less than the text
+    page it replaces. Nothing here is new logic; each section reuses the row
+    builders above or reads the same view fields the text renderer does.
+    """
+    state = view.state
+    who = f"  ({view.owner})" if view.owner else ""
+    children = [
+        html.P(f"{view.league_name}{who}   week {view.week}",
+              style={"fontFamily": _SANS, "fontWeight": "700"}),
+        simple_table(_LINEUP_HEADERS, lineup_rows(view)),
+    ]
+
+    bench = bench_rows(view)
+    if bench:
+        children += [html.P("BENCH", style={"fontWeight": "700", "marginTop": "16px"}),
+                     simple_table(_LINEUP_HEADERS, bench)]
+
+    unprojected = unprojected_player_rows(view)
+    if unprojected:
+        children += [html.P("NO PROJECTION THIS WEEK -- not started, and not a zero",
+                            style={"fontWeight": "700", "marginTop": "16px"}),
+                     simple_table(_LINEUP_HEADERS, unprojected)]
+
+    if state.close_calls:
+        children += [
+            html.P("CLOSE CALLS -- worth your own read",
+                  style={"fontWeight": "700", "marginTop": "16px"}),
+            html.Ul([
+                html.Li(f"{c.slot}: starting {c.starter.name} over {c.challenger.name} "
+                       f"by {c.gap:.1f}{_status_note(c.challenger)}".strip())
+                for c in state.close_calls
+            ]),
+        ]
+
+    if view.notes:
+        children.append(html.Ul([html.Li(f"!! {n}") for n in view.notes],
+                                style={"marginTop": "16px"}))
+
+    if view.matchup_line or view.practice_line:
+        children.append(html.P(f"{view.matchup_line}  {view.practice_line}".strip(),
+                               style={"fontSize": "12px", "color": "#8b95a3",
+                                      "marginTop": "16px"}))
+    return children
+
+
+def season_page_children(name: str, view):
+    """One season view as page content. /lineup renders as HTML tables
+    (task 7); /waivers and /trades still go through the CLI's own text
+    renderer, in html.Pre, until tasks 8-9.
+
+    ponytail: html.Pre of the CLI's own renderer for waivers/trades. Ceiling
+    is that 80-column output needs horizontal scrolling on a phone, which is
+    the whole reason tasks 8-9 exist. Upgrade path is to replace this
+    function per page; the text renderers stay as the CLI's output either
+    way.
     """
     if view.error:
         return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})
     if name == "lineup":
-        text = render_lineup(view.state, view.week, view.league_name,
-                             view.owner, view.notes, view.matchups)
-        text += f"\n{view.matchup_line}\n{view.practice_line}"
+        return html.Div(_lineup_children(view))
     elif name == "waivers":
         text = render_waivers(view.this_week, view.ros, view.week, view.last_week,
                               view.league_name, view.owner, view.position,

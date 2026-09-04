@@ -541,6 +541,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("/trades builds a view on page load -- the ~330s sweep hangs the browser",
          '        if name == "trades":\n            return html.Div([nav(name, league),\n                             html.Div(TRADES_CAVEAT,\n                                      style={"padding": "16px", "maxWidth": "60ch"})])',
          '        if name == "trades":\n            leagues, tunables = load_config(CONFIG_PATH)\n            lg = get_league(leagues, league)\n            view = pipeline.build_trades(lg, tunables)\n            return html.Div([nav(name, league), season_page_children(name, view)])'),
+        ("unprojected starter's invented 0.0 sort value prints as a real projection",
+         '"team": p.team or "", "proj": "--",',
+         '"team": p.team or "", "proj": f"{p.proj_pts:.1f}",'),
     ],
     "season.py": [
         ("free agent pool subtracts only my roster",

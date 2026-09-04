@@ -1095,3 +1095,100 @@ def test_waivers_page_layout_builds_its_view(monkeypatch):
     layout = dash.page_registry["waivers"]["layout"]
     rendered = layout(league="b")
     assert "stub waivers view" in str(rendered)
+
+
+# --- /lineup as an HTML table ---
+
+from ffhelper.app import lineup_rows, simple_table
+from ffhelper.season import CloseCall, StartSit
+
+
+def test_lineup_rows_show_dash_for_unprojected_starter():
+    """An unprojected starter renders '--', never '0.0'.
+
+    The 0.0 is a sort value this code invented. Printing it as a projection is
+    the fabrication non-negotiable #7 bars, arriving in the one place a user is
+    most likely to trust it.
+    """
+    p = Player(sleeper_id="99", name="Stash Guy", position="TE", team="CHI",
+               proj_pts=0.0)
+    view = pipeline.LineupView(
+        league_name="sleeper-main", week=3,
+        state=StartSit(lineup=[("TE", p)], bench=[], close_calls=[],
+                       unprojected=[p]))
+    rows = lineup_rows(view)
+    assert rows[0]["proj"] == "--"
+    assert "0.0" not in str(rows[0])
+
+
+def test_lineup_rows_projected_total_carries_the_floor_caveat():
+    """The total is a floor when a starter has no projection -- render_lineup
+    names that on screen next to the number; the table must too.
+    """
+    p = Player(sleeper_id="99", name="Stash Guy", position="TE", team="CHI",
+               proj_pts=0.0)
+    scored = Player(sleeper_id="1", name="Scored Guy", position="QB", team="KC",
+                    proj_pts=20.0)
+    view = pipeline.LineupView(
+        league_name="sleeper-main", week=3,
+        state=StartSit(lineup=[("QB", scored), ("TE", p)], bench=[], close_calls=[],
+                       unprojected=[p]))
+    rows = lineup_rows(view)
+    total_row = rows[-1]
+    assert total_row["player"] == "projected total"
+    assert total_row["proj"] == "20.0"
+    assert "1 starter" in total_row["flags"] and "unprojected" in total_row["flags"]
+
+
+def test_lineup_rows_empty_slot_shows_empty_not_a_player():
+    view = pipeline.LineupView(
+        league_name="sleeper-main", week=3,
+        state=StartSit(lineup=[("RB", None)], bench=[], close_calls=[], unprojected=[]))
+    rows = lineup_rows(view)
+    assert rows[0]["slot"] == "RB"
+    assert "EMPTY" in rows[0]["player"]
+
+
+def test_lineup_page_carries_close_calls_and_notes_not_just_starters():
+    """SPEC GAP ruling: render_lineup also prints BENCH, an unprojected list,
+    CLOSE CALLS, and '!!' notes -- the brief's lineup_rows only covers
+    STARTERS and the total. An HTML page that dropped the rest would quietly
+    show less than the text it replaced, so this holds the two sections most
+    likely to be forgotten by a page that only wires the starters table.
+    """
+    starter = Player(sleeper_id="1", name="Starter Guy", position="RB", team="KC",
+                     proj_pts=10.0)
+    challenger = Player(sleeper_id="2", name="Bench Guy", position="RB", team="SF",
+                        proj_pts=9.0)
+    view = pipeline.LineupView(
+        league_name="sleeper-main", week=3, owner="me",
+        notes=["FAAB bid due Wednesday"],
+        state=StartSit(
+            lineup=[("RB", starter)], bench=[challenger],
+            close_calls=[CloseCall(slot="RB", starter=starter, challenger=challenger,
+                                   gap=1.0)],
+            unprojected=[]))
+    rendered = str(season_page_children("lineup", view))
+    assert "Bench Guy" in rendered                            # BENCH section
+    assert "Starter Guy" in rendered and "1.0" in rendered     # CLOSE CALLS
+    assert "FAAB bid due Wednesday" in rendered                # !! notes
+
+
+def test_lineup_page_carries_the_unprojected_section():
+    p = Player(sleeper_id="99", name="Stash Guy", position="TE", team="CHI",
+               proj_pts=0.0)
+    view = pipeline.LineupView(
+        league_name="sleeper-main", week=3,
+        state=StartSit(lineup=[("TE", p)], bench=[], close_calls=[], unprojected=[p]))
+    rendered = str(season_page_children("lineup", view))
+    assert "NO PROJECTION THIS WEEK" in rendered
+
+
+def test_simple_table_wraps_in_a_scrolling_div_not_a_datatable():
+    """html.Table, not dash_table.DataTable -- read-only rows, no cell
+    interaction, and the wide-table scroll stays inside its own container.
+    """
+    table = simple_table(["a", "b"], [{"a": "1", "b": "2"}])
+    rendered = str(table)
+    assert "DataTable" not in rendered
+    assert "overflowX" in rendered
