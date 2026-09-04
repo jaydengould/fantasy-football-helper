@@ -1153,25 +1153,34 @@ def test_lineup_page_carries_close_calls_and_notes_not_just_starters():
     """SPEC GAP ruling: render_lineup also prints BENCH, an unprojected list,
     CLOSE CALLS, and '!!' notes -- the brief's lineup_rows only covers
     STARTERS and the total. An HTML page that dropped the rest would quietly
-    show less than the text it replaced, so this holds the two sections most
+    show less than the text it replaced, so this holds the sections most
     likely to be forgotten by a page that only wires the starters table.
+
+    Every player is distinct and used in exactly one section, and the BENCH
+    assertion checks the literal heading rather than a player name -- a
+    close-call's own text already contains its challenger's name, so a bench
+    player reused as a challenger would let the BENCH assertion pass even
+    with the whole `if bench:` block deleted. See the fix report for the
+    before/after proof.
     """
     starter = Player(sleeper_id="1", name="Starter Guy", position="RB", team="KC",
                      proj_pts=10.0)
-    challenger = Player(sleeper_id="2", name="Bench Guy", position="RB", team="SF",
+    challenger = Player(sleeper_id="2", name="Challenger Guy", position="RB", team="SF",
                         proj_pts=9.0)
+    bench_only = Player(sleeper_id="3", name="Bench Only Guy", position="RB", team="LAR",
+                        proj_pts=8.0)
     view = pipeline.LineupView(
         league_name="sleeper-main", week=3, owner="me",
         notes=["FAAB bid due Wednesday"],
         state=StartSit(
-            lineup=[("RB", starter)], bench=[challenger],
+            lineup=[("RB", starter)], bench=[bench_only],
             close_calls=[CloseCall(slot="RB", starter=starter, challenger=challenger,
                                    gap=1.0)],
             unprojected=[]))
     rendered = str(season_page_children("lineup", view))
-    assert "Bench Guy" in rendered                            # BENCH section
-    assert "Starter Guy" in rendered and "1.0" in rendered     # CLOSE CALLS
-    assert "FAAB bid due Wednesday" in rendered                # !! notes
+    assert "BENCH" in rendered and "Bench Only Guy" in rendered   # BENCH section
+    assert "Challenger Guy" in rendered and "1.0" in rendered     # CLOSE CALLS
+    assert "FAAB bid due Wednesday" in rendered                   # !! notes
 
 
 def test_lineup_page_carries_the_unprojected_section():

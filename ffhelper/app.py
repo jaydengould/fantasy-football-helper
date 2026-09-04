@@ -596,10 +596,14 @@ def _lineup_children(view) -> list:
         children.append(html.Ul([html.Li(f"!! {n}") for n in view.notes],
                                 style={"marginTop": "16px"}))
 
-    if view.matchup_line or view.practice_line:
-        children.append(html.P(f"{view.matchup_line}  {view.practice_line}".strip(),
-                               style={"fontSize": "12px", "color": "#8b95a3",
-                                      "marginTop": "16px"}))
+    # Unconditional, matching the pre-table text renderer: both
+    # cli._matchup_context and cli._practice_status are contracted to
+    # "always return a line" (their own docstrings), so there is no real
+    # empty case to guard here -- only LineupView's dataclass defaults are
+    # empty strings, and those never reach a view with `error` unset.
+    children.append(html.P(f"{view.matchup_line}  {view.practice_line}",
+                           style={"fontSize": "12px", "color": "#8b95a3",
+                                  "marginTop": "16px"}))
     return children
 
 
