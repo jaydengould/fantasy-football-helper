@@ -355,8 +355,8 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
     ],
     "scripts/calibrate.py": [
         ("a numeric draft id is filed as the seat (the id/slot swap)",
-         "    return argv[0], int(argv[1]), argv[2] if len(argv) > 2 else \"sleeper-main\"",
-         "    return argv[1], int(argv[0]), argv[2] if len(argv) > 2 else \"sleeper-main\""),
+         "    return argv[0], int(argv[1]), argv[2] if len(argv) > 2 else \"bros-fantasy\"",
+         "    return argv[1], int(argv[0]), argv[2] if len(argv) > 2 else \"bros-fantasy\""),
         ("a malformed invocation is accepted instead of printing usage",
          "    if len(argv) < 2 or not argv[1].isdecimal():\n        return None",
          "    if False:\n        return None"),

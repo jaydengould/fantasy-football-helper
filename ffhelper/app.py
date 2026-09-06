@@ -1437,7 +1437,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     leagues, tunables = load_config(CONFIG_PATH)
-    names = [lg.name for lg in leagues]
+    # Hidden leagues (the mocks) stay out of the picker but remain launchable by
+    # name, so `--league mock` still works and its own name still resolves from
+    # `?league=` -- `names` is both the dropdown's options AND _resolve_league's
+    # allow-list, and a launched league missing from it would blank the picker.
+    names = [lg.name for lg in leagues if not lg.hidden or lg.name == args.league]
     get_league(leagues, args.league)                  # fail fast on a bad name
     DRAFT_LOG_DIR.mkdir(exist_ok=True)
 

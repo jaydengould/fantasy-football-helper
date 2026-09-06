@@ -383,7 +383,7 @@ def build_board(
     # Tiers come from the FULL pool for exactly the reason replacement does: a
     # tier is a property of the PLAYER, not of whoever happens to be left. Drawn
     # from `available` the labels drift upward as the board drains -- measured on
-    # the real sleeper-main pool, 32 of the top 40 rows carried a wrong tier by
+    # the real bros-fantasy pool, 32 of the top 40 rows carried a wrong tier by
     # pick 20 and ALL 40 did by pick 160, where a preseason tier-11 receiver was
     # being shown as "tier 1" because he was merely the best one left.
     #

@@ -183,7 +183,7 @@ def parse_draft_args(argv: list[str]) -> tuple[str, int, str] | None:
     """
     if len(argv) < 2 or not argv[1].isdecimal():
         return None
-    return argv[0], int(argv[1]), argv[2] if len(argv) > 2 else "sleeper-main"
+    return argv[0], int(argv[1]), argv[2] if len(argv) > 2 else "bros-fantasy"
 
 
 def main(argv: list[str]) -> int:

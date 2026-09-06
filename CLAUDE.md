@@ -3,7 +3,7 @@
 Personal tool for live fantasy football drafts, now an in-season dashboard.
 Python 3.12. Two runtime modes sharing one data layer: **draft mode**
 (short-lived, high-frequency, local) and **season mode** (unattended, scheduled,
-SQLite-backed). Both drafts are done; season mode is the live surface.
+SQLite-backed). All three drafts are done; season mode is the live surface.
 
 ## Where things are written down
 
@@ -11,7 +11,7 @@ Read these when you need them, not before.
 
 | Path | What is in it |
 | --- | --- |
-| `docs/leagues.md` | Both leagues' scoring, roster shape, replacement levels, and the strategy differences that follow. **Read before touching anything that scores or ranks.** |
+| `docs/leagues.md` | All three leagues' scoring, roster shape, replacement levels, and the strategy differences that follow. **Read before touching anything that scores or ranks.** |
 | `docs/decisions.md` | Settled decisions with the measurement that closed each one, the phase table, and open risks. **Read before reopening any "why don't we just…" question.** |
 | `docs/superpowers/specs/` | Design authority per phase. `2026-08-24-draft-mode-design.md` is the original. |
 | `docs/superpowers/plans/` | Task-by-task build plans, one per phase. |
@@ -186,7 +186,8 @@ earns a second occurrence.
 
 ## Current state
 
-Both drafts are done (2026-09-01); the 2026 season starts Sept 9. Phases 0–6 are
-complete except Phase 0 (Yahoo OAuth, blocked on Yahoo's approval since
+All three drafts are done (two 2026-09-01, `sb-fantasy` 2026-09-06); the 2026
+season starts Sept 9. Phases 0–6 are complete except Phase 0 (Yahoo OAuth,
+blocked on Yahoo's approval since
 2026-08-24) and Phase 3.7 (the `DataTable` swap, offseason). Full table and the
 open risks are in `docs/decisions.md`; the queue is `TODO.md`.

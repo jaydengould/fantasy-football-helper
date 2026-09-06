@@ -12,7 +12,7 @@ Rewritten 2026-09-03. Ordered by what blocks what.
    run is what writes the row, and the APIs serve current state only, so a week
    not recorded before it is played can never be scored. Week 1 is recorded for
    both leagues.
-2. **`.roster/yahoo-main.txt` must be updated after every Yahoo add/drop.** No
+2. **`.roster/Bush-League.txt` must be updated after every Yahoo add/drop.** No
    API. `lineup` and `preflight` both print its age for this reason.
 3. **Yahoo OAuth (Phase 0, §8) — blocked externally**, no reply since
    2026-08-24. `scripts/yahoo_auth.py` does not exist and is deliberately not

@@ -1,6 +1,6 @@
 """Does the matchup adjustment earn its place? Scored on a real season.
 
-    .venv/bin/python scripts/backtest_weekly.py [--league sleeper-main] [--season 2025]
+    .venv/bin/python scripts/backtest_weekly.py [--league bros-fantasy] [--season 2025]
 
 The season-mode sibling of `backtest.py`, and the gate the spec puts in front of
 the matchup column: it may not reorder a lineup until it beats unadjusted
@@ -162,7 +162,7 @@ def test_b_mae(proj: dict, acts: dict, players: dict, scoring: dict,
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--league", default="sleeper-main")
+    ap.add_argument("--league", default="bros-fantasy")
     ap.add_argument("--season", default="2025")
     ap.add_argument("--config", type=Path, default=ROOT / "config.toml")
     args = ap.parse_args(argv)

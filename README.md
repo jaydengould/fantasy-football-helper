@@ -277,7 +277,7 @@ A player with no projection this week is shown separately rather than scored
 as zero. Add `--week 4` to check a different week.
 
 ```
-sleeper-main  (jaydenpg)   week 1
+bros-fantasy  (jaydenpg)   week 1
 
 STARTERS
   QB    Josh Allen               QB  BUF   24.4
@@ -341,7 +341,7 @@ paying for it with the best available cut.
 Most weeks it prints nothing, and that is the point (real output, week 1):
 
 ```
-WAIVERS -- sleeper-main (jaydenpg) -- week 1
+WAIVERS -- bros-fantasy (jaydenpg) -- week 1
   waiver priority 8 of 12 -- a successful claim sends you to 12th
 
   nothing on the wire beats what you already have.
@@ -383,7 +383,7 @@ of `load_league_users`), not a hand edit; every gain, package, and the
 one-row result are exactly what the engine returned:
 
 ```
-TRADES -- sleeper-main (jaydenpg) -- week 1, 17 weeks scored
+TRADES -- bros-fantasy (jaydenpg) -- week 1, 17 weeks scored
   !! could not reach Sleeper's league users endpoint (...) -- opponent names are unavailable
   best offer per opponent
 

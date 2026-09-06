@@ -27,7 +27,7 @@ sleeper = 1
 yahoo = 12
 
 [[league]]
-name = "sleeper-main"
+name = "bros-fantasy"
 platform = "sleeper"
 league_id = "1395959490938966016"
 # Which ADP the survival model believes. "ffc" or "sleeper".
@@ -60,15 +60,15 @@ adp_source = "sleeper"
 # against the API rather than resting on the user's word.
 draft_slot = 5
 
-# Task 13 rehearsal. Borrows sleeper-main's synced scoring and roster and points
+# Task 13 rehearsal. Borrows bros-fantasy's synced scoring and roster and points
 # the pick feed at a Sleeper mock draft instead -- a mock has a draft_id but no
 # league of its own, so its settings cannot be fetched. Set draft_id from the
 # mock draft URL (the long number after /draft/), set draft_slot to the seat you
 # drew, then: python -m ffhelper.cli run --league mock
 # Confirmed a `league_mock` of league 1395959490938966016: same 12 teams, PPR,
-# 15 rounds, same roster slots -- so sleeper-main's synced scoring is correct
+# 15 rounds, same roster slots -- so bros-fantasy's synced scoring is correct
 # for it. draft_order confirms seat 5. Delete this block after Task 13.
-# adp_source MUST match sleeper-main, or the rehearsal is not a rehearsal: it is
+# adp_source MUST match bros-fantasy, or the rehearsal is not a rehearsal: it is
 # the one setting that changes every SURV number on screen, and the point of the
 # mock is to see the board you will see on Sept 1.
 [[league]]
@@ -78,6 +78,9 @@ league_id = "1395959490938966016"
 draft_id = "1398747013708894208"
 draft_slot = 5
 adp_source = "sleeper"
+# Hidden from the web app's league picker 2026-09-06, mocks being over for the
+# season. The block is NOT deleted -- see the paragraph above and `League.hidden`.
+hidden = true
 
 # HUMAN MOCK (TODO.md §12/§16 rehearsal). Sleeper has no public mock lobby with
 # real people, so the human mock runs on Yahoo -- which also rehearses the Sept 1
@@ -87,7 +90,7 @@ adp_source = "sleeper"
 #   num_teams   -- whatever the mock says (Yahoo lobbies are usually 12)
 #   draft_slot  -- the seat you drew; it is random and only known at draft time
 #   rec         -- 1.0 if the lobby says PPR, 0.5 half, 0.0 standard
-# Everything else is copied from yahoo-main. Scoring does not affect survival
+# Everything else is copied from Bush-League. Scoring does not affect survival
 # calibration at all (that is pure ADP) and only mildly reorders the board, so
 # do not spend clock on it.
 #
@@ -105,6 +108,10 @@ name = "yahoo-mock"
 platform = "yahoo"
 league_id = "mock"
 draft_slot = 1
+# Hidden from the league picker 2026-09-06. Deliberately NOT deleted: the
+# paragraph above is the reason -- calibrate.py reads num_teams from this block
+# to re-score the three transcribed mocks in .draft/.
+hidden = true
 
 [league.settings]
 num_teams = 10
@@ -160,7 +167,7 @@ pts_allow_28_34 = -1
 pts_allow_35p = -4
 
 [[league]]
-name = "yahoo-main"
+name = "Bush-League"
 platform = "yahoo"
 # Yahoo's Fantasy API needs per-developer approval that will not arrive before
 # the Sept 1 draft, so league_id is unused today -- there is no feed and no
@@ -256,7 +263,7 @@ pts_allow_35p = -4
 # block by changing one `draft_id`, which is the whole reason it exists. The
 # draft_id below is a finished mock -- reset it before a live run.
 # A Sleeper mock has a draft_id but no league of its own, so its scoring and
-# roster cannot be fetched. This borrows sleeper-main's league_id for exactly
+# roster cannot be fetched. This borrows bros-fantasy's league_id for exactly
 # that (synced 12-team full PPR, 6-pt passing TDs) and overrides only where the
 # picks come from. Verified against the API before writing: the mock really is
 # 12 teams / 15 rounds / snake / ppr / 120s, so the borrowed settings are right.
@@ -267,3 +274,27 @@ league_id = "1395959490938966016"
 adp_source = "sleeper"
 draft_slot = 5
 draft_id = "1399182116683530240"
+# Hidden from the league picker 2026-09-06. Kept because one changed draft_id
+# turns it back into a live rehearsal board, which is the whole point of it.
+hidden = true
+
+# Added 2026-09-06, ~14 minutes before its own draft. Sleeper API supplies
+# scoring and roster (see _resolve_settings_source), so only the feed pointers
+# and the two things the API must never be trusted for are set here.
+#
+# draft_slot 4 is the user's word AND independently confirmed against the live
+# draft_order: user 1395249456487612416 (`jaydenpg`) -> slot 4, order complete
+# at 10 of 10. Both views agree, which is the bar CLAUDE.md sets.
+#
+# adp_source "sleeper" for the same MECHANISM that set it on bros-fantasy: this
+# room drafts inside the Sleeper app with Sleeper's own ADP on screen. It is NOT
+# re-measured for a 10-team league -- the 540-pick calibration behind that choice
+# was pooled from 12-team rooms, and Sleeper's adp_ppr is not team-count aware.
+# FFC does publish a 10-team PPR list that matches this league's shape better.
+# ONE LINE TO REVERT: adp_source = "ffc".
+[[league]]
+name = "sb-fantasy"
+platform = "sleeper"
+league_id = "1401306086232834048"
+draft_slot = 4
+adp_source = "sleeper"

@@ -3,18 +3,63 @@
 Referenced from `CLAUDE.md`. Read this when computing a board, a lineup,
 or anything that depends on scoring, roster shape, or replacement level.
 
-| League | Platform | Draft | Format |
-| --- | --- | --- | --- |
-| Bros with no hoes (`1395959490938966016`) | Sleeper | **DRAFTED 2026-09-01** | snake, 12 team, 15 rd, seat 5 |
-| Yahoo league (id in `.env`) | Yahoo | **DRAFTED 2026-09-01** | snake, **10 team**, seat 2 |
+| League | Config name | Platform | Draft | Format |
+| --- | --- | --- | --- | --- |
+| Bros with no hoes (`1395959490938966016`) | `bros-fantasy` | Sleeper | **DRAFTED 2026-09-01** | snake, 12 team, 15 rd, seat 5 |
+| Yahoo league (id in `.env`) | `Bush-League` | Yahoo | **DRAFTED 2026-09-01** | snake, **10 team**, seat 2 |
+| Sb Fantasy (`1401306086232834048`) | `sb-fantasy` | Sleeper | **DRAFTED 2026-09-06** | snake, **10 team**, 15 rd, seat 4 |
 
-**Both drafts are done.** Sleeper completed 180 picks and the roster reads from
-the API; the Yahoo roster has no API and must be hand-entered for season mode.
-The 2026 season starts **Sept 9** (`state/nfl`), so week 1 lineups are the first
-live use of the tool after the drafts.
+**Config names were changed 2026-09-06** from `sleeper-main` and `yahoo-main`.
+The name is a key in three places, not one: `season.db.snapshot` (migrated, 15 and
+14 rows), `.roster/<name>.txt` (renamed — it is the Yahoo league's ONLY roster
+source), and `scripts/calibrate.py`'s parse of `.draft/` log filenames. Rename in
+all four or week-1 history silently orphans.
+
+**All three drafts are done.** Both Sleeper rosters read from the API; the Yahoo
+roster has no API and must be hand-entered for season mode. The 2026 season starts
+**Sept 9** (`state/nfl`), so week 1 lineups are the first live use of the tool
+after the drafts.
 
 Sleeper scoring: full PPR, 0.1/yd rush+rec, 0.04/yd pass, **6-pt passing TDs**
 (not Sleeper's default 4). Roster `QB/RB/RB/WR/WR/TE/FLEX/FLEX/K/DEF` + 5 bench.
+
+## Sb Fantasy (`sb-fantasy`) — added 2026-09-06
+
+Settings sync from the Sleeper API, so nothing here is hand-entered. Roster
+`QB/RB/RB/WR/WR/TE/FLEX/K/DEF` + 6 bench. Playoffs are 6 of 10 starting week 15.
+Only **four** scoring values differ from `bros-fantasy` — everything else, full
+PPR and 6-pt passing TDs included, is identical:
+
+```
+pass_yd 0.05 (1 per 20, vs 0.04)   pass_int -2 (vs -1)
+fgmiss 0 (vs -1)                   xpmiss 0 (vs -1)
+```
+
+**Replacement levels:** QB10/RB25/WR25/TE10, at 375.9 / 170.6 / 209.0 / 169.3
+points. Generated 2026-09-06 by running `replacement_ranks` against the synced
+settings, not by hand.
+
+**The structural difference is 10 teams and ONE flex, against 12 and two.**
+Ranking the same player pool under both leagues' settings moves three of four
+positions — overall board rank of each positional tier, `sb-fantasy` first:
+
+| | 1st | 3rd | 5th | 8th | |
+| --- | --- | --- | --- | --- | --- |
+| QB | 17 / 25 | 37 / 55 | 46 / 67 | 62 / 85 | **8–23 earlier** |
+| TE | 10 / 17 | 22 / 36 | 39 / 52 | 76 / 79 | **4–14 earlier** |
+| WR | 3 / 3 | 13 / 9 | 20 / 16 | 25 / 21 | **4–7 later** |
+| RB | 1 / 1 | 5 / 5 | 7 / 7 | 11 / 12 | unchanged |
+
+So QB and TE gains come out of the RECEIVERS, not the backs: the league starts 20
+WRs where the other starts 36, and elite RBs are worth the same in both. A second
+consequence of ten teams — **K and DEF float up the board**, DEF1 to overall 52 and
+K1 to 68 (against 66 and 94 in the 12-teamer). That is a shallow-league VBD
+artifact, not a signal; both remain waiver fodder.
+
+**UNCONFIRMED, must be read off Sleeper's own screen** (see `CLAUDE.md`'s first
+recurring mistake): the API returns `max_keepers: 1` while league type reads
+redraft and the draft ran 15 rounds, and `waiver_type: 0` with `waiver_budget: 100`
+— which is rolling waiver priority with a default budget number, not FAAB.
 
 **Yahoo scoring (user-supplied 2026-08-24, complete). Must be hand-entered — no
 API access.** Roster `QB/WR/WR/RB/TE/FLEX/FLEX/K/DEF` + 5 bench —

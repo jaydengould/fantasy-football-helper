@@ -12,14 +12,14 @@ closed them and the condition that would reopen them.
 - **DynastyProcess `db_playerids.csv` is a Phase 1 dependency, not season mode.**
   Sleeper's own `yahoo_id` is unusable: 0/302 rookies, 13/692 sophomores. Gibbs
   (RB1) has none. DP covers 99.9%.
-- **Both leagues use `adp_source = "sleeper"`.** `yahoo-main` moved off `ffc`
+- **All three leagues use `adp_source = "sleeper"`.** `Bush-League` moved off `ffc`
   2026-08-26 on 540 pooled picks across three Yahoo mocks: FFC's calibration
   spans 24 points and is not monotonic, Sleeper's spans 47 and rises throughout.
   This replaced an unmeasured mechanism argument. `TODO.md` §12a; one config line
   reverts it. **Known and unfixed: both are ~25–35 points too pessimistic in
   level, so SURV is an ordering, not a probability.**
 - **FFC stays — but ONLY for bye weeks now, and that is the whole reason.**
-  Since both leagues moved to `adp_source = "sleeper"`, `apply_ffc_adp` runs with
+  Since all three leagues moved to `adp_source = "sleeper"`, `apply_ffc_adp` runs with
   `set_adp=False` and contributes exactly one field: `bye`. Sleeper has no bye
   week anywhere — not in the 48-field player DB, not in the projection rows — so
   the join cannot be deleted, but its old justification is obsolete.

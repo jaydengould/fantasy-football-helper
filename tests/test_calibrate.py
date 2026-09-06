@@ -133,7 +133,7 @@ def test_a_numeric_sleeper_draft_id_is_not_mistaken_for_the_seat():
     id while scoring the real id as the seat number. Both silent until run.
     """
     assert parse_draft_args(["1399171308415102976", "5"]) == (
-        "1399171308415102976", 5, "sleeper-main")
+        "1399171308415102976", 5, "bros-fantasy")
     # The regression exactly: the id must never end up in the slot.
     _id, slot, _lg = parse_draft_args(["1399171308415102976", "5"])
     assert slot == 5

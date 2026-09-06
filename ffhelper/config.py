@@ -48,6 +48,13 @@ class League:
     # right source for a Yahoo league once access is granted -- but access has
     # not arrived, so it cannot be built or tested. See TODO.
     adp_source: str = "ffc"
+    # Keep this league out of the web app's league dropdown. The block stays
+    # loadable and `--league <name>` still works -- this hides it from the
+    # picker only. Mock and rehearsal leagues are hidden rather than deleted
+    # because `scripts/calibrate.py` reads `num_teams` from the NAMED league,
+    # so deleting a mock block destroys the ability to re-score the transcribed
+    # drafts in `.draft/` that sit behind the `adp_source` decision.
+    hidden: bool = False
 
 
 @dataclass(frozen=True)
