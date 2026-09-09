@@ -1186,7 +1186,7 @@ def test_lineup_rows_show_dash_for_unprojected_starter():
     view = pipeline.LineupView(
         league_name="sleeper-main", week=3,
         state=StartSit(lineup=[("TE", p)], bench=[], close_calls=[],
-                       unprojected=[p]))
+                       unprojected=[p], ineligible=[]))
     rows = lineup_rows(view)
     assert rows[0]["proj"] == "--"
     assert "0.0" not in str(rows[0])
@@ -1203,7 +1203,7 @@ def test_lineup_rows_projected_total_carries_the_floor_caveat():
     view = pipeline.LineupView(
         league_name="sleeper-main", week=3,
         state=StartSit(lineup=[("QB", scored), ("TE", p)], bench=[], close_calls=[],
-                       unprojected=[p]))
+                       unprojected=[p], ineligible=[]))
     rows = lineup_rows(view)
     total_row = rows[-1]
     assert total_row["player"] == "projected total"
@@ -1214,7 +1214,7 @@ def test_lineup_rows_projected_total_carries_the_floor_caveat():
 def test_lineup_rows_empty_slot_shows_empty_not_a_player():
     view = pipeline.LineupView(
         league_name="sleeper-main", week=3,
-        state=StartSit(lineup=[("RB", None)], bench=[], close_calls=[], unprojected=[]))
+        state=StartSit(lineup=[("RB", None)], bench=[], close_calls=[], unprojected=[], ineligible=[]))
     rows = lineup_rows(view)
     assert rows[0]["slot"] == "RB"
     assert "EMPTY" in rows[0]["player"]
@@ -1247,7 +1247,7 @@ def test_lineup_page_carries_close_calls_and_notes_not_just_starters():
             lineup=[("RB", starter)], bench=[bench_only],
             close_calls=[CloseCall(slot="RB", starter=starter, challenger=challenger,
                                    gap=1.0)],
-            unprojected=[]))
+            unprojected=[], ineligible=[]))
     rendered = str(season_page_children("lineup", view))
     assert "Bench" in rendered and "Bench Only Guy" in rendered   # BENCH section
     assert "Challenger Guy" in rendered and "1.0" in rendered     # CLOSE CALLS
@@ -1259,7 +1259,7 @@ def test_lineup_page_carries_the_unprojected_section():
                proj_pts=0.0)
     view = pipeline.LineupView(
         league_name="sleeper-main", week=3,
-        state=StartSit(lineup=[("TE", p)], bench=[], close_calls=[], unprojected=[p]))
+        state=StartSit(lineup=[("TE", p)], bench=[], close_calls=[], unprojected=[p], ineligible=[]))
     rendered = str(season_page_children("lineup", view))
     assert "No projection this week" in rendered
 
@@ -1343,7 +1343,7 @@ def test_bench_rows_label_the_slot_bn_rather_than_leaving_it_blank():
     heading is the whole context; a table cannot."""
     p = Player(sleeper_id="9", name="Bench Guy", position="RB", team="KC",
                proj_pts=6.0)
-    state = StartSit(lineup=[], bench=[p], unprojected=[], close_calls=[])
+    state = StartSit(lineup=[], bench=[p], unprojected=[], close_calls=[], ineligible=[])
     view = pipeline.LineupView(league_name="sleeper-main", week=3, state=state)
     assert app.bench_rows(view)[0]["slot"] == "BN"
 
@@ -1354,7 +1354,7 @@ def test_unprojected_rows_leave_the_slot_blank_because_a_starter_can_be_in_them(
     assert something false about a player the tool is telling you to start."""
     p = Player(sleeper_id="9", name="Stash", position="WR", team="KC")
     state = StartSit(lineup=[("WR", p)], bench=[], unprojected=[p],
-                            close_calls=[])
+                            close_calls=[], ineligible=[])
     view = pipeline.LineupView(league_name="sleeper-main", week=3, state=state)
     assert app.unprojected_player_rows(view)[0]["slot"] == ""
 
@@ -2076,3 +2076,23 @@ def test_switch_league_compares_by_parsed_key_not_by_substring(monkeypatch):
     """"main" is a substring of "main-alt". A substring guard would treat a
     switch from main-alt to main as a no-op and silently strand the user."""
     assert _switch_callback(monkeypatch)("main", "?league=main-alt") == "?league=main"
+
+
+def test_ineligible_player_rows_mirror_the_text_renderer():
+    """The web page must not show less than the text page it replaces -- the
+    same spec gap task 7 already ruled on. A player excluded from the lineup
+    who appears on neither surface has silently vanished from his own roster."""
+    from types import SimpleNamespace
+
+    from ffhelper import app as app_mod, season
+    from ffhelper.data import Player
+    shelved = Player("2", "Shelved Guy", "RB", "SEA", proj_pts=18.0,
+                     injury_status="IR")
+    state = season.StartSit(lineup=[], bench=[], close_calls=[],
+                            unprojected=[], ineligible=[shelved])
+    view = SimpleNamespace(state=state, matchups={})
+
+    rows = app_mod.ineligible_player_rows(view)
+    assert [r["player"] for r in rows] == ["Shelved Guy"]
+    assert rows[0]["proj"] == "18.0"
+    assert "injured reserve" in rows[0]["flags"]

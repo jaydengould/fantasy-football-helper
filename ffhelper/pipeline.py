@@ -51,6 +51,10 @@ class LineupView:
     matchup_line: str = ""
     practice_line: str = ""
     projected_ids: set[str] = field(default_factory=set)
+    # Everyone startable at his position this week, not just your roster -- the
+    # snapshot's measurement scope. Computed here because the full slate is
+    # already fetched and scored for the lineup; the rows are free.
+    pool: list = field(default_factory=list)
 
 
 def build_lineup(league: League, tunables: Tunables,
@@ -88,11 +92,19 @@ def build_lineup(league: League, tunables: Tunables,
         season_str, week, players, settings.scoring,
         season_mod.opponents(weekly_rows), roster)
 
+    # The slate is already fetched and scored above, so this is a sort, not a
+    # fetch. Recording only the 15 players on your roster made the table too
+    # thin to measure a per-position weekly error from -- ~6 QB-weeks a week
+    # across three leagues, which is an answer arriving after the season it was
+    # meant to inform.
+    pool = season_mod.startable_pool(players, weekly, settings.roster_slots,
+                                     settings.num_teams, tunables.flex_share)
+
     return LineupView(
         league_name=league.name, state=state, week=week, season_str=season_str,
         state_week=state_week, owner=owner, notes=notes, matchups=matchups,
         matchup_line=matchup_line, practice_line=practice_line,
-        projected_ids=set(weekly),
+        projected_ids=set(weekly), pool=pool,
     )
 
 

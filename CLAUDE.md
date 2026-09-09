@@ -181,6 +181,12 @@ earns a second occurrence.
   fetch degrades alone, with tests that only ever made a fetch RAISE — so a
   defect on the SUCCESS path was unreachable by every test that claimed to
   cover it, and the suite stayed green.
+- **A test whose assertion is satisfiable without the logic it names.** Twice on
+  2026-09-08: keying a result by challenger id let a `dict` collapse the three
+  duplicate rows the test existed to catch, passing against the unfixed engine;
+  and a tie-break test listed the tied ids in sorted order, so stable sorting was
+  already right with the tie-break deleted. Neither is visible by reading: assert
+  on the LIST, and make the fixture disagree with the default ordering.
 - **Guarding the path the last defect took, and missing its siblings.** Grep the
   other callers of every endpoint or helper a fix wave touches.
 

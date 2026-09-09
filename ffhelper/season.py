@@ -10,7 +10,8 @@ from math import ceil, log2, sqrt
 from statistics import fmean
 
 from ffhelper.data import LeagueSettings, Player, score_stats
-from ffhelper.value import FLEX_ELIGIBLE, lineup_value, optimal_lineup
+from ffhelper.value import (FLEX_ELIGIBLE, lineup_value, optimal_lineup,
+                           replacement_ranks)
 
 
 def roster_id_for_slot(picks, draft_slot: int) -> int | None:
@@ -539,6 +540,39 @@ def with_practice_status(roster: list[Player], practice: dict[str, str]) -> list
         for p in roster]
 
 
+def startable_pool(
+    players: dict[str, Player], weekly: dict[str, float],
+    roster_slots: dict[str, int], num_teams: int, flex_share: dict[str, float],
+) -> list[Player]:
+    """Every player deep enough at his position to be a START/SIT DECISION.
+
+    THE DEPTH IS DERIVED, NEVER PICKED. It is `replacement_ranks` -- how many of
+    a position the league starts in a week -- so it is a property of the league's
+    own settings and moves when they do (QB12/TE12/RB36/WR36 in the 12-team
+    league, QB10/TE10/RB25/WR25 in a 10-team one). A hand-chosen "top 40" would
+    be the invented number non-negotiable #8 bars, in the one place it would be
+    hardest to notice later: the scope of the record everything is measured on.
+
+    Below replacement a pair is not a decision -- nobody chooses between WR80
+    and WR81 -- so recording deeper buys rows that can never be scored as advice.
+
+    Ordered by weekly points with `sleeper_id` as the final tie-break, so the cut
+    at the boundary is the same on two runs of the same week.
+    """
+    by_pos: dict[str, list[Player]] = {}
+    for pid, pts in weekly.items():
+        p = players.get(pid)
+        if p is not None:
+            by_pos.setdefault(p.position, []).append(p)
+
+    out: list[Player] = []
+    for pos, depth in replacement_ranks(roster_slots, num_teams, flex_share).items():
+        group = sorted(by_pos.get(pos, ()),
+                       key=lambda p: (-weekly[p.sleeper_id], p.sleeper_id))
+        out.extend(group[:depth])
+    return with_weekly_points(out, weekly)
+
+
 @dataclass(frozen=True)
 class CloseCall:
     """A start/sit decision close enough that a human should look at it."""
@@ -548,12 +582,41 @@ class CloseCall:
     gap: float
 
 
+# Injury codes that mean the player CANNOT take the field, so his projection is
+# unreachable rather than merely reduced. Excluding him is categorical -- it is
+# what the platform itself enforces -- and is therefore not the hand-picked
+# discount non-negotiable #8 bars. A multiplier on a Questionable player WOULD
+# be that, which is why the doubtful/questionable codes are deliberately absent:
+# they mean MIGHT play, and turning "might" into a number fabricates a
+# probability no source supplied.
+#
+# Sleeper's vocabulary, from `INJURY_STATUS_DISPLAY` in cli.py. "NA" is in here
+# and reads as "not applicable" to a human: it means NOT ACTIVE.
+CANNOT_PLAY = frozenset({"Out", "IR", "PUP", "Sus", "DNR", "NA", "COV"})
+
+
+def cannot_play(player: Player) -> bool:
+    """True when the platform will not let this player score this week."""
+    return player.injury_status in CANNOT_PLAY
+
+
 @dataclass(frozen=True)
 class StartSit:
     lineup: list[tuple[str, Player | None]]
     bench: list[Player]
     close_calls: list[CloseCall]
     unprojected: list[Player]
+    # Rostered, projected, and unstartable. Its own list rather than folded into
+    # `unprojected`, because the two say different things: `unprojected` means
+    # the source gave no number, this means the source gave one and the player
+    # cannot use it. Printing an IR player under "NO PROJECTION" would be a
+    # false statement about the data.
+    #
+    # NO DEFAULT, matching every other field here: a caller that forgets it
+    # should get a TypeError rather than a silently-empty list it never chose.
+    # The renderers read this list, so an empty one it did not ask for would
+    # hide an excluded player instead of showing him.
+    ineligible: list[Player]
 
 
 def _eligible(player: Player, slot: str) -> bool:
@@ -584,31 +647,45 @@ def start_sit(
     exempt list, bye, injured) land in `unprojected` and are excluded from close_calls.
     None means "assume everyone was projected" for backward compatibility.
     """
-    lineup = optimal_lineup(roster, roster_slots)
+    ineligible = [p for p in roster if cannot_play(p)]
+    out_ids = {p.sleeper_id for p in ineligible}
+    playable = [p for p in roster if p.sleeper_id not in out_ids]
+
+    lineup = optimal_lineup(playable, roster_slots)
     starting = {p.sleeper_id for _, p in lineup if p is not None}
-    bench = sorted((p for p in roster if p.sleeper_id not in starting),
+    bench = sorted((p for p in playable if p.sleeper_id not in starting),
                    key=lambda p: -p.proj_pts)
 
     unprojected_ids = set() if projected_ids is None else {p.sleeper_id for p in roster if p.sleeper_id not in projected_ids}
-    unprojected = [p for p in roster if p.sleeper_id in unprojected_ids]
+    unprojected = [p for p in roster
+                   if p.sleeper_id in unprojected_ids and p.sleeper_id not in out_ids]
 
     calls: list[CloseCall] = []
-    for slot, starter in lineup:
-        if starter is None:
+    for challenger in bench:
+        if challenger.sleeper_id in unprojected_ids:
             continue
-        if starter.sleeper_id in unprojected_ids:
+        # The cheapest starter he can legally displace, because that is what
+        # starting him actually costs. Walking SLOTS instead produced one line
+        # per eligible slot -- three for a single bench RB on the real Yahoo
+        # shape -- each priced against a starter you would never have benched
+        # while a weaker one was still in the lineup. `sleeper_id` is the final
+        # tie-break so two equal starters do not order by dict iteration.
+        options = [(s.proj_pts, s.sleeper_id, slot, s) for slot, s in lineup
+                   if s is not None and _eligible(challenger, slot)
+                   and s.sleeper_id not in unprojected_ids]
+        if not options:
             continue
-        challenger = next((b for b in bench if _eligible(b, slot) and b.sleeper_id not in unprojected_ids), None)
-        if challenger is None:
-            continue
+        _, _, slot, starter = min(options)
         gap = starter.proj_pts - challenger.proj_pts
         if gap <= close_call_points:
             calls.append(CloseCall(slot, starter, challenger, gap))
-    return StartSit(lineup=lineup, bench=bench, close_calls=calls, unprojected=unprojected)
+    return StartSit(lineup=lineup, bench=bench, close_calls=calls,
+                    unprojected=unprojected, ineligible=ineligible)
 
 
 def snapshot_rows(
     state: StartSit, projected_ids: set[str], taken_at: str,
+    pool: list[Player] | None = None,
 ) -> list[dict]:
     """One record per rostered player: what was claimed, and what we advised.
 
@@ -625,14 +702,28 @@ def snapshot_rows(
 
     `matchup` is None until 4b ships the adjustment -- not 0.0, which would read
     as "computed, and it came to nothing".
+
+    `state.ineligible` is walked too. A player the tool refused to start is
+    still a rostered player, and this table is the instrument that makes the
+    advice measurable in December -- a row missing from it is a hole in that
+    measurement, not a tidier table. `started` 0 beside a `status` of IR is the
+    record of WHY, and it is checkable later.
     """
     started = {p.sleeper_id for _, p in state.lineup if p is not None}
+    # The roster is walked FIRST below, so a pool player who is also on your
+    # roster keeps his roster row and never lands here.
+    on_roster = {p.sleeper_id for p in
+                 [q for _, q in state.lineup if q is not None]
+                 + list(state.bench) + list(state.unprojected)
+                 + list(state.ineligible)}
+    pool_only = {p.sleeper_id for p in (pool or ())} - on_roster
     # An unprojected STARTER is in both `lineup` and `unprojected` (a known
     # overlap from the 4a review), so this walks the three lists and dedupes
     # rather than assuming they partition the roster. A duplicate would
     # over-report the count while the primary key quietly wrote one row.
     everyone = ([p for _, p in state.lineup if p is not None]
-                + list(state.bench) + list(state.unprojected))
+                + list(state.bench) + list(state.unprojected)
+                + list(state.ineligible) + list(pool or ()))
 
     rows: list[dict] = []
     seen: set[str] = set()
@@ -649,6 +740,12 @@ def snapshot_rows(
             "proj_pts": p.proj_pts if p.sleeper_id in projected_ids else None,
             "matchup": None,
             "status": " / ".join(bits) if bits else None,
-            "started": 1 if p.sleeper_id in started else 0,
+            # NULL for a player who is not on your roster: no start/sit advice
+            # was given about him, which is a different fact from "advised
+            # against", and 0 would assert the second. Same NULL-means-absent
+            # rule `proj_pts` and `matchup` already follow, so `started IS NOT
+            # NULL` is your roster and `SUM(started)` is still the lineup.
+            "started": None if p.sleeper_id in pool_only
+                       else (1 if p.sleeper_id in started else 0),
         })
     return rows

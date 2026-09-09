@@ -1125,11 +1125,26 @@ def render_lineup(
             out.append(f"  {'':<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
                        f"{'   --':>6}{_status_note(p)}")
 
+    # Its own section, above CLOSE CALLS and below the projections, because it
+    # is a stronger statement than either: the source DID give a number and the
+    # player cannot use it. Folding him into "NO PROJECTION" would misdescribe
+    # the data, and leaving him in the lineup was the defect -- he was started at
+    # full projection with a note beside him.
+    if state.ineligible:
+        out += ["", "CANNOT PLAY -- excluded from the lineup, projection unreachable"]
+        for p in state.ineligible:
+            shown = f"{p.proj_pts:6.1f}" if p.sleeper_id not in unprojected_ids else "   --"
+            out.append(f"  {'':<5} {p.name:<24} {p.position:<3} {p.team or '':<3} "
+                       f"{shown}{_status_note(p)}")
+
     if state.close_calls:
         out += ["", "CLOSE CALLS -- worth your own read"]
         for c in state.close_calls:
-            out.append(f"  {c.slot:<5} starting {c.starter.name} over {c.challenger.name} "
-                       f"by {c.gap:.1f}{_status_note(c.challenger)}")
+            # "costs N" rather than "by N": the number is what the lineup LOSES
+            # if you make the swap, priced against the cheapest starter the
+            # challenger can displace -- which is the slot named here.
+            out.append(f"  {c.slot:<5} {c.challenger.name} for {c.starter.name} "
+                       f"costs {c.gap:.1f}{_status_note(c.challenger)}")
     if notes:
         out += [""] + [f"!! {n}" for n in notes]
     return "\n".join(out)
@@ -1192,6 +1207,7 @@ def _practice_status(season_str: str, week: int) -> tuple[dict[str, str], str]:
 def _record_snapshot(
     league: League, season_str: str, week: int, current_week: int | None,
     state_ss: "season_mod.StartSit", projected_ids: set[str],
+    pool: list | None = None,
 ) -> str:
     """Record this week's inputs and advice. Returns the line to print.
 
@@ -1216,13 +1232,16 @@ def _record_snapshot(
                 f"overwriting them would destroy the record")
     try:
         rows = season_mod.snapshot_rows(
-            state_ss, projected_ids, datetime.now().isoformat(timespec="seconds"))
+            state_ss, projected_ids, datetime.now().isoformat(timespec="seconds"),
+            pool=pool)
         conn = store.connect()
         try:
             n = store.write_snapshot(conn, league.name, season_str, week, rows)
         finally:
             conn.close()
-        return f"snapshot        : {n} players recorded for week {week}"
+        on_roster = sum(1 for r in rows if r["started"] is not None)
+        return (f"snapshot        : {n} players recorded for week {week} "
+                f"({on_roster} on your roster, {n - on_roster} startable pool)")
     except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
         # The lineup is the product; the snapshot is a side effect. Losing the
         # thing you actually ran the command for, over a write, is the trade
@@ -1545,7 +1564,7 @@ def _lineup(league: League, tunables: Tunables, week: int | None = None) -> int:
     # After the lineup, not inside `notes`: notes render as "!!" alarms, and a
     # snapshot that worked is not an alarm.
     print(_record_snapshot(league, view.season_str, view.week, view.state_week,
-                           view.state, view.projected_ids))
+                           view.state, view.projected_ids, view.pool))
     return 0
 
 

@@ -30,6 +30,18 @@ DB_PATH = ROOT / "season.db"
 # `proj_pts` and `matchup` are nullable ON PURPOSE and the code depends on it:
 # NULL means "no projection existed", which is a different fact from a projection
 # of 0.0 and must stay distinguishable in December. See `season.snapshot_rows`.
+#
+# `started` is nullable for the same reason and it is what makes this table wider
+# than one roster. Rows now cover every STARTABLE player at each position, not
+# just your 15 -- NULL means "not your player, so no start/sit advice was given",
+# which 0 would misstate as "advised against". `started IS NOT NULL` is your
+# roster; `SUM(started)` is still the lineup. Rostered rows are written first, so
+# a player who is both keeps his roster row.
+#
+# Why wider: the roster-only table held ~44 rows a week across three leagues, of
+# which ~6 were quarterbacks -- far too thin to measure a per-position weekly
+# error from before the season it was meant to inform had ended. The full slate
+# is already fetched and scored for the lineup, so the extra rows cost no fetch.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshot (
   league   TEXT, season TEXT, week INTEGER, player_id TEXT,
@@ -37,7 +49,7 @@ CREATE TABLE IF NOT EXISTS snapshot (
   proj_pts REAL,                       -- this league's scoring; NULL if unprojected
   matchup  REAL,                       -- the adjustment applied, NULL before 4b
   status   TEXT,                       -- injury/practice at decision time
-  started  INTEGER,                    -- did the tool advise starting them
+  started  INTEGER,                    -- 1 start, 0 bench, NULL not your player
   PRIMARY KEY (league, season, week, player_id)
 )
 """

@@ -274,7 +274,11 @@ Also at `/lineup` in the web app, as a table. Same builder, same numbers.
 One-shot — no loop, no polling. Prints your optimal starting lineup for the
 current NFL week, scored against your league's real settings, then your bench.
 A player with no projection this week is shown separately rather than scored
-as zero. Add `--week 4` to check a different week.
+as zero, and a player who *cannot play* — Out, IR, PUP, suspended — is excluded
+from the lineup and listed under `CANNOT PLAY` with the projection he cannot
+reach. Questionable and Doubtful still start: they mean *might* play, and this
+tool will not turn "might" into a number. Add `--week 4` to check a different
+week.
 
 ```
 bros-fantasy  (jaydenpg)   week 1
@@ -291,7 +295,7 @@ BENCH
         ...
 matchup context : none -- no completed weeks yet (a rank off no games is not a rank)
 practice report : unavailable (HTTPError) -- nflverse publishes injuries_2026.csv once week 1 has been played
-snapshot        : 15 players recorded for week 1
+snapshot        : 120 players recorded for week 1 (15 on your roster, 105 startable pool)
 ```
 
 Once three games have been played, each row carries its matchup — a rank, never
@@ -314,7 +318,10 @@ beside the player. The season's file does not exist until week 1 has been
 played, which is what the line above says.
 
 That last line is the run recording what every source claimed at the moment
-you decided, into `season.db` (gitignored, created on first use). The APIs
+you decided, into `season.db` (gitignored, created on first use). It records
+your roster *and* every startable player at each position — the depth each
+league actually starts, so the record is wide enough to measure a per-position
+projection error from later, not just your own fifteen. The APIs
 serve current state only, so a week not recorded before it is played can never
 be scored afterwards. Re-running in the current week replaces that week — the
 record is your last look before kickoff. A run for a PAST week prints normally

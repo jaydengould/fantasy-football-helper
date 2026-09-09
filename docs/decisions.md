@@ -226,6 +226,58 @@ closed them and the condition that would reopen them.
   Full costing in `TODO.md` §13; `scripts/backtest.py` reproduces it in a minute.
   **To reopen, bring a season where ESPN wins, not a fresh opinion.**
 
+- **A close call is one per BENCH PLAYER, priced against the cheapest starter he
+  can displace** (2026-09-08, reversing a decision a test called "deliberately
+  accepted"). The old loop walked SLOTS and paired each with the best eligible
+  bench player. Measured on the Yahoo shape: one bench RB produced **three**
+  close calls, and the reported cost was wrong — bench WR D (12.0) was priced at
+  2.0 against WR B (14.0) when the cheapest starter he can actually displace is
+  RB B at 13.0 in FLEX, a true cost of 1.0 against a different player. He can
+  occupy one slot, so he is one decision. Wording changed to "X for Y costs N"
+  because N is what the lineup LOSES, not a gap between two players in a slot.
+- **`injury_status` now gates the lineup; it was display-only** (2026-09-08).
+  It reached `_status_note` and the snapshot and touched neither
+  `optimal_lineup` nor the sort, so a player on IR carrying a projection was
+  STARTED at full value. Demonstrated on a constructed Yahoo roster: an IR
+  receiver at 15.7 took a FLEX slot and the week's projected total read 123.7
+  against a reachable 121.0. `CANNOT_PLAY` is categorical — Out/IR/PUP/Sus/DNR/
+  NA/COV, what the platform itself enforces — so it is not the hand-picked
+  discount non-negotiable #8 bars. **Questionable and Doubtful are deliberately
+  absent**: they mean MIGHT play, and turning "might" into a number fabricates a
+  probability no source supplied. Excluded players get their own screen section
+  and are still written to the snapshot with `started` 0.
+- **Whether an Out player ever carries a live projection is UNMEASURED.** It
+  could not be checked: 2026 weekly projections did not exist yet, and the 2025
+  cache is the survivorship-filtered set, which by construction contains almost
+  nobody who did not play. The guard is correct either way — a no-op if Sleeper
+  zeroes them — but the frequency is unknown until week 1.
+
+- **The snapshot records the startable POOL, not just your roster** (2026-09-08).
+  As built it held 14-15 rows per league per week — ~44 across three leagues, of
+  which roughly 6 were quarterbacks. That is ~36 QB-weeks after six weeks: far
+  too thin to measure a per-position weekly error from, so the number meant to
+  calibrate `close_call_points` would have arrived after the season it was meant
+  to inform. `build_lineup` **already fetches and scores the full 364-row
+  slate** for the lineup and then discarded everything off your roster, so the
+  extra rows cost no fetch and no new endpoint. Measured on the real settings:
+  120 / 90 / 90 rows a week for `bros-fantasy` / `Bush-League` / `sb-fantasy`,
+  300 a week in total against ~44, ~5400 over a season in a gitignored SQLite
+  file.
+- **The recording depth is `replacement_ranks`, never a chosen number.** How
+  many of a position the league starts in a week — so it falls out of the
+  league's own settings and moves when they do (QB12/RB36/WR36/TE12 for the
+  12-teamer; Bush-League's RB**20** from its single RB slot; sb-fantasy's RB25).
+  A hand-picked "top 40" would be the invented number non-negotiable #8 bars,
+  sitting in the hardest place to notice it later: the scope of the record
+  everything else gets measured against. Below replacement a pair is not a
+  decision — nobody chooses between WR80 and WR81.
+- **`started` is NULL for a player who is not yours**, rather than 0. No
+  start/sit advice was given about him, which is a different fact from "advised
+  against", and 0 asserts the second. Same NULL-means-absent rule `proj_pts` and
+  `matchup` already follow, so no schema change and no migration: `started IS
+  NOT NULL` is your roster, `SUM(started)` is still the lineup. Roster rows are
+  written first, so a player who is both keeps his roster row.
+
 ## Phases
 
 | Phase | What | Target | Status |

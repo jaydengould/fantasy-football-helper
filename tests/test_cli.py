@@ -2047,6 +2047,7 @@ def test_render_lineup_shows_slots_bench_close_calls_and_every_degradation():
         # TypeError, not a silently-empty list it never chose). Fixed here
         # rather than weakening StartSit with a default.
         unprojected=[],
+    ineligible=[],
     )
     out = cli.render_lineup(state, week=3, league_name="sleeper-main",
                             owner="jaydenpg", notes=["projections unavailable for 2 players"])
@@ -2069,6 +2070,7 @@ def test_render_lineup_prints_dashes_not_zero_for_a_starter_with_no_projection()
     starter = Player("1", "Bench Stash", "TE", "KC", proj_pts=0.0)
     state = season.StartSit(
         lineup=[("TE", starter)], bench=[], close_calls=[], unprojected=[starter],
+    ineligible=[],
     )
     out = cli.render_lineup(state, week=1, league_name="l", owner=None, notes=[])
 
@@ -2501,6 +2503,7 @@ def test_render_lineup_total_carries_a_floor_caveat_when_a_starter_is_unprojecte
     state = season.StartSit(
         lineup=[("WR", starter), ("TE", stash)], bench=[], close_calls=[],
         unprojected=[stash],
+    ineligible=[],
     )
     out = cli.render_lineup(state, week=1, league_name="l", owner=None, notes=[])
     total_line = next(line for line in out.splitlines() if "projected total" in line)
@@ -2513,7 +2516,7 @@ def test_render_lineup_total_carries_no_caveat_when_every_starter_is_projected()
     import ffhelper.cli as cli
     from ffhelper import season
     starter = Player("1", "Projected Guy", "WR", "SEA", proj_pts=16.2)
-    state = season.StartSit(lineup=[("WR", starter)], bench=[], close_calls=[], unprojected=[])
+    state = season.StartSit(lineup=[("WR", starter)], bench=[], close_calls=[], unprojected=[], ineligible=[])
     out = cli.render_lineup(state, week=1, league_name="l", owner=None, notes=[])
     total_line = next(line for line in out.splitlines() if "projected total" in line)
     assert "floor" not in total_line
@@ -3556,3 +3559,43 @@ def test_trades_notes_when_an_opponent_roster_id_is_not_in_the_player_pool(
     out = capsys.readouterr().out
     assert rc == 0
     assert "not in the player pool" in out and "999" in out
+
+
+def test_render_lineup_shows_a_cannot_play_player_in_his_own_section():
+    """He is rostered, he HAS a projection, and he cannot use it. That is a
+    different statement from 'no projection', so it gets a different section --
+    printing him under NO PROJECTION would misdescribe the data, and leaving
+    him in STARTERS was the defect (started at full projection, with a note)."""
+    import ffhelper.cli as cli
+    from ffhelper import season
+    starter = Player("1", "Playable Guy", "RB", "SEA", proj_pts=9.0)
+    shelved = Player("2", "Shelved Guy", "RB", "SEA", proj_pts=18.0,
+                     injury_status="IR")
+    state = season.StartSit(lineup=[("RB", starter)], bench=[], close_calls=[],
+                            unprojected=[], ineligible=[shelved])
+    out = cli.render_lineup(state, week=1, league_name="l", owner=None, notes=[])
+
+    assert "CANNOT PLAY" in out
+    starters = out.split("CANNOT PLAY")[0]
+    assert "Shelved Guy" not in starters       # never in the lineup
+    shelved_line = next(l for l in out.splitlines() if "Shelved Guy" in l)
+    assert "18.0" in shelved_line              # his real projection, not "--"
+    assert "injured reserve" in shelved_line   # and WHY he is out of the lineup
+
+
+def test_render_lineup_close_call_states_what_the_swap_costs():
+    """'X for Y costs N' -- N is what the lineup LOSES, priced against the
+    cheapest starter the challenger can displace. The old wording ('starting Y
+    over X by N') read as a gap between two players in one slot, which is not
+    what the number means once it is measured against the true displacement."""
+    import ffhelper.cli as cli
+    from ffhelper import season
+    starter = Player("1", "Incumbent", "RB", "SEA", proj_pts=13.0)
+    bench = Player("2", "Challenger", "WR", "SEA", proj_pts=12.0)
+    state = season.StartSit(lineup=[("FLEX", starter)], bench=[bench],
+                            close_calls=[season.CloseCall("FLEX", starter, bench, 1.0)],
+                            unprojected=[], ineligible=[])
+    out = cli.render_lineup(state, week=1, league_name="l", owner=None, notes=[])
+
+    line = next(l for l in out.splitlines() if "Challenger" in l and "Incumbent" in l)
+    assert "Challenger for Incumbent costs 1.0" in line

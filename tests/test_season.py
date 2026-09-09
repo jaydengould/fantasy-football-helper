@@ -157,16 +157,13 @@ def test_start_sit_distinguishes_zero_projection_from_missing():
     assert got.close_calls[0].gap == pytest.approx(3.0)
 
 
-def test_start_sit_same_bench_player_can_challenge_multiple_slots():
-    """The same bench player can be offered as a challenger for different slots
-    (a player positioned between two filled starters might challenge both). This
-    behaviour is deliberately accepted and tested here."""
-    roster = [mk("rb1", "RB", 12.0), mk("rb2", "RB", 11.0), mk("rb3", "RB", 9.0)]
-    got = season.start_sit(roster, {"RB": 2}, close_call_points=3.0)
-
-    # rb3 can challenge both rb1 (gap 3.0) and rb2 (gap 2.0) -- both within threshold
-    challenger_ids = [c.challenger.sleeper_id for c in got.close_calls]
-    assert challenger_ids.count("rb3") == 2
+# REVERSED 2026-09-08. A test here asserted the opposite -- that one bench
+# player may raise a close call against every slot he is eligible for, called
+# "deliberately accepted". It is not defensible: he can occupy one slot, so he
+# is one decision, and each extra line priced him against a starter you would
+# never bench while a weaker one was still in the lineup. Superseded by
+# `test_close_call_is_one_per_bench_player_not_one_per_slot`, which uses this
+# same roster and asserts the single call.
 
 
 def test_weekly_points_omits_rows_with_only_descriptive_stats():
@@ -1029,3 +1026,237 @@ def test_roster_upgrade_never_cuts_the_player_it_is_adding():
     assert drop.sleeper_id == "qb_bench"
     assert gain == pytest.approx(0.0)
     assert weeks_started == 0
+
+
+# ---------------------------------------------------------------------------
+# Close calls are per BENCH PLAYER, not per SLOT (2026-09-08)
+# ---------------------------------------------------------------------------
+
+def test_close_call_names_the_cheapest_displaceable_starter():
+    """The decision is 'what does the lineup lose', so the challenger must be
+    priced against the WEAKEST starter he can legally displace -- not against
+    whoever sits in the first slot he happens to be eligible for.
+
+    Measured on the Yahoo shape 2026-09-08: bench WR D (12.0) was reported as
+    costing 2.0 against WR B (14.0), when the cheapest starter he can displace
+    is RB B at 13.0 in FLEX -- a true cost of 1.0, against a different player.
+    The old per-slot loop overstated the cost AND named the wrong man.
+    """
+    roster = [mk("q1", "QB", 19.0),
+              mk("r1", "RB", 15.0), mk("r2", "RB", 13.0),
+              mk("w1", "WR", 16.0), mk("w2", "WR", 14.0), mk("w3", "WR", 13.5),
+              mk("w4", "WR", 12.0),
+              mk("t1", "TE", 11.0)]
+    slots = {"QB": 1, "WR": 2, "RB": 1, "TE": 1, "FLEX": 2}
+    got = season.start_sit(roster, slots, close_call_points=3.0)
+
+    # FLEX takes w3 (13.5) and r2 (13.0); w4 is the only bench player.
+    # Asserted on the LIST, never a dict keyed by challenger: the first version
+    # of this test used a dict, which collapsed the three duplicate calls the
+    # old code emitted into one key and PASSED against the unfixed engine.
+    assert len(got.close_calls) == 1
+    call = got.close_calls[0]
+    assert call.challenger.sleeper_id == "w4"
+    assert call.starter.sleeper_id == "r2"
+    assert call.slot == "FLEX"
+    assert call.gap == pytest.approx(1.0)
+
+
+def test_close_call_is_one_per_bench_player_not_one_per_slot():
+    """One bench player can occupy exactly one slot, so he is exactly one
+    decision. The old loop walked SLOTS and paired each with the best eligible
+    bench player, so a single bench RB generated three lines on the real Yahoo
+    shape -- three decisions on screen where one exists.
+    """
+    roster = [mk("rb1", "RB", 12.0), mk("rb2", "RB", 11.0), mk("rb3", "RB", 9.0)]
+    got = season.start_sit(roster, {"RB": 2}, close_call_points=3.0)
+
+    assert len(got.close_calls) == 1
+    call = got.close_calls[0]
+    assert (call.starter.sleeper_id, call.challenger.sleeper_id) == ("rb2", "rb3")
+    assert call.gap == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# A player who CANNOT PLAY is never started (2026-09-08)
+# ---------------------------------------------------------------------------
+
+def out(pid: str, pos: str, pts: float, status: str) -> Player:
+    return Player(pid, f"P{pid}", pos, "SEA", proj_pts=pts, injury_status=status)
+
+
+def test_start_sit_never_starts_a_player_who_cannot_play():
+    """`injury_status` was display-only: it reached `_status_note` and the
+    snapshot and touched neither the lineup nor the sort. A player on IR who
+    still carries a projection was started, at full projection, with a note
+    beside him.
+
+    This is a CATEGORICAL exclusion, not a discount -- the platform will not
+    let him score, so his points are unreachable rather than merely reduced.
+    Non-negotiable #8 bars the multiplier; it does not bar this.
+    """
+    roster = [out("r1", "RB", 18.0, "IR"), mk("r2", "RB", 9.0)]
+    got = season.start_sit(roster, {"RB": 1}, close_call_points=3.0)
+
+    assert [p.sleeper_id for _, p in got.lineup] == ["r2"]
+    assert [p.sleeper_id for p in got.ineligible] == ["r1"]
+    assert [p.sleeper_id for p in got.bench] == []
+
+
+def test_start_sit_still_starts_a_questionable_player():
+    """Questionable and Doubtful mean MIGHT play. Benching them would be the
+    tool inventing a probability the source never stated -- the same
+    fabrication as a discount, wearing a different hat. Only codes that mean
+    cannot play at all are excluded.
+    """
+    roster = [out("r1", "RB", 18.0, "Questionable"), mk("r2", "RB", 9.0)]
+    got = season.start_sit(roster, {"RB": 1}, close_call_points=3.0)
+
+    assert [p.sleeper_id for _, p in got.lineup] == ["r1"]
+    assert got.ineligible == []
+
+
+def test_cannot_play_player_is_not_offered_as_a_close_call():
+    """He is not on the bench, so he is not a decision. Offering him would be
+    advice the platform will refuse to execute."""
+    roster = [mk("r1", "RB", 12.0), out("r2", "RB", 11.5, "Out")]
+    got = season.start_sit(roster, {"RB": 1}, close_call_points=3.0)
+
+    assert got.close_calls == []
+    assert [p.sleeper_id for p in got.ineligible] == ["r2"]
+
+
+def test_snapshot_rows_records_a_player_who_cannot_play():
+    """The snapshot is one row per ROSTERED player -- it is the instrument that
+    makes the advice measurable later, so a player dropped from it is a hole in
+    December's measurement. `started` 0 plus `status` is the record of why.
+    """
+    roster = [out("r1", "RB", 18.0, "IR"), mk("r2", "RB", 9.0)]
+    got = season.start_sit(roster, {"RB": 1}, close_call_points=3.0)
+    rows = season.snapshot_rows(got, {"r1", "r2"}, "2026-09-08T12:00:00")
+
+    by_id = {r["player_id"]: r for r in rows}
+    assert set(by_id) == {"r1", "r2"}
+    assert by_id["r1"]["started"] == 0
+    assert by_id["r1"]["status"] == "IR"
+    assert by_id["r1"]["proj_pts"] == pytest.approx(18.0)
+    assert by_id["r2"]["started"] == 1
+
+
+def test_close_call_starter_tie_is_broken_deterministically_not_by_slot_order():
+    """Two starters can be worth EXACTLY the same, and then which one the close
+    call names must not depend on the order `optimal_lineup` happened to lay the
+    slots out in. `sleeper_id` is the final tie-break, the same rule `best_drop`
+    uses -- and on the real week-1 run five drops tied exactly, so ties are not
+    hypothetical.
+
+    Caught by a SURVIVING mutation (`(s.proj_pts, s.sleeper_id, ...)` ->
+    `(s.proj_pts, 0, ...)`): no test had an exact tie, so nothing reached the
+    tie-break at all.
+    """
+    roster = [mk("a1", "WR", 12.0), mk("b2", "WR", 12.0), mk("c3", "WR", 10.0)]
+    got = season.start_sit(roster, {"WR": 1, "FLEX": 1}, close_call_points=3.0)
+
+    # a1 fills WR, b2 fills FLEX, both at 12.0. Ordering on the slot NAME would
+    # pick FLEX/b2; ordering on the id picks a1.
+    assert len(got.close_calls) == 1
+    assert got.close_calls[0].starter.sleeper_id == "a1"
+    assert got.close_calls[0].slot == "WR"
+
+
+def test_bench_is_ordered_best_first():
+    """The bench prints in this order on both surfaces, so it is a display
+    contract, not an implementation detail.
+
+    It used to be covered only by accident: the old close-call loop took the
+    FIRST eligible bench player, so a test naming a challenger also pinned the
+    ordering. Rewriting that loop to walk every bench player removed the
+    coverage without removing the contract -- the `bench ordered worst-first`
+    mutation started surviving, which is the only reason this gap was seen.
+    """
+    roster = [mk("w0", "WR", 20.0), mk("w1", "WR", 5.0),
+              mk("w2", "WR", 15.0), mk("w3", "WR", 10.0)]
+    got = season.start_sit(roster, {"WR": 1}, close_call_points=0.0)
+
+    assert [p.sleeper_id for p in got.bench] == ["w2", "w3", "w1"]
+
+
+# ---------------------------------------------------------------------------
+# The snapshot records the startable POOL, not just your roster (2026-09-08)
+# ---------------------------------------------------------------------------
+
+def test_startable_pool_depth_is_derived_from_the_league_not_a_constant():
+    """The depth is `replacement_ranks` -- how many of a position the league
+    starts -- so a 10-team league records a shallower pool than a 12-team one
+    from the identical player list. A hand-chosen "top 40" would be the invented
+    number non-negotiable #8 bars, sitting in the scope of the record everything
+    else gets measured against.
+    """
+    players = {str(i): mk(str(i), "QB", 0.0) for i in range(1, 41)}
+    weekly = {str(i): 40.0 - i for i in range(1, 41)}
+    slots = {"QB": 1}
+
+    twelve = season.startable_pool(players, weekly, slots, 12, {})
+    ten = season.startable_pool(players, weekly, slots, 10, {})
+
+    assert len(twelve) == 12
+    assert len(ten) == 10
+
+
+def test_startable_pool_cut_is_deterministic_when_the_boundary_ties():
+    """Two runs of the same week must record the same players. Points alone
+    cannot decide a tie at the cut, so `sleeper_id` is the final key -- the same
+    rule `best_drop` and the close-call tie-break already use."""
+    players = {pid: mk(pid, "QB", 0.0) for pid in ("a", "b", "c")}
+    # "c" is INSERTED BEFORE "b" on purpose. The first version of this test
+    # listed them in id order, so stable sorting already produced the right
+    # answer without the tie-break and the mutation survived -- a vacuous test
+    # that looked like coverage.
+    weekly = {"a": 10.0, "c": 5.0, "b": 5.0}       # b and c tie ON the boundary
+    slots = {"QB": 1}
+
+    got = season.startable_pool(players, weekly, slots, 2, {})
+    assert [p.sleeper_id for p in got] == ["a", "b"]
+
+
+def test_startable_pool_carries_the_WEEK_not_the_season_total():
+    """`players` holds season points; the snapshot must record what was claimed
+    for THIS week. Recording the season number would make the table unscoreable
+    against a weekly actual -- the one thing it exists to support."""
+    players = {"a": mk("a", "RB", 250.0)}
+    got = season.startable_pool(players, {"a": 12.5}, {"RB": 1}, 1, {})
+
+    assert [p.proj_pts for p in got] == [12.5]
+    assert players["a"].proj_pts == 250.0          # never mutated
+
+
+def test_snapshot_rows_gives_a_pool_player_a_null_started():
+    """NULL means no start/sit advice was given about him, which is a different
+    fact from 'advised against'. A 0 would assert the second, and months later
+    nothing could tell the two apart -- the same confusion `proj_pts` NULL
+    exists to prevent."""
+    mine = mk("mine", "RB", 10.0)
+    theirs = mk("theirs", "RB", 20.0)
+    state = season.start_sit([mine], {"RB": 1}, close_call_points=3.0,
+                             projected_ids={"mine"})
+    rows = season.snapshot_rows(state, {"mine", "theirs"}, "2026-09-08T12:00:00",
+                                pool=[theirs])
+
+    by_id = {r["player_id"]: r for r in rows}
+    assert set(by_id) == {"mine", "theirs"}
+    assert by_id["mine"]["started"] == 1
+    assert by_id["theirs"]["started"] is None
+    assert by_id["theirs"]["proj_pts"] == pytest.approx(20.0)
+
+
+def test_snapshot_rows_keeps_the_roster_row_for_a_player_who_is_also_in_the_pool():
+    """Your own starters ARE in the startable pool. The roster row must win, or
+    the advice you gave about your own player is erased by a pool row that
+    claims none was given."""
+    mine = mk("mine", "RB", 20.0)
+    state = season.start_sit([mine], {"RB": 1}, close_call_points=3.0,
+                             projected_ids={"mine"})
+    rows = season.snapshot_rows(state, {"mine"}, "2026-09-08T12:00:00", pool=[mine])
+
+    assert len(rows) == 1
+    assert rows[0]["started"] == 1

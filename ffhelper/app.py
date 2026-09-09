@@ -812,6 +812,21 @@ def unprojected_player_rows(view) -> list[dict]:
            for p in view.state.unprojected]
 
 
+def ineligible_player_rows(view) -> list[dict]:
+    """'CANNOT PLAY' -- rostered, projected, and unstartable.
+
+    Mirrors `render_lineup`'s section of the same name. Kept distinct from the
+    unprojected table for the reason `StartSit.ineligible` exists: that one says
+    the source gave no number, this one says it gave one the player cannot use.
+    """
+    unprojected_ids = {p.sleeper_id for p in view.state.unprojected}
+    return [{"id": p.sleeper_id,
+            "slot": "", "player": p.name, "pos": p.position, "team": p.team or "",
+            "proj": "--" if p.sleeper_id in unprojected_ids else f"{p.proj_pts:.1f}",
+            "flags": _status_note(p).strip()}
+           for p in view.state.ineligible]
+
+
 def simple_table(headers: list[str], rows: list[dict],
                  face_column: str | None = None,
                  pos_columns: tuple[str, ...] = ()) -> html.Div:
@@ -887,13 +902,20 @@ def _lineup_children(view) -> list:
                      simple_table(_LINEUP_HEADERS, unprojected, face_column="player",
                                   pos_columns=("slot", "pos"))]
 
+    cannot_play = ineligible_player_rows(view)
+    if cannot_play:
+        children += [html.P("Cannot play -- excluded from the lineup, "
+                            "projection unreachable", className="section-title"),
+                     simple_table(_LINEUP_HEADERS, cannot_play, face_column="player",
+                                  pos_columns=("slot", "pos"))]
+
     if state.close_calls:
         children += [
             html.P("Close calls -- worth your own read",
                   className="section-title"),
             html.Ul([
-                html.Li(f"{c.slot}: starting {c.starter.name} over {c.challenger.name} "
-                       f"by {c.gap:.1f}{_status_note(c.challenger)}".strip())
+                html.Li(f"{c.slot}: {c.challenger.name} for {c.starter.name} "
+                       f"costs {c.gap:.1f}{_status_note(c.challenger)}".strip())
                 for c in state.close_calls
             ]),
         ]

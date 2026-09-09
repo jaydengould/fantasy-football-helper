@@ -6,7 +6,78 @@ rather than a diary. Every durable lesson here has already been promoted into
 learned. **Nothing reads this file to decide anything** — it is evidence, not
 authority.
 
-Entries run 2026-08-24 (Phase 0) to 2026-09-04 (the web app's appearance pass).
+Entries run 2026-08-24 (Phase 0) to 2026-09-08 (the lineup audit).
+
+### 2026-09-08 — The lineup was argmax on one number, and the user said so.
+
+**State:** `main`, uncommitted. **616 tests** (from 611, from 606), **244
+mutations, 0 STALE, 1 survivor** (the documented `value.py` equivalent mutant),
+`git status` identical before and after the run. The real `season.db` untouched
+at its 29 rows.
+
+The user asked what was left on `TODO.md`, then whether the lineup could be
+improved, then answered their own question: "it is almost completely useless as
+I could just log on to the app and see who has the highest projections." They
+were right. `start_sit` -> `optimal_lineup` -> `sorted(roster, key=-proj_pts)`,
+fill slots. That is the whole algorithm.
+
+**Two defects, found by reading the code rather than running it.**
+
+- **Close calls walked SLOTS.** Each slot was paired with the best eligible
+  bench player, so one bench RB produced three lines on the real Yahoo shape --
+  and each was priced against a starter you would never bench while a weaker one
+  was still in the lineup. Bench WR D (12.0) read as costing 2.0 against WR B
+  (14.0) when the cheapest starter he can displace is RB B at 13.0 in FLEX: a
+  true cost of 1.0, against a different player. Now one call per bench player,
+  against the cheapest starter he can legally displace. A test called the old
+  duplication "deliberately accepted"; it was reversed and the reversal is
+  recorded where the test was.
+- **`injury_status` was display-only.** It reached `_status_note` and the
+  snapshot and touched neither `optimal_lineup` nor the sort, so an IR player
+  carrying a projection was STARTED. Demonstrated: an IR receiver at 15.7 took a
+  FLEX slot and the projected total read 123.7 against a reachable 121.0.
+  Whether Sleeper ever serves such a projection is **UNMEASURED and could not be
+  measured** -- 2026 weekly projections did not exist yet, and the 2025 cache is
+  the survivorship-filtered set, which by construction holds almost nobody who
+  did not play. The guard is a no-op if the source already zeroes them.
+
+**The threshold turned out to cite a number the project forbids itself to
+quote.** `close_call_points = 3.0` gates every close call and the waiver floor,
+and `waiver_targets`' docstring sources it to "TE weekly MAE 3.23, measured on
+2025" -- from the survivorship set whose absolute accuracy `docs/decisions.md`
+says may never be quoted. Repairing it per-position from the same table fails
+too: positions are different row sets, so the shared-bias argument that rescues
+Test B does not carry between them.
+
+**What replaced speculation was a count.** Same-position pairs inside the
+startable pool, 2025, all 18 weeks: QB 839 of 1188 within 3.0 points (71%), RB
+4592 of 11340 (40%), WR 6965 of 11340 (61%), TE 815 of 1188 (69%). Sample size
+is not the constraint, and the same 3.0 is a wildly different filter per
+position -- evidence one global number is wrong that needs no forbidden MAE.
+
+**The instrument was too small, and the earlier estimate of it was mine and
+wrong.** "Six weeks of snapshot rows" was claimed before the table was counted:
+14-15 rows a league a week, ~44 across three leagues, ~6 of them quarterbacks --
+~36 QB-weeks after six weeks, an answer arriving after the season it was meant
+to inform. `build_lineup` already fetches and scores the full 364-row slate and
+then discarded everything off the roster. Recording the startable pool instead
+costs no fetch: 300 rows a week, ~192 QB-weeks after six.
+
+**Three findings came from the tooling, not from reading.** A new test passed
+against the unfixed engine because a `dict` keyed by challenger collapsed the
+duplicates it existed to catch. A mutation survived because a tie-break fixture
+listed its ids in sorted order, so stable sorting was already right. And the
+`bench ordered worst-first` mutation started surviving mid-session: the old
+close-call loop took the FIRST eligible bench player, so bench ordering had only
+ever been covered by accident, and the rewrite removed the coverage without
+removing the contract. Only the third is a new pattern; the first two are one
+pattern twice, and are now in `CLAUDE.md`.
+
+**Left for later, deliberately:** the decision-level gate (`TODO.md` 15 -- Test
+B scores MAE over ~6000 player-weeks, but a lineup decision is a ranking between
+two players at one slot, and most of those weeks are not decisions), the
+supplemental-signal phase (16), and `close_call_points` itself, which stays at
+3.0 until there are honest rows to calibrate against.
 
 ### 2026-09-04 — The season pages never got the design the board has. Nine notes off one evening's use.
 
