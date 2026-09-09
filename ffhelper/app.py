@@ -25,8 +25,8 @@ from ffhelper.board import (
 )
 from ffhelper.cli import (
     DRAFT_LOG_DIR, DROP_CAVEAT, ROOT, ROSTER_DIR, SEASON, TRADE_CAVEAT, _draft_log_path,
-    _matchup_note, _restore_marks, _select_feed, _status_note, load_board_inputs,
-    roster_file_age_days,
+    _matchup_note, _record_snapshot, _restore_marks, _select_feed, _status_note,
+    load_board_inputs, roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import CACHE_DIR, Player, load_nfl_state, load_players, load_trending
@@ -513,7 +513,7 @@ def status_strip(league: str) -> html.Div:
         if recorded is True:
             lines.append(f"snapshot recorded for week {week}")
         elif recorded is False:
-            lines.append(f"snapshot NOT recorded for week {week} -- run a snapshot")
+            lines.append(f"snapshot NOT recorded for week {week} -- open Lineup to record it")
         # recorded is None: could not check, so the line is omitted entirely.
 
     age = roster_file_age_days(ROSTER_DIR / f"{league}.txt")
@@ -871,7 +871,7 @@ def simple_table(headers: list[str], rows: list[dict],
     return html.Div(table, style={"overflowX": "auto"})
 
 
-def _lineup_children(view) -> list:
+def _lineup_children(view, snapshot_line: str = "") -> list:
     """Every `render_lineup` section as HTML: starters, bench, unprojected,
     close calls, notes. SPEC GAP ruling for task 7 -- the brief's
     `lineup_rows` covers only STARTERS and the total, but `render_lineup`
@@ -931,6 +931,11 @@ def _lineup_children(view) -> list:
     # empty strings, and those never reach a view with `error` unset.
     children.append(html.P(f"{view.matchup_line}  {view.practice_line}",
                            className="note"))
+    # Where the CLI prints it: below the lineup, and a "note" rather than a
+    # "!!" flag -- a snapshot that worked is not an alarm. Written by the
+    # caller, since it is a database write and this function renders.
+    if snapshot_line:
+        children.append(html.P(snapshot_line, className="note"))
     return children
 
 
@@ -1129,7 +1134,7 @@ def trades_landing(league: str) -> html.Div:
     ], id="trades-content", className="card")
 
 
-def season_page_children(name: str, view):
+def season_page_children(name: str, view, snapshot_line: str = ""):
     """One season view as page content. /lineup, /waivers and /trades all
     render as HTML (tasks 7-9): `trades_children` carries `render_trades`'s
     header, notes, mode line, per-proposal blocks and TRADE_CAVEAT, exactly
@@ -1138,7 +1143,7 @@ def season_page_children(name: str, view):
     if view.error:
         return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})
     if name == "lineup":
-        return html.Div(_lineup_children(view), className="card")
+        return html.Div(_lineup_children(view, snapshot_line), className="card")
     elif name == "waivers":
         return html.Div(waivers_children(view), className="card")
     return html.Div(trades_children(view), className="card")
@@ -1164,8 +1169,19 @@ def _season_layout_for(name: str, league_names: list[str], default_league: str):
         lg = get_league(leagues, league)
         builder = pipeline.build_lineup if name == "lineup" else pipeline.build_waivers
         view = builder(lg, tunables)
+        # Rendering /lineup RECORDS the week, exactly as `cli._lineup` does.
+        # It was CLI-only, so a season run on the web app wrote nothing -- and
+        # the inputs are not re-served, so that week was gone. Safe on render:
+        # the season routes have no `dcc.Interval` (it lives in /draft's layout
+        # alone), so this fires once per navigation, and a repeat visit is
+        # idempotent within the week via INSERT OR REPLACE -- `taken_at` means
+        # "the last look before kickoff", which is what a second visit is.
+        # `_record_snapshot` carries its own two refusals; do not restate them.
+        snapshot_line = "" if view.error or name != "lineup" else _record_snapshot(
+            lg, view.season_str, view.week, view.state_week, view.state,
+            view.projected_ids, view.pool)
         return shell(name, league, league_names,
-                     [season_page_children(name, view)])
+                     [season_page_children(name, view, snapshot_line)])
     return layout
 
 

@@ -353,6 +353,22 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("an incomplete run is refused",
          "elif sorted(numbered) != list(range(1, len(numbered) + 1)):", "elif False:"),
     ],
+    "scripts/backtest_weekly.py": [
+        ("Test C scores only startable pairs",
+         "        pool = season_mod.startable_pool(players, proj[wk], settings.roster_slots,\n"
+         "                                         settings.num_teams, flex_share)",
+         "        pool = season_mod.with_weekly_points(\n"
+         "            [players[pid] for pid in proj[wk] if pid in players], proj[wk])"),
+        ("a pair with no right answer is dropped",
+         "                if sa == sb:\n                    continue",
+         "                if False:\n                    continue"),
+        ("the arm is scored on the ADJUSTED projection",
+         "                arm = _pick(a, b, a.proj_pts * factor[a.sleeper_id],\n"
+         "                            b.proj_pts * factor[b.sleeper_id])",
+         "                arm = _pick(a, b, a.proj_pts, b.proj_pts)"),
+        ("close calls are those within the gap",
+         "    close = [s for s in scored if s.gap <= gap]", "    close = list(scored)"),
+    ],
     "scripts/calibrate.py": [
         ("a numeric draft id is filed as the seat (the id/slot swap)",
          "    return argv[0], int(argv[1]), argv[2] if len(argv) > 2 else \"bros-fantasy\"",
@@ -518,6 +534,9 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
         ("snapshot_recorded returns False instead of None when unreadable",
          "        return None\n    return row is not None",
          "        return False\n    return row is not None"),
+        ("the web /lineup renders the week without recording it",
+         '        snapshot_line = "" if view.error or name != "lineup" else _record_snapshot(',
+         '        snapshot_line = "" if True else _record_snapshot('),
         ("season page renders an error view as data instead of stopping",
          '    if view.error:\n        return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})\n    if name == "lineup":',
          '    if name == "lineup":'),

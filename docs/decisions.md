@@ -278,6 +278,56 @@ closed them and the condition that would reopen them.
   NOT NULL` is your roster, `SUM(started)` is still the lineup. Roster rows are
   written first, so a player who is both keeps his roster row.
 
+- **Rendering the web `/lineup` WRITES the snapshot, same as the CLI**
+  (2026-09-09). A page render doing a database write is the kind of thing a
+  later reader reverses on principle, so the reasoning is here. `write_snapshot`
+  had exactly one caller — `cli._lineup` — so a week used entirely through the
+  web app recorded nothing, and the inputs are never re-served: that week is
+  gone, permanently. The homepage even said `snapshot NOT recorded for week N`
+  while the page that would have fixed it was one click away and did not.
+  Render-time is safe here on a fact about the layout, not a hope: the
+  `dcc.Interval` lives in `/draft`'s layout alone, so the season routes render
+  once per navigation rather than on a tick, and repeat visits are idempotent
+  within the week through `INSERT OR REPLACE` — `taken_at` already means "the
+  last look before kickoff", which is exactly what a second visit is. The write
+  stays in the layout, not in the row builders, so `season.py` and the renderers
+  keep their purity, and the two surfaces are held to the same rows by test
+  (`test_the_web_lineup_route_records_the_same_snapshot_as_the_cli`) rather
+  than by intention.
+
+- **A lineup signal is gated on close calls, not on MAE — Test C** (2026-09-09).
+  `backtest_weekly.py` rejected the matchup adjustment on MAE over ~6000
+  projected player-weeks, but a lineup decision is a RANKING between two players
+  eligible for one slot, and a signal can be net-negative over a whole pool and
+  still positive where two players sit within a few points. Test C scores the
+  same data that way: startable same-position pairs (`season.startable_pool`, so
+  the depth comes from `replacement_ranks` and no hand-picked "top 40" enters),
+  projections within N, "did the higher one outscore the other". N is SWEPT
+  (1/2/3/5) rather than set to `close_call_points`, which is sourced to the same
+  survivorship-filtered table the test exists to work around. The arm runs at
+  the LOUDEST shrinkage in the sweep — the most picks it can change — and the
+  table prints flips separately, because an arm that never changes a pick scores
+  identically to the baseline and has proved nothing.
+
+  **It did not rescue the matchup adjustment.** Hit rate baseline -> adjusted at
+  N=3: 2025 QB 53.9->56.2, RB 56.2->52.5, WR 55.4->51.9, TE 56.8->48.1; 2024
+  QB 50.3->52.5, RB 56.8->54.6, WR 54.4->50.7, TE 57.9->59.4. RB and WR lose in
+  both seasons, TE swings -8.7 then +1.5 (Test A's sign flip, seen in a second
+  instrument). QB gains in both, +2.3 and +2.2 — **a hypothesis on two seasons
+  of one league's scoring at the position with the fewest pairs, not a finding**,
+  and it may not be settled by a third pass over the same filtered set. The
+  snapshot is the instrument for that.
+
+  **One premise it sharpened.** It was built on "the overwhelming majority of
+  player-weeks are not decisions", with the N-point gap named as the filter that
+  separates them. Right about the population, wrong about the filter: the DEPTH
+  cut removes 72% of Test B's rows (342 projected player-weeks a week to 96
+  startable) and the gap then keeps 40-72% at N=3 and 15-33% at N=1. Among
+  startable players a close call is the common case. The practical consequence
+  is that N=5 (62-93% kept) is nearly "all startable pairs" and the narrow rows
+  are the ones carrying information — Test C earns its place by scoring a
+  decision rather than a distance, not by decisions being rare.
+
 ## Phases
 
 | Phase | What | Target | Status |

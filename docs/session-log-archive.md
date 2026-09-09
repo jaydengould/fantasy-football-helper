@@ -6,7 +6,88 @@ rather than a diary. Every durable lesson here has already been promoted into
 learned. **Nothing reads this file to decide anything** — it is evidence, not
 authority.
 
-Entries run 2026-08-24 (Phase 0) to 2026-09-08 (the lineup audit).
+Entries run 2026-08-24 (Phase 0) to 2026-09-09 (Test C, the close-call gate).
+
+### 2026-09-09 — Test C: the gate that rejected every supplemental signal was scoring the wrong population.
+
+**State:** `main`, uncommitted. **622 tests** (from 617), five new, all four new
+mutations killed, `git status` identical before and after the mutation run.
+
+`TODO.md` item 15, closed as written. `backtest_weekly.py`'s Test B is MAE over
+~6000 projected player-weeks; a lineup call is a ranking between two players
+eligible for one slot. Test C rescores the same data that way — startable
+same-position pairs within N points, "did the higher projection outscore the
+other" — and reports flips separately, because an arm that never changes a pick
+scores identically to the baseline whatever its accuracy column says.
+
+Three things the run produced that the design did not predict:
+
+**Item 15's premise names the wrong filter — and the first write-up of this
+overstated that into "the premise is wrong", which is its own version of the
+same error.** The claim is that most player-weeks are not decisions, separated
+by the N-point gap. Two filters are stacked, and the gap is the smaller one:
+DEPTH takes 342 projected player-weeks a week down to 96 startable (72% gone),
+and the gap then keeps 40-72% at N=3. So the population claim is right and the
+attribution is not; among startable players a close call is common. Caught only
+because the `share` column was built to measure the claim rather than repeat it,
+and the overstatement caught only because the user asked whether the feature was
+worth building. Consequence worth keeping: N=5 keeps 62-93% of startable pairs,
+so it is nearly "all pairs" — the N=1 and N=2 rows are the distinct instrument.
+
+**A tie-break nearly picked the arm's setting.** Test C was first wired to Test
+B's `best_k`, which tie-breaks to `k=0` when nothing improves — and `k=0` is no
+shrinkage, the LOUDEST arm, not "off". It happens to be the right setting for
+Test C (most flips, the most chances a signal gets) and would have been read as
+"Test B's winner" by the next person. Two meanings behind one variable that
+agree today and diverge on the first season where the adjustment wins: `loud_k
+= min(SHRINK_SWEEP)`, named for what it is.
+
+**The verdict counts cells that are not samples.** The N rows are nested — every
+N=1 pair is also an N=5 pair — so "8 of 16 cells" is four position-readings a
+season, not sixteen. The table now says so on screen rather than leaving the
+arithmetic to the reader.
+
+**The result:** the adjustment does not survive the fairer test either. RB and
+WR lose in both seasons, TE swings -8.7 then +1.5 (Test A's sign flip in a
+second instrument), QB gains +2.3 and +2.2 at N=3 on flips right 52% and 56% of
+the time. Two seasons, one league's scoring, the position with the fewest pairs
+— logged as a hypothesis in `docs/decisions.md`, not a reopening. Settling it
+means the snapshot's frozen projections, not a third pass over the same
+survivorship-filtered set.
+
+The gate is what item 16's two candidates (nflverse usage, live props) must now
+clear before either touches a sort key.
+
+### 2026-09-09 — The web app read the snapshot table and never wrote it.
+
+**State:** `main`, uncommitted. **617 tests** (from 616), the one new mutation
+killed, `git status` identical before and after the mutation run.
+
+`TODO.md` item 18, closed as written. `store.write_snapshot` had one caller in
+the codebase, `cli._lineup`; the web app touched the store once, a READ inside
+`snapshot_recorded`. So a week used entirely through the web app recorded
+nothing — and the homepage's own `snapshot NOT recorded for week N` note sent
+you to `/lineup`, which looked exactly like doing something about it and did
+not. Week 1 of an unrecorded week cannot be recovered; the APIs serve current
+state only.
+
+The fix is four lines in `_season_layout_for`: render `/lineup`, record the
+week, print the line `_record_snapshot` already returns. Nothing new was
+computed — `build_lineup` already carried `pool` and `projected_ids`, and
+`_record_snapshot`'s two refusals (no current week; never overwrite a past
+week) came for free and are deliberately not restated in `app.py`. The write
+sits in the layout rather than in `_lineup_children`, which keeps the renderers
+and `season.py` pure.
+
+**The test is an equality, not an existence check.** Two surfaces that both
+write are two answers about one week the moment they diverge, so the test drives
+`cli._lineup` and the web layout against one stubbed world and compares the
+snapshot rows column-for-column (`taken_at` excluded — it is the one field that
+must differ). Shown failing first: `sqlite3.OperationalError: no such table:
+snapshot` on the web half, while the CLI half wrote its two rows.
+
+The homepage note now reads `-- open Lineup to record it`, which is true for the
+first time.
 
 ### 2026-09-08 — The lineup was argmax on one number, and the user said so.
 

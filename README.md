@@ -269,7 +269,9 @@ He stays off the board — he really was drafted, just not by you.
 .venv/bin/python -m ffhelper.cli lineup --league my-sleeper-league
 ```
 
-Also at `/lineup` in the web app, as a table. Same builder, same numbers.
+Also at `/lineup` in the web app, as a table. Same builder, same numbers —
+and either surface records this week's snapshot row, since the projections
+behind a lineup are never served again.
 
 One-shot — no loop, no polling. Prints your optimal starting lineup for the
 current NFL week, scored against your league's real settings, then your bench.
@@ -552,6 +554,14 @@ shrinkage level. It also checks provenance, and finds a subtler failure than
 `backtest.py` does — the weekly projections served for a past season are
 filtered to the players who actually played, so absolute weekly accuracy from
 them cannot be quoted while a two-arm comparison on the same rows still can.
+
+Because an average error over every projected player-week is not the question a
+lineup asks, it scores the same data a third way: startable pairs at one
+position projected within N points, "did the higher one actually outscore the
+other". That is the gate any future lineup signal has to clear. The matchup
+adjustment does not clear it either — it loses at RB and WR in both seasons and
+swings sign at TE — though QB gains ~2 points of hit rate in both, which is
+logged as a hypothesis and not acted on.
 
 **`calibrate.py`** replays a completed draft and asks, at each of your turns,
 "will this player last to my next pick?", then buckets the answers by what the

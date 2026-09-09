@@ -2096,3 +2096,44 @@ def test_ineligible_player_rows_mirror_the_text_renderer():
     assert [r["player"] for r in rows] == ["Shelved Guy"]
     assert rows[0]["proj"] == "18.0"
     assert "injured reserve" in rows[0]["flags"]
+
+
+# --- TODO item 18: the web /lineup must record the snapshot too. ---
+
+
+def _snapshot_rows(db_path):
+    """Every column that says something about the WEEK. `taken_at` is excluded
+    because it is the one field that must differ between two runs."""
+    return sqlite3.connect(db_path).execute(
+        "SELECT league, season, week, player_id, proj_pts, matchup, status, started "
+        "FROM snapshot ORDER BY player_id").fetchall()
+
+
+def test_the_web_lineup_route_records_the_same_snapshot_as_the_cli(monkeypatch, tmp_path):
+    """The snapshot is unrecoverable: a week not written before it is played can
+    never be scored. `_lineup` was the only caller, so a season run entirely on
+    the web app -- which is where the homepage's snapshot note now sends you --
+    recorded nothing at all.
+
+    Asserted as EQUALITY with the CLI's rows against one stubbed world rather
+    than as "the web wrote something": two surfaces that both write are two
+    answers about one week the moment they diverge.
+    """
+    import ffhelper.cli as cli
+    from test_cli import _snapshot_league, _stub_lineup_world
+
+    db = tmp_path / "season.db"
+    monkeypatch.setattr(store, "DB_PATH", db)
+    league = _snapshot_league()
+    _stub_lineup_world(monkeypatch, cli, week_from_state=1)
+
+    assert cli._lineup(league, Tunables(), week=1) == 0
+    cli_rows = _snapshot_rows(db)
+    assert cli_rows                                  # the comparison needs a baseline
+    db.unlink()
+
+    monkeypatch.setattr(app, "load_config", lambda path: ([league], Tunables()))
+    rendered = str(app._season_layout_for("lineup", [league.name], league.name)())
+
+    assert _snapshot_rows(db) == cli_rows
+    assert "2 players recorded for week 1" in rendered

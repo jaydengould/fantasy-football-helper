@@ -9,9 +9,10 @@ Rewritten 2026-09-03. Ordered by what blocks what.
 ## Blocking / dated
 
 1. **The weekly snapshot must keep running.** Nothing schedules it — a `lineup`
-   run is what writes the row, and the APIs serve current state only, so a week
-   not recorded before it is played can never be scored. Week 1 is recorded for
-   both leagues.
+   run writes the row, on either surface (CLI or the web `/lineup`, closed
+   2026-09-09), and the APIs serve current state only, so a week not recorded
+   before it is played can never be scored. Week 1 is recorded for both
+   leagues.
 2. **`.roster/Bush-League.txt` must be updated after every Yahoo add/drop.** No
    API. `lineup` and `preflight` both print its age for this reason.
 3. **Yahoo OAuth (Phase 0, §8) — blocked externally**, no reply since
@@ -22,39 +23,6 @@ Rewritten 2026-09-03. Ordered by what blocks what.
    waivers and trades are Sleeper-only.
 
 ## Open work
-
-18. **NEXT UP — `/lineup` on the web app must write the snapshot.** It does not,
-    and the gap is easy to miss: the homepage prints `snapshot NOT recorded for
-    week N -- run a snapshot`, and opening `/lineup` looks exactly like doing
-    that. Verified 2026-09-08 by grep, not memory: `store.write_snapshot` has
-    **one** caller in the whole codebase, `cli.py:1239` inside
-    `_record_snapshot`, reached only from `cli._lineup`. The web app touches the
-    store once, `app.py:506`, which is `store.connect()` inside
-    `snapshot_recorded` — a READ. So the record depends on remembering a CLI
-    command, and a week not recorded before it is played is unrecoverable.
-
-    **Safe to write on render.** The `dcc.Interval` lives in the `/draft` layout
-    only and its callback outputs `board` / `banners` / `clock` / `roster`, so
-    the season routes render once per navigation, not on a tick. Repeat visits
-    are idempotent within a week via `INSERT OR REPLACE`, and `taken_at` already
-    means "the last look before kickoff", so a second visit refreshing it is the
-    intended semantics rather than damage.
-
-    **Nearly all the pieces exist.** `build_lineup` already computes
-    `view.pool`, and `_record_snapshot` already returns a LINE rather than
-    raising — including its two refusals (no current week; never overwrite a past
-    week), which come for free and must NOT be restated in `app.py`. `app.py`
-    already imports private helpers from `ffhelper.cli` (line 26: `_status_note`,
-    `_matchup_note`), so importing `_record_snapshot` follows the existing
-    pattern. Render its line where the CLI prints it — below the lineup, not as a
-    `!!` note, since a snapshot that worked is not an alarm.
-
-    **Test it without the real database.** `tests/conftest.py` already
-    monkeypatches `store.DB_PATH` to a tmp path autouse and suite-wide, so a test
-    of the web write path is safe by default — do not add a per-test guard. Assert
-    the web route and the CLI produce the same rows for one state, so the two
-    surfaces cannot drift into two answers about one week.
-
 
 4. **A run log.** The user reported the board "died at some point" during the live
    Sleeper draft and **nothing on disk can confirm or refute it** — no journal
@@ -95,22 +63,13 @@ Rewritten 2026-09-03. Ordered by what blocks what.
     startable player at each position (depth from `replacement_ranks`), 300 rows
     a week across the three leagues against ~44, which takes QB-weeks after six
     weeks from ~36 to ~192. Still **blocked on item 1 actually running**: no
-    schedule writes these rows, a `lineup` run does, and a week not recorded
-    before it is played is unrecoverable.
-15. **The gate that rejected every supplemental signal scores the wrong
-    population.** `backtest_weekly.py`'s Test B is MAE over all ~6000 projected
-    player-weeks, but a lineup decision is a RANKING between two players
-    eligible for one slot, and the overwhelming majority of those weeks are not
-    decisions — a 30-point gap cannot be flipped. A signal can be net-negative
-    across the whole pool and still positive on the subset where two players sit
-    within a few points. Same data, different scoring rule: restrict to eligible
-    pairs within N points and score "did it pick the higher scorer". Cheap, and
-    it is the test `store.py`'s docstring already promises ("did the lineups this
-    tool recommended beat the ones actually started?").
+    schedule writes these rows, a `lineup` run does — CLI or web — and a week
+    not recorded before it is played is unrecoverable.
 16. **Supplemental lineup signals — its own phase, not a bolt-on.** The lineup is
     argmax on Rotowire's weekly projections; everything else on the screen is
-    context beside it. Two candidates are unexploited, and BOTH must clear item
-    15's gate before touching a sort key:
+    context beside it. Two candidates are unexploited, and BOTH must clear
+    **Test C** in `scripts/backtest_weekly.py` — the close-call gate, built
+    2026-09-09 — before touching a sort key:
     - **nflverse usage** (snap share, target share, red-zone, routes). Named in
       the Phase 4 probe as what `nflreadpy` earns its place for, then never
       built. Free, joins on `gsis_id` through the crosswalk already fetched, and
