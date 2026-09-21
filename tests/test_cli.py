@@ -3599,3 +3599,112 @@ def test_render_lineup_close_call_states_what_the_swap_costs():
 
     line = next(l for l in out.splitlines() if "Challenger" in l and "Incumbent" in l)
     assert "Challenger for Incumbent costs 1.0" in line
+
+
+def test_grade_offer_scores_one_pairing_against_its_holder(monkeypatch):
+    """The opponent is whoever HOLDS the players asked for -- roster 5 here --
+    and the grade runs over the same horizon the sweep does."""
+    from ffhelper import pipeline
+
+    _stub_waiver_inputs(monkeypatch)
+    view = pipeline.build_trade_grade(_sleeper_league(), Tunables(), ["10"], ["30"], week=1)
+    assert view.error is None
+    assert list(view.opponents) == [5]
+    assert view.grade.gain_me > 0 and view.grade.verdict == "accept"
+    assert view.weeks_scored > 1
+
+
+def test_grade_offer_refuses_players_from_two_teams(monkeypatch):
+    import ffhelper.cli as cli
+    from ffhelper import pipeline
+
+    _stub_waiver_inputs(monkeypatch)
+    monkeypatch.setattr(cli, "load_league_rosters", lambda lid: [
+        {"roster_id": 3, "owner_id": "u1", "players": ["10"]},
+        {"roster_id": 5, "owner_id": "u2", "players": ["30"]},
+        {"roster_id": 6, "owner_id": "u3", "players": ["20"]},
+    ])
+    view = pipeline.build_trade_grade(_sleeper_league(), Tunables(), ["10"],
+                                      ["30", "20"], week=1)
+    assert view.grade is None and "ONE other team" in view.error
+
+
+def test_grade_offer_refuses_a_player_i_do_not_hold(monkeypatch):
+    from ffhelper import pipeline
+
+    _stub_waiver_inputs(monkeypatch)
+    view = pipeline.build_trade_grade(_sleeper_league(), Tunables(), ["20"], ["30"], week=1)
+    assert view.grade is None and "no longer on your roster" in view.error
+
+
+def test_grade_offer_caps_my_roster_at_the_league_size_not_its_current_count(monkeypatch):
+    """One player held, three allowed: receiving two for one fits, and a cap
+    of 'however many I hold now' would invent a cut."""
+    import ffhelper.cli as cli
+    from ffhelper import pipeline
+
+    _stub_waiver_inputs(monkeypatch)
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: _lineup_settings(
+        roster_slots={"QB": 1}, rounds=3, playoff_week_start=15, playoff_teams=6,
+        playoff_round_type=0, trade_deadline=11))
+    monkeypatch.setattr(cli, "load_league_rosters", lambda lid: [
+        {"roster_id": 3, "owner_id": "u1", "players": ["10"]},
+        {"roster_id": 5, "owner_id": "u2", "players": ["30", "20"]},
+    ])
+    view = pipeline.build_trade_grade(_sleeper_league(), Tunables(), ["10"],
+                                      ["30", "20"], week=1)
+    assert view.error is None
+    assert view.grade.my_drops == ()
+
+
+def test_grade_offer_refuses_after_the_trade_deadline(monkeypatch):
+    from ffhelper import pipeline
+
+    _stub_waiver_inputs(monkeypatch)
+    view = pipeline.build_trade_grade(_sleeper_league(), Tunables(), ["10"], ["30"], week=13)
+    assert view.deadline_passed and view.grade is None
+
+
+def test_grade_offer_warns_about_its_own_opponent_only(monkeypatch):
+    """Found running it on the real league: a third team's unresolvable id
+    warned on every grade, whoever the offer was with. The counterparty's own
+    gap still shows -- it understates their side."""
+    import ffhelper.cli as cli
+    from ffhelper import pipeline
+
+    _stub_waiver_inputs(monkeypatch)
+    monkeypatch.setattr(cli, "load_league_rosters", lambda lid: [
+        {"roster_id": 3, "owner_id": "u1", "players": ["10"]},
+        {"roster_id": 5, "owner_id": "u2", "players": ["30", "ghost5"]},
+        {"roster_id": 6, "owner_id": "u3", "players": ["20", "ghost6"]},
+    ])
+    view = pipeline.build_trade_grade(_sleeper_league(), Tunables(), ["10"], ["30"], week=1)
+    notes = " ".join(view.notes)
+    assert "ghost5" in notes and "ghost6" not in notes
+
+
+def test_grade_offer_carries_the_keep_mine_ask(monkeypatch):
+    """One QB slot, room for two. 10 for 30 + 20 leaves three QBs: 20 (30.0)
+    outscores my bench 11 (12.0), so the cut is MINE. Asking for 30 alone
+    keeps 11 -- that is the ask the page must receive."""
+    import ffhelper.cli as cli
+    from ffhelper import pipeline
+
+    _stub_waiver_inputs(monkeypatch)
+    players = dict(cli.load_players())
+    players["11"] = Player("11", "Bench QB", "QB", "NYJ")
+    monkeypatch.setattr(cli, "load_players", lambda: players)
+    monkeypatch.setattr(cli, "load_weekly_projections", lambda season, week: [
+        {"player_id": "10", "stats": {"pass_td": 1}}, {"player_id": "11", "stats": {"pass_td": 2}},
+        {"player_id": "20", "stats": {"pass_td": 5}}, {"player_id": "30", "stats": {"pass_td": 9}}])
+    monkeypatch.setattr(cli, "resolve_settings", lambda lg: _lineup_settings(
+        roster_slots={"QB": 1}, rounds=2, playoff_week_start=15, playoff_teams=6,
+        playoff_round_type=0, trade_deadline=11))
+    monkeypatch.setattr(cli, "load_league_rosters", lambda lid: [
+        {"roster_id": 3, "owner_id": "u1", "players": ["10", "11"]},
+        {"roster_id": 5, "owner_id": "u2", "players": ["30", "20"]},
+    ])
+    view = pipeline.build_trade_grade(_sleeper_league(), Tunables(), ["10"],
+                                      ["30", "20"], week=1)
+    assert [p.sleeper_id for p in view.grade.my_drops] == ["11"]
+    assert [p.sleeper_id for p in view.ask.get] == ["30"]

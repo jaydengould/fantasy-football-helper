@@ -6,7 +6,65 @@ rather than a diary. Every durable lesson here has already been promoted into
 learned. **Nothing reads this file to decide anything** — it is evidence, not
 authority.
 
-Entries run 2026-08-24 (Phase 0) to 2026-09-09 (Test C, the close-call gate).
+Entries run 2026-08-24 (Phase 0) to 2026-09-21 (grading a received trade offer).
+
+### 2026-09-21 — Grading a received trade offer, and a feature built as asked that could only help the other side.
+
+**State:** branch `trade-grader`, uncommitted. **654 tests** (from 627), all
+22 new grader mutations killed, full run 267 with only the documented
+equivalent surviving, `git status` identical before and after.
+
+Asked whether the tool could grade an offer and whether Sleeper serves them.
+Probed `transactions/{week}` for weeks 1-3 of both Sleeper leagues: waiver and
+free-agent rows only. No trade has ever happened in either league, so this
+does not prove pending offers never appear there; it is an inference from an
+unauthenticated endpoint. Built a hand-entry grader on `/trades`: three verdict
+bands on the finder's own floor, no letter grade (#8). Shared `_trade_setup`
+and `_league_rosters` pulled out of `build_trades` so the sweep and the grade
+cannot hold two copies of the deadline rule.
+
+**Found by running it, not by the suite:**
+- The page-load roster fetch sat inside a broad `except`, which swallowed
+  conftest's network guard. The existing no-sweep-on-load test stayed green
+  while reaching the network. Stubbed it and made the test assert the stub
+  was called.
+- Every grade in bros-fantasy warned about a third team's unresolvable id.
+  Opponent notes are now keyed per roster, and a grade shows only its
+  counterparty's.
+- The dropdown menu could not scroll, because `board.css` set `overflow:
+  hidden` on Dash 4's scroll container. It had been invisible while the only
+  dropdown was a four-item league picker. Confirmed in headless Chrome by
+  computed style: an overflowing 630px list in a 200px box with `overflow-y:
+  hidden`.
+- A fake pointer click in headless Chrome selected nothing (the long list is
+  virtualized). Only two page-load callbacks reached the server, which
+  separated "the click failed" from "the callback failed".
+  `dash_clientside.set_props` then proved the either-order team sync in a
+  real browser.
+
+**The mistake of the session:** "Ask for fewer" was built as requested and
+shipped with tests and mutations. Only when asked where it appears did it get
+the obvious question: for a RECEIVED offer, can asking for less ever beat
+accepting and cutting? It cannot. The grade already cuts whoever is worth
+least, incoming players included. Measured on 9,408 fixture subsets and 381
+real ones: nothing better beyond best_drop's 0.5 tie tolerance. It only ever
+handed the counterparty points. Replaced by `keep_mine`, which appears only
+when the cut is one of MY players (131 of 200 random real offers) and states
+what keeping him costs. The user's follow-up ("if the player you drop is better
+than their worst") could not fire as worded, for the same reason, but it
+pointed at the real case.
+
+**The user's weighting request was declined, with the reason on the page.** The
+drop's projected cost is already inside the gain; injury-cover value has no
+model behind it (TODO 6/7). The page prints the cost in points instead.
+
+**A verdict flip, diagnosed as far as the evidence goes.** See
+`docs/decisions.md` and TODO 18. The code was confirmed by an independent
+recomputation. The earlier input is gone.
+
+One wrong number was caught in a test docstring (+5 for +4): an unasserted
+value in a comment. Harmless here, and exactly the kind of thing no check can
+catch.
 
 ### 2026-09-09 — Test C: the gate that rejected every supplemental signal was scoring the wrong population.
 

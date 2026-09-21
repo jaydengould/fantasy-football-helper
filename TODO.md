@@ -92,6 +92,16 @@ Rewritten 2026-09-03. Ordered by what blocks what.
     non-NULL `proj_pts`. Zero means the `CANNOT_PLAY` guard is a harmless no-op;
     non-zero means it was load-bearing and the old lineup was overstating totals.
 
+18. **A grade log for `/trades`' offer grader.** Seen 2026-09-21: one offer
+    (Olave + Henderson for G. Wilson + B. Hall + A. Jones) read Accept, then
+    Too close to call hours later. The current +5.99 against ±11.16 was
+    confirmed by an independent recomputation, but the earlier number is
+    unrecoverable — weekly projections are cached for an hour and overwritten
+    on re-fetch, and no grade is written anywhere. Append each grade (time,
+    league, give/get ids, gain_me, gain_them, floor, weeks) to a dated file.
+    Same shape and same reason as item 4: a verdict that moves must be
+    diagnosable, not shrugged at. Deferred by the user.
+
 ## Known-weak, unfixed, not actionable yet
 
 8. **Bench-mode ordering** (§14). Once every starting slot is full the board says

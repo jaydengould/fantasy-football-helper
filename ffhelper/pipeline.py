@@ -238,22 +238,84 @@ class TradeView:
     notes: list[str] = field(default_factory=list)
     weeks_scored: int = 0
     pinned: "Player | None" = None
+    # The grade-an-offer path: my roster and every opponent's, keyed by
+    # roster_id, for the form; and the one scored offer once it is submitted.
+    mine: list = field(default_factory=list)
+    opponents: dict = field(default_factory=dict)
+    grade: "trade_mod.Grade | None" = None
+    ask: "trade_mod.Grade | None" = None      # the offer that lets me keep my own cut
 
 
-def build_trades(league: League, tunables: Tunables, week: int | None = None,
-                 player: str | None = None, limit: int = 20,
-                 progress: "Callable[[str], None] | None" = None) -> TradeView:
-    """Search every opponent for a mutually-beneficial trade. No printing.
+def _league_rosters(league: League, settings, players: dict[str, Player],
+                    notes: list[str]):
+    """(my roster, owner, my roster_id, names, opponents, opponent notes).
 
-    `progress` exists because the full sweep is ~330s and the CLI's only sign
-    of life is a per-opponent line. The web passes None: a page cannot consume
-    a stream, and printing from a request handler is the wrong place for it.
+    `opponents` is {roster_id: [Player]} for every team but mine. Shared by
+    the trade sweep, the offer form and the offer grade, so the three cannot
+    disagree about who holds whom. MY degradations go to `notes`; each
+    opponent's go to `opp_notes[roster_id]`, because a grade against one team
+    must not warn about another's roster on every run.
     """
+    roster, owner, notes_r, rosters, rid = cli._resolve_my_roster(league, settings, players)
+    notes += notes_r
+    try:
+        users = {u["user_id"]: u.get("display_name")
+                 for u in cli.load_league_users(league.league_id)}
+    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
+        # The exact sibling a previous fix wave missed on the happy path: this
+        # is the last unguarded fetch, and the cheapest thing to lose is a name.
+        users = {}
+        notes.append(f"could not reach Sleeper's league users endpoint ({exc}) -- "
+                     f"opponent names are unavailable")
+    names = {r.get("roster_id"): users.get(r.get("owner_id"))
+                                 or f"roster {r.get('roster_id')}"
+             for r in rosters}
+    opponents: dict[int, list[Player]] = {}
+    opp_notes: dict[int, list[str]] = {}
+    for r in rosters:
+        opp_rid = r.get("roster_id")
+        if opp_rid is None or opp_rid == rid:
+            continue
+        their_ids = r.get("players") or []
+        opponents[opp_rid] = [players[i] for i in their_ids if i in players]
+        missing = [i for i in their_ids if i not in players]
+        if missing:
+            # Same degradation `_resolve_my_roster` already prints for MY
+            # roster -- an opponent roster shortened by an unresolvable id
+            # understates their baseline and can make a trade look better for
+            # them than it is.
+            opp_notes[opp_rid] = [f"{len(missing)} of {names[opp_rid]}'s rostered "
+                                  f"players are not in the player pool: {', '.join(missing)}"]
+    return roster, owner, rid, names, opponents, opp_notes
+
+
+@dataclass(frozen=True)
+class _TradeSetup:
+    week: int
+    notes: list[str]
+    settings: object
+    players: dict
+    roster: list
+    owner: str | None
+    names: dict
+    opponents: dict
+    opp_notes: dict
+    weekly_by_week: dict
+    weights: dict
+    floor: float
+
+
+def _trade_setup(league: League, tunables: Tunables, week: int | None,
+                 command: str) -> "TradeView | _TradeSetup":
+    """Everything the sweep and the offer grade share: week, deadline, both
+    rosters, the horizon, its weights, and the floor. One copy, because two
+    copies of the deadline rule would eventually disagree about it. Returns a
+    TradeView when something refuses."""
     if league.platform != "sleeper":
         # Same reasoning as `waivers`: the search needs to know what all
         # eleven other rosters hold, and Yahoo serves no rosters at all.
         return TradeView(league_name=league.name, error=platform_refusal(
-            league, "trades", "every team's roster to know what they hold"))
+            league, command, "every team's roster to know what they hold"))
 
     settings = cli.resolve_settings(league)
     week, season_str, notes, _state_week = cli._resolve_week(week)
@@ -277,8 +339,8 @@ def build_trades(league: League, tunables: Tunables, week: int | None = None,
         notes.append(cal_note)
 
     players = cli.load_players()
-    roster, owner, notes_r, rosters, rid = cli._resolve_my_roster(league, settings, players)
-    notes += notes_r
+    roster, owner, rid, names, opponents, opp_notes = _league_rosters(
+        league, settings, players, notes)
     if not roster:
         return TradeView(league_name=league.name, notes=notes,
                          error="no roster resolved, so there is nothing to "
@@ -295,6 +357,28 @@ def build_trades(league: League, tunables: Tunables, week: int | None = None,
     weights = season_mod.week_weights(settings, weekly_by_week, tunables.playoff_weight)
     floor = tunables.close_call_points * sqrt(season_mod.effective_weeks(weekly_by_week, weights))
 
+    return _TradeSetup(week, notes, settings, players, roster, owner, names,
+                       opponents, opp_notes, weekly_by_week, weights, floor)
+
+
+def build_trades(league: League, tunables: Tunables, week: int | None = None,
+                 player: str | None = None, limit: int = 20,
+                 progress: "Callable[[str], None] | None" = None) -> TradeView:
+    """Search every opponent for a mutually-beneficial trade. No printing.
+
+    `progress` exists because the full sweep is ~330s and the CLI's only sign
+    of life is a per-opponent line. The web passes None: a page cannot consume
+    a stream, and printing from a request handler is the wrong place for it.
+    """
+    ctx = _trade_setup(league, tunables, week, "trades")
+    if isinstance(ctx, TradeView):
+        return ctx
+    week, notes, players, roster, owner, names, opponents = (
+        ctx.week, ctx.notes, ctx.players, ctx.roster, ctx.owner, ctx.names, ctx.opponents)
+    for rid in opponents:
+        notes += ctx.opp_notes.get(rid, [])
+    weekly_by_week, weights, floor = ctx.weekly_by_week, ctx.weights, ctx.floor
+
     pin: Player | None = None
     if player:
         matches = cli.find_players(players, player)
@@ -310,42 +394,16 @@ def build_trades(league: League, tunables: Tunables, week: int | None = None,
                       + ", ".join(f"{p.name} ({p.position} {p.team})" for p in matches))
         pin = matches[0]
 
-    try:
-        users = {u["user_id"]: u.get("display_name")
-                 for u in cli.load_league_users(league.league_id)}
-    except Exception as exc:                          # noqa: BLE001 - degrade, never fabricate
-        # The exact sibling a previous fix wave missed on the happy path: this
-        # is the last unguarded fetch, and the cheapest thing to lose is a name.
-        users = {}
-        notes.append(f"could not reach Sleeper's league users endpoint ({exc}) -- "
-                     f"opponent names are unavailable")
-    names = {r.get("roster_id"): users.get(r.get("owner_id"))
-                                 or f"roster {r.get('roster_id')}"
-             for r in rosters}
-
     best: list[trade_mod.Proposal] = []
     # ponytail: the full sweep is ~330s (11 opponents x three shapes) because
     # 2-for-1 searches the counterparty's forced cut. Accepted: a weekly
     # one-shot command may be slow, and the alternative is pruning, which was
     # measured dropping 22 of 49 real trades. If this ever needs to be fast,
     # memoise horizon_total on a frozenset of player ids -- do NOT prefilter.
-    for r in rosters:
-        opp_rid = r.get("roster_id")
-        if opp_rid is None or opp_rid == rid:
-            continue
-        their_ids = r.get("players") or []
-        theirs = [players[i] for i in their_ids if i in players]
-        missing = [i for i in their_ids if i not in players]
-        if missing:
-            # Same degradation `_resolve_my_roster` already prints for MY
-            # roster -- an opponent roster shortened by an unresolvable id
-            # understates their baseline and can make a trade look better for
-            # them than it is.
-            notes.append(f"{len(missing)} of {names[opp_rid]}'s rostered players are "
-                         f"not in the player pool: {', '.join(missing)}")
+    for opp_rid, theirs in opponents.items():
         if progress:
             progress(f"  scanning {names[opp_rid]}...")
-        options = trade_mod.trade_options(roster, theirs, opp_rid, settings.roster_slots,
+        options = trade_mod.trade_options(roster, theirs, opp_rid, ctx.settings.roster_slots,
                                           weekly_by_week, floor, weights, pin)
         if pin is not None:
             best.extend(options)
@@ -367,3 +425,67 @@ def build_trades(league: League, tunables: Tunables, week: int | None = None,
     return TradeView(league_name=league.name, best=best, week=week, owner=owner,
                      names=names, notes=notes, weeks_scored=len(weekly_by_week),
                      pinned=pin)
+
+
+def trade_form(league: League) -> TradeView:
+    """The two rosters an offer can be built from. Rosters only -- no
+    projections, no horizon -- so /trades can render the form on load."""
+    if league.platform != "sleeper":
+        return TradeView(league_name=league.name, error=platform_refusal(
+            league, "grading an offer", "the other team's roster"))
+    notes: list[str] = []
+    roster, owner, _rid, names, opponents, _opp_notes = _league_rosters(
+        league, cli.resolve_settings(league), cli.load_players(), notes)
+    if not roster:
+        return TradeView(league_name=league.name, notes=notes,
+                         error="no roster resolved, so there is no offer to "
+                               "grade -- " + "; ".join(notes))
+    return TradeView(league_name=league.name, owner=owner, names=names,
+                     notes=notes, mine=roster, opponents=opponents)
+
+
+def build_trade_grade(league: League, tunables: Tunables, give_ids: list[str],
+                      get_ids: list[str], week: int | None = None) -> TradeView:
+    """Score one offer someone sent me. Same horizon, weights and floor as
+    `build_trades`, one pairing instead of a sweep -- seconds, not ~330s."""
+    if not give_ids or not get_ids:
+        return TradeView(league_name=league.name,
+                         error="pick at least one player on each side of the offer")
+    ctx = _trade_setup(league, tunables, week, "grading an offer")
+    if isinstance(ctx, TradeView):
+        return ctx
+    roster, notes, names, opponents = ctx.roster, ctx.notes, ctx.names, ctx.opponents
+    give = [p for p in roster if p.sleeper_id in set(give_ids)]
+    if len(give) != len(set(give_ids)):
+        # The form was built from an older roster: a player has since moved.
+        return TradeView(league_name=league.name, notes=notes,
+                         error="a player you would give is no longer on your "
+                               "roster -- reload the page")
+    # The opponent is whoever HOLDS the players, decided by membership -- never
+    # a second field the form could set inconsistently.
+    holders = {rid for rid, theirs in opponents.items()
+               if any(p.sleeper_id in set(get_ids) for p in theirs)}
+    if len(holders) > 1:
+        return TradeView(league_name=league.name, notes=notes,
+                         error="the players you would get must all be on ONE "
+                               "other team -- a trade is with one opponent")
+    opp = holders.pop() if holders else None
+    theirs = opponents.get(opp, [])
+    get = [p for p in theirs if p.sleeper_id in set(get_ids)]
+    if len(get) != len(set(get_ids)):
+        return TradeView(league_name=league.name, notes=notes,
+                         error="a player you would get is no longer on an "
+                               "opponent's roster -- reload the page")
+
+    # A roster may hold `rounds` players (starters + bench); an IR stash can
+    # take the current count above that, and that count is then the cap.
+    args = (roster, theirs, give, get, ctx.settings.roster_slots, ctx.weekly_by_week,
+            ctx.floor)
+    limits = dict(my_limit=max(ctx.settings.rounds, len(roster)),
+                  their_limit=max(ctx.settings.rounds, len(theirs)), weights=ctx.weights)
+    grade = trade_mod.grade_offer(*args, **limits)
+    ask = trade_mod.keep_mine(*args, **limits)
+    return TradeView(league_name=league.name, week=ctx.week, owner=ctx.owner,
+                     names=names, notes=notes + ctx.opp_notes.get(opp, []),
+                     weeks_scored=len(ctx.weekly_by_week),
+                     best=[], grade=grade, ask=ask, opponents={opp: theirs})

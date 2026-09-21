@@ -199,3 +199,119 @@ def test_their_drop_is_computed_after_stripping_the_players_they_sent():
         expected_total, expected_drop = season.best_drop(after, SLOTS, wbw)
         assert p.gain_them == pytest.approx(expected_total - base_them)
         assert p.their_drop.sleeper_id == expected_drop.sleeper_id
+
+
+def _grade(give, get, floor=1.0, my_limit=8, their_limit=8):
+    mine, theirs, wbw = _swap_case()
+    by = {p.sleeper_id: p for p in [*mine, *theirs]}
+    return trade.grade_offer(mine, theirs, [by[i] for i in give], [by[i] for i in get],
+                             SLOTS, wbw, floor, my_limit, their_limit)
+
+
+def test_grade_scores_both_sides_of_a_received_offer():
+    """wr3 for trb3, by hand: my RB pair 12+6 -> 13+12 (+7/wk); their WRs
+    14.5+14 -> 16+14.5 with twr1 taking the flex at 14 (+2/wk). Two weeks."""
+    g = _grade(["wr3"], ["trb3"])
+    assert (g.gain_me, g.gain_them) == (pytest.approx(14.0), pytest.approx(4.0))
+    assert g.verdict == "accept"
+    assert g.my_drops == () and g.their_drops == ()
+
+
+def test_grade_declines_an_offer_that_costs_me_more_than_the_floor():
+    """wr1 (20, a starter) for tqb (19, behind my 25): WRs 20+19 -> 19+16,
+    flex stays te 16.2 -- -4/wk, -8 over two."""
+    g = _grade(["wr1"], ["tqb"])
+    assert g.gain_me == pytest.approx(-8.0)
+    assert g.verdict == "decline"
+
+
+def test_grade_inside_the_floor_is_too_close_to_call_on_both_signs():
+    """te2 (22) for tte (20): -2/wk, -4 total. The bands are strict: exactly
+    the floor is not enough to call it either way."""
+    assert _grade(["te2"], ["tte"], floor=5.0).verdict == "too close to call"
+    assert _grade(["te2"], ["tte"], floor=4.0).verdict == "too close to call"
+    assert _grade(["te2"], ["tte"], floor=3.9).verdict == "decline"
+    assert _grade(["wr3"], ["trb3"], floor=14.0).verdict == "too close to call"
+    assert _grade(["wr3"], ["trb3"], floor=13.9).verdict == "accept"
+
+
+def test_receiving_more_than_i_give_forces_my_own_cut():
+    """The shape the finder never builds: they send two for one, and my full
+    roster must cut someone. tte2 (14) cannot crack my lineup and neither
+    can rb2 (6) once trb3 arrives; rb2 carries fewer points of his own."""
+    g = _grade(["wr3"], ["trb3", "tte2"])
+    assert [p.sleeper_id for p in g.my_drops] == ["rb2"]
+    assert g.gain_me == pytest.approx(14.0)
+    # An open roster spot absorbs the extra player: no phantom cut.
+    assert _grade(["wr3"], ["trb3", "tte2"], my_limit=9).my_drops == ()
+
+
+def test_their_forced_cut_is_named_when_they_receive_more():
+    g = _grade(["wr3", "rb2"], ["trb3"])
+    assert [p.sleeper_id for p in g.their_drops] == ["rb2"]
+    assert g.my_drops == ()
+
+
+def test_a_forced_cut_that_empties_a_starting_slot_shows_its_cost():
+    """my_limit 6 on wr3-for-trb3: two cuts. rb2 is free (benched once trb3
+    arrives); the second is rb1, whose RB slot then sits EMPTY -- 12/wk, 24
+    over two. The drop is not weighted, it is counted: 14 - 24 = -10."""
+    g = _grade(["wr3"], ["trb3"], my_limit=6)
+    assert [p.sleeper_id for p in g.my_drops] == ["rb2", "rb1"]
+    assert g.drop_cost == pytest.approx(24.0)
+    assert g.gain_me == pytest.approx(-10.0)
+    assert _grade(["wr3"], ["trb3"]).drop_cost == 0.0
+
+
+# keep_mine: hand-built so a bench player matters. RB/WR slots, a full
+# three-man roster, two weeks, my rb on bye in week 2 so the bench RB starts.
+#   base:  wk1 rb 10 + wr 10 = 20;  wk2 bn 4 + wr 10 = 14      -> 34
+KEEP_SLOTS = {"RB": 1, "WR": 1}
+
+
+def _keep_case(get_ids, trb=5.0, floor=1.5):
+    mine = [mk("rb", "RB"), mk("wr", "WR"), mk("bn", "RB")]
+    theirs = [mk("w1", "WR"), mk("w2", "WR"), mk("trb", "RB")]
+    wk = {"rb": 10.0, "wr": 10.0, "bn": 4.0, "w1": 13.0, "w2": 12.0, "trb": trb}
+    wbw = {1: wk, 2: {**wk, "rb": 0.0}}
+    by = {p.sleeper_id: p for p in [*mine, *theirs]}
+    args = (mine, theirs, [by["wr"]], [by[i] for i in get_ids], KEEP_SLOTS, wbw,
+            floor, 3, 9)
+    return trade.grade_offer(*args), trade.keep_mine(*args)
+
+
+def test_keeping_my_bench_player_is_offered_with_its_cost():
+    """wr for w1 + trb. Cutting bn keeps trb, who beats him in week 2 (5 v 4):
+    wk1 rb 10 + w1 13, wk2 trb 5 + w1 13 -> 41, +7. The ask keeps bn by
+    leaving trb with them: wk2 bn 4 + w1 13 -> 40, +6. Keeping him costs 1.0,
+    and the ask is shown anyway -- whether bn is worth 1.0 is the reader's."""
+    full, ask = _keep_case(["w1", "trb"])
+    assert [p.sleeper_id for p in full.my_drops] == ["bn"]
+    assert full.gain_me == pytest.approx(7.0)
+    assert [p.sleeper_id for p in ask.get] == ["w1"]
+    assert ask.gain_me == pytest.approx(6.0)
+    assert ask.my_drops == ()
+
+
+def test_no_ask_when_the_cut_is_a_player_i_would_receive():
+    """trb at 3.0 loses the week-2 start to bn (4), so HE is the cut. Accept
+    and cut him: asking for fewer changes nothing."""
+    full, ask = _keep_case(["w1", "trb"], trb=3.0)
+    assert [p.sleeper_id for p in full.my_drops] == ["trb"]
+    assert ask is None
+
+
+def test_no_ask_when_the_smaller_offer_would_not_be_accepted():
+    """+6 against a 6.5 floor is too close to call -- not worth countering with."""
+    full, ask = _keep_case(["w1", "trb"], floor=6.5)
+    assert full.gain_me == pytest.approx(7.0) and ask is None
+
+
+def test_the_best_keep_ask_wins_not_the_first_one_found():
+    """wr for w2 + w1 + trb: two cuts, bn (mine) and w2. Asks that cut none
+    of mine: w2 alone +4 (found FIRST), w1 alone +6, w2+w1 +6 (cuts w2, who
+    is theirs). Best for me, then fewest players: w1 alone."""
+    full, ask = _keep_case(["w2", "w1", "trb"])
+    assert "bn" in [p.sleeper_id for p in full.my_drops]
+    assert [p.sleeper_id for p in ask.get] == ["w1"]
+    assert ask.gain_me == pytest.approx(6.0)

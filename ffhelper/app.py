@@ -1110,6 +1110,157 @@ def trades_children(view) -> list:
     return children
 
 
+def _player_options(players) -> list[dict]:
+    return [{"label": f"{p.name} ({p.position})", "value": p.sleeper_id}
+            for p in sorted(players, key=lambda p: p.name)]
+
+
+def grade_form(view) -> html.Div:
+    """The grade-an-offer card: who it is with, what you give, what you get.
+
+    Built from `pipeline.trade_form` -- rosters only, no projections -- so it
+    costs a roster fetch on page load, never the sweep. Team and players can
+    be picked in either order (`sync_offer`, client data, no fetch): Sleeper
+    trades are two-team, so the first player picked names the team and locks
+    the list to it. `build_trade_grade` still decides the opponent by who
+    HOLDS the players, so a stale form cannot mix two teams.
+    """
+    if view.error:
+        return html.Div([html.P("Grade an offer", className="page-title"),
+                         html.P(view.error, className="note")], className="card")
+    teams = sorted(view.opponents, key=lambda rid: view.names.get(rid, "").lower())
+    everyone = [{"label": f"{view.names.get(rid, f'roster {rid}')}: {o['label']}",
+                 "value": o["value"], "team": str(rid)}
+                for rid in teams for o in _player_options(view.opponents[rid])]
+    return html.Div(className="card grade", children=[
+        # Its own store, not trades-league: a finder run replaces the finder's
+        # card, store and all, and grading after a sweep must still work.
+        dcc.Store(id="grade-league", data=view.league_name),
+        # Keys are strings: a dcc.Store round-trips through JSON.
+        dcc.Store(id="grade-rosters", data={
+            "teams": {str(rid): _player_options(roster)
+                      for rid, roster in view.opponents.items()},
+            "all": everyone}),
+        html.P("Grade an offer", className="page-title"),
+        html.P("Someone sent you a trade? Enter it here. Sleeper does not "
+               "share pending offers with outside tools, so this is by hand.",
+               className="note"),
+        html.Label("Trading with", htmlFor="grade-opp", className="grade__label"),
+        dcc.Dropdown(id="grade-opp", placeholder="Their team",
+                     options=[{"label": view.names.get(rid, f"roster {rid}"),
+                               "value": str(rid)} for rid in teams]),
+        html.Label("You give", htmlFor="grade-give", className="grade__label"),
+        dcc.Dropdown(id="grade-give", multi=True, placeholder="Your players",
+                     options=_player_options(view.mine)),
+        html.Label("You get", htmlFor="grade-get", className="grade__label"),
+        dcc.Dropdown(id="grade-get", multi=True, placeholder="Their players",
+                     options=_strip_team(everyone)),
+        html.Button("Grade this offer", id="grade-run", style={"marginTop": "16px"}),
+        dcc.Loading(html.Div(id="grade-result")),
+    ])
+
+
+def _strip_team(options: list[dict]) -> list[dict]:
+    # "team" rides along in the store for `sync_offer`; a Dropdown option
+    # carries label and value only.
+    return [{"label": o["label"], "value": o["value"]} for o in options]
+
+
+def sync_offer(opp: str | None, get: list | None, rosters: dict | None,
+               triggered: str | None) -> tuple:
+    """(team, "You get" options, "You get" value), whichever was picked first.
+
+    No team: every opponent's players, each labelled with its owner. The
+    first player picked names his team. A team -- picked or implied -- locks
+    the list to it, and drops any picked player who is not on it, so an offer
+    can never ride two teams into the grade. Clearing the team unlocks.
+    """
+    rosters = rosters or {"teams": {}, "all": []}
+    get = list(get or [])
+    team_of = {o["value"]: o["team"] for o in rosters["all"]}
+    if triggered == "grade-get" and get and not opp:
+        opp = team_of.get(get[0])
+    if not opp:
+        return opp, _strip_team(rosters["all"]), get
+    return opp, rosters["teams"].get(opp, []), [g for g in get if team_of.get(g) == opp]
+
+
+VERDICT_TEXT = {"accept": "Accept", "decline": "Decline",
+                "too close to call": "Too close to call"}
+
+
+def grade_children(view) -> list:
+    """One graded offer: the verdict, both gains, both packages, any forced
+    cut, and the band the verdict was read against -- so the call is checkable
+    rather than taken on trust."""
+    if view.error:
+        return [html.P(view.error, className="note")]
+    g = view.grade
+    opp = next(iter(view.opponents))
+    name = view.names.get(opp, f"roster {opp}")
+    children = [
+        html.Div(VERDICT_TEXT[g.verdict],
+                 className=f"verdict verdict--{g.verdict.split()[0]}"),
+        html.P(f"You {g.gain_me:+.1f} points over the next {view.weeks_scored} "
+               f"weeks. {name} {g.gain_them:+.1f}."),
+        package_line("give", g.give),
+        package_line("get", g.get),
+    ]
+    got = {p.sleeper_id for p in g.get}
+
+    def _names(players) -> str:
+        return ", ".join(f"{p.name} ({p.position})" for p in players)
+
+    if g.my_drops and all(p.sleeper_id in got for p in g.my_drops):
+        # Asking for fewer is the same trade by another name: accept, then cut.
+        children.append(html.P(
+            f"You would cut {_names(g.my_drops)} -- "
+            f"{'one of the players' if len(g.my_drops) == 1 else 'players'} you "
+            f"would get. Accept and cut; asking for fewer changes nothing."))
+    elif g.my_drops:
+        # The cost is COUNTED in the gain above, not weighted on top of it:
+        # a multiplier would be a number nobody measured (non-negotiable #8).
+        cut = ", ".join(f"{p.name} ({p.position})"
+                        + (" -- one of the players you would get" if p.sleeper_id in got else "")
+                        for p in g.my_drops)
+        cost = (f"That costs {g.drop_cost:.1f} projected points, already counted above."
+                if g.drop_cost > 0.05 else
+                "By projection that costs nothing: the cut never makes your "
+                "best lineup. Projections do not value him as injury cover.")
+        children.append(html.P(f"You must drop {cut} to make room. {cost}"))
+    if g.their_drops:
+        children.append(html.P(f"{name} must also drop {_names(g.their_drops)}"))
+    if view.ask is not None:
+        a = view.ask
+        mine_cut = [p for p in g.my_drops if p.sleeper_id not in got]
+        kept_by_them = [p for p in g.get if p.sleeper_id not in {x.sleeper_id for x in a.get}]
+        diff = g.gain_me - a.gain_me
+        # Never negative by more than best_drop's tie tolerance: the grade
+        # already made the best cut, so keeping your player cannot beat it.
+        price = ("costs nothing by projection" if diff <= 0.05 else
+                 f"costs {diff:.1f} projected points"
+                 + (f", inside the \u00b1{g.floor:.1f} error" if diff < g.floor else ""))
+        children += [
+            html.P("Keep your player instead", className="section-title"),
+            html.P(f"Ask {name} to keep {_names(kept_by_them)} and you keep "
+                   f"{_names(mine_cut)}. You {a.gain_me:+.1f} instead of "
+                   f"{g.gain_me:+.1f}; it {price}. Worth it only if you rate "
+                   f"{'him' if len(mine_cut) == 1 else 'them'} above the projections "
+                   f"-- as injury cover, say. {name} {a.gain_them:+.1f} instead of "
+                   f"{g.gain_them:+.1f}."),
+            package_line("get", a.get),
+        ]
+    if view.notes:
+        children.append(html.Ul([html.Li(n) for n in view.notes], className="flags"))
+    children.append(html.P(
+        f"Points are your best lineup, summed and weighted over the rest of the "
+        f"season, after the trade minus before it. Anything within "
+        f"\u00b1{g.floor:.1f} of zero is inside the projection error and is "
+        f"called too close -- the same floor the trade finder uses.",
+        className="note"))
+    return children
+
+
 def trades_landing(league: str) -> html.Div:
     """The /trades landing state, before the sweep runs: TRADE_CAVEAT, the
     expected-wait line, and the RUN button -- never followed automatically.
@@ -1163,8 +1314,15 @@ def _season_layout_for(name: str, league_names: list[str], default_league: str):
             # No view built here -- build_trades' full sweep is ~330s
             # (pipeline.py's ponytail note); the button below is the only
             # thing allowed to trigger it (see _register_callbacks).
+            leagues, _tunables = load_config(CONFIG_PATH)
+            try:
+                form = pipeline.trade_form(get_league(leagues, league))
+            except Exception as exc:              # noqa: BLE001 - the finder must survive
+                log.error("trade form failed: %s", exc, exc_info=True)
+                form = pipeline.TradeView(league_name=league,
+                                          error=f"could not load the rosters ({exc})")
             return shell(name, league, league_names,
-                         [dcc.Loading(trades_landing(league))])
+                         [grade_form(form), dcc.Loading(trades_landing(league))])
         leagues, tunables = load_config(CONFIG_PATH)
         lg = get_league(leagues, league)
         builder = pipeline.build_lineup if name == "lineup" else pipeline.build_waivers
@@ -1438,6 +1596,33 @@ def _register_callbacks(app, leagues, tunables, cache):
         return trades_children(view)
 
     @app.callback(
+        Output("grade-opp", "value"),
+        Output("grade-get", "options"),
+        Output("grade-get", "value"),
+        Input("grade-opp", "value"),
+        Input("grade-get", "value"),
+        dash.State("grade-rosters", "data"),
+    )
+    def _sync_offer(opp, get, rosters):
+        # ONE callback reads and writes both controls: two callbacks feeding
+        # each other is a cycle Dash refuses to register.
+        return sync_offer(opp, get, rosters, dash.ctx.triggered_id)
+
+    @app.callback(
+        Output("grade-result", "children"),
+        Input("grade-run", "n_clicks"),
+        dash.State("grade-give", "value"),
+        dash.State("grade-get", "value"),
+        dash.State("grade-league", "data"),
+    )
+    def _grade_offer(n_clicks, give, get, league_name):
+        if n_clicks is None:
+            return dash.no_update
+        league = get_league(leagues, league_name)
+        return grade_children(pipeline.build_trade_grade(
+            league, tunables, give or [], get or []))
+
+    @app.callback(
         Output("url", "search"),
         Input("league-nav", "value"),
         dash.State("url", "search"),
@@ -1465,7 +1650,7 @@ def _register_callbacks(app, leagues, tunables, cache):
 
     # All four exposed for direct testing: a callback sealed inside this
     # function is code no test can reach, and untestable code is untested code.
-    return _refresh, _write, _run_trades, _switch_league
+    return _refresh, _write, _run_trades, _grade_offer, _sync_offer, _switch_league
 
 
 def main(argv: list[str] | None = None) -> int:
