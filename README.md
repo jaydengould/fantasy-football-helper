@@ -30,6 +30,7 @@ lineup, waiver, and trade-finder commands all work end to end.
 | Opponent matchup context | working — a rank, not an adjustment: adjusting lost to plain projections on 2024 and 2025 |
 | Waivers (`waivers`) | working — Sleeper only: the pool needs every team's roster |
 | Trade finder (`trades`) | working — Sleeper only: the search needs every team's roster |
+| Grade a received offer (web `/trades`) | working — Sleeper only; entered by hand, as Sleeper's API does not serve pending offers |
 
 ## Requirements
 
@@ -378,6 +379,14 @@ what your own leaguemates want.
 Also at `/trades` in the web app, behind a button rather than on page load:
 the full sweep is eleven opponents by three shapes and takes about five
 minutes, so navigating there must not start one.
+
+The same page grades an offer someone sent you: pick the players you give and
+get (the first player picked sets the team), and it answers **Accept**,
+**Decline**, or **Too close to call** from your rest-of-season lineup gain,
+against the same floor the finder uses. It shows any player you would have to
+drop and what that costs. When the drop is one of your own players, it names
+the smaller ask that keeps him and what keeping him costs. There is no letter
+grade: A to F would need cutoffs nobody has measured.
 
 Searches every opponent's roster for the best 1-for-1, 2-for-1, and 2-for-2
 that clears a floor on **both sides** — a trade only you gain from is not a

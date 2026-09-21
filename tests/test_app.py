@@ -246,7 +246,7 @@ def _make_write(monkeypatch, tmp_path, league_name="write-test"):
     path = tmp_path / "log.jsonl"
     monkeypatch.setattr(app, "_draft_log_path", lambda league: path)
     league = League(name=league_name, platform="sleeper", league_id="1")
-    _refresh, write, _trades, _switch = app._register_callbacks(
+    _refresh, write, _trades, _grade, _sync, _switch = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         [league], Tunables(), lambda lg: None,
     )
@@ -462,7 +462,7 @@ def _make_refresh(monkeypatch, tmp_path, players, draft_slot=5, has_feed=True):
     monkeypatch.setattr(app, "_draft_log_path", lambda league: tmp_path / "log.jsonl")
     league = League(name="refresh-test", platform="sleeper", league_id="1",
                     draft_slot=draft_slot)
-    refresh, _write, _trades, _switch = app._register_callbacks(
+    refresh, _write, _trades, _grade, _sync, _switch = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         [league], Tunables(),
         lambda lg: (players, _settings(), FakeFeed(), has_feed),
@@ -1143,10 +1143,20 @@ def test_trades_page_builds_no_view_on_load(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("build_trades must not run on page load")
     monkeypatch.setattr(pipeline, "build_trades", boom)
+    # The grade form DOES load on render -- rosters only, no projections.
+    # Stubbed, and asserted on: its try/except would otherwise swallow
+    # conftest's network guard and this test would pass while fetching.
+    asked = []
+    monkeypatch.setattr(app, "load_config", lambda path: (
+        [League(name="b", platform="sleeper", league_id="1")], Tunables()))
+    monkeypatch.setattr(pipeline, "trade_form", lambda lg: asked.append(lg.name)
+                        or pipeline.TradeView(league_name=lg.name))
     app.build_app(["a", "b"], "a", poll_ms=1000)
     layout = dash.page_registry["trades"]["layout"]
     rendered = layout(league="b")
+    assert asked == ["b"]
     assert "minutes" in str(rendered)
+    assert "Grade an offer" in str(rendered)
     # board.css's .page sets the max-width/padding every season page needs --
     # without it content sits flush against the viewport edge (review finding 8).
     assert rendered.className == "page"
@@ -1707,7 +1717,7 @@ def test_trades_callback_ignores_none_n_clicks_so_navigation_costs_nothing(monke
     def boom(*a, **k):
         raise AssertionError("build_trades must not run when n_clicks is None")
     monkeypatch.setattr(pipeline, "build_trades", boom)
-    _refresh, _write, run_trades, _switch = app._register_callbacks(
+    _refresh, _write, run_trades, _grade, _sync, _switch = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         [League(name="sleeper-main", platform="sleeper", league_id="1")],
         Tunables(), lambda lg: None,
@@ -1729,7 +1739,7 @@ def test_trades_callback_sweeps_the_league_the_url_named_exactly_once(monkeypatc
     monkeypatch.setattr(pipeline, "build_trades", fake_build_trades)
     leagues = [League(name="sleeper-main", platform="sleeper", league_id="1"),
                League(name="yahoo-main", platform="yahoo", league_id="2")]
-    _refresh, _write, run_trades, _switch = app._register_callbacks(
+    _refresh, _write, run_trades, _grade, _sync, _switch = app._register_callbacks(
         _dash.Dash(__name__, suppress_callback_exceptions=True),
         leagues, Tunables(), lambda lg: None,
     )
@@ -2137,3 +2147,157 @@ def test_the_web_lineup_route_records_the_same_snapshot_as_the_cli(monkeypatch, 
 
     assert _snapshot_rows(db) == cli_rows
     assert "2 players recorded for week 1" in rendered
+
+
+# --- grade an offer ---
+
+from ffhelper import trade as trade_mod
+from ffhelper.app import grade_children, grade_form, sync_offer
+
+
+def _graded(gain_me, floor=3.0, my_drops=(), drop_cost=0.0, ask=None):
+    give = (Player("1", "Given Guy", "WR", "SEA"),)
+    get = (Player("2", "Got Guy", "RB", "KC"), Player("3", "Extra Guy", "TE", "KC"))
+    return pipeline.TradeView(
+        league_name="x", weeks_scored=9, names={5: "dave"},
+        opponents={5: list(get)}, ask=ask,
+        grade=trade_mod.Grade(give, get, gain_me, 4.0, floor, my_drops=my_drops,
+                              drop_cost=drop_cost))
+
+
+def test_grade_children_leads_with_the_verdict_and_both_gains():
+    out = str(grade_children(_graded(14.0)))
+    assert "Accept" in out and "verdict--accept" in out
+    assert "+14.0" in out and "dave +4.0" in out and "9 weeks" in out
+    assert "Given Guy" in out and "Got Guy" in out
+    assert "\u00b13.0" in out          # the band is on screen, not just applied
+
+
+def test_grade_children_names_my_forced_cut_and_what_it_costs():
+    cut = Player("9", "Cut Guy", "TE", "NE")
+    out = str(grade_children(_graded(-8.0, my_drops=(cut,), drop_cost=24.0)))
+    assert "Decline" in out and "You must drop Cut Guy (TE) to make room" in out
+    assert "costs 24.0 projected points, already counted" in out
+
+
+def test_a_free_cut_says_so_and_names_what_the_model_cannot_price():
+    cut = Player("9", "Cut Guy", "TE", "NE")
+    out = str(grade_children(_graded(14.0, my_drops=(cut,))))
+    assert "costs nothing" in out and "injury cover" in out
+
+
+def test_cutting_a_player_you_would_receive_is_called_out():
+    extra = Player("3", "Extra Guy", "TE", "KC")
+    out = str(grade_children(_graded(14.0, my_drops=(extra,))))
+    assert "Extra Guy (TE) -- one of the players you would get" in out
+    assert "Accept and cut; asking for fewer changes nothing" in out
+
+
+def test_keeping_your_player_names_who_stays_where_and_what_it_costs():
+    cut = Player("9", "Cut Guy", "TE", "NE")
+    got = (Player("2", "Got Guy", "RB", "KC"),)
+    ask = trade_mod.Grade((), got, 13.5, 6.0, 3.0)
+    out = str(grade_children(_graded(14.0, my_drops=(cut,), ask=ask)))
+    assert "Keep your player instead" in out
+    assert "Ask dave to keep Extra Guy (TE) and you keep Cut Guy (TE)" in out
+    assert "You +13.5 instead of +14.0; it costs 0.5 projected points, inside the \u00b13.0 error" in out
+    assert "dave +6.0 instead of +4.0" in out
+
+
+def test_no_ask_section_without_an_ask():
+    assert "Keep your player" not in str(grade_children(_graded(14.0)))
+
+
+def test_grade_children_renders_an_error_view_as_the_message():
+    out = str(grade_children(pipeline.TradeView(league_name="x", error="pick at least one")))
+    assert "pick at least one" in out
+
+
+def _form_view():
+    return pipeline.TradeView(
+        league_name="x", names={5: "dave", 6: "amy"},
+        mine=[Player("1", "Mine Guy", "WR", "SEA")],
+        opponents={5: [Player("2", "Dave Guy", "RB", "KC")],
+                   6: [Player("3", "Amy Guy", "TE", "NE"), Player("4", "Amy Two", "WR", "NE")]})
+
+
+def _child(form, cid):
+    [c] = [c for c in form.children if getattr(c, "id", None) == cid]
+    return c
+
+
+def test_grade_form_lists_every_opponents_players_before_a_team_is_picked():
+    form = grade_form(_form_view())
+    assert "Mine Guy (WR)" in str(form) and "grade-league" in str(form)
+    assert [o["label"] for o in _child(form, "grade-opp").options] == ["amy", "dave"]
+    assert _child(form, "grade-get").options == [
+        {"label": "amy: Amy Guy (TE)", "value": "3"},
+        {"label": "amy: Amy Two (WR)", "value": "4"},
+        {"label": "dave: Dave Guy (RB)", "value": "2"}]
+
+
+def _rosters():
+    return _child(grade_form(_form_view()), "grade-rosters").data
+
+
+def test_picking_a_player_first_names_his_team_and_locks_the_list_to_it():
+    """dave (5) is listed first; the player picked is amy's (6). Taking the
+    first team, rather than HIS team, cannot pass."""
+    opp, options, value = sync_offer(None, ["3"], _rosters(), "grade-get")
+    assert opp == "6"
+    assert [o["value"] for o in options] == ["3", "4"]
+    assert value == ["3"]
+
+
+def test_picking_the_team_first_locks_the_list_to_it():
+    opp, options, value = sync_offer("5", [], _rosters(), "grade-opp")
+    assert (opp, [o["value"] for o in options], value) == ("5", ["2"], [])
+
+
+def test_switching_team_drops_players_from_the_old_one():
+    opp, _options, value = sync_offer("5", ["3", "4"], _rosters(), "grade-opp")
+    assert (opp, value) == ("5", [])
+
+
+def test_clearing_the_team_unlocks_every_player():
+    opp, options, value = sync_offer(None, ["3"], _rosters(), "grade-opp")
+    assert opp is None and len(options) == 3 and value == ["3"]
+
+
+def test_the_offer_sync_is_one_callback_over_both_controls():
+    """Two callbacks writing each other's inputs is a cycle Dash refuses."""
+    d = _dash.Dash(__name__, suppress_callback_exceptions=True)
+    app._register_callbacks(d, [League(name="s", platform="sleeper", league_id="1")],
+                            Tunables(), lambda lg: None)
+    [(key, cb)] = [(k, v) for k, v in d.callback_map.items() if "grade-get.options" in k]
+    assert "grade-opp.value" in key and "grade-get.value" in key
+    assert {i["id"] for i in cb["inputs"]} == {"grade-opp", "grade-get"}
+
+
+def test_grade_callback_grades_the_league_the_form_named(monkeypatch):
+    calls = []
+
+    def fake(league, tunables, give, get):
+        calls.append((league.name, give, get))
+        return pipeline.TradeView(league_name=league.name, error="stub")
+    monkeypatch.setattr(pipeline, "build_trade_grade", fake)
+    leagues = [League(name="sleeper-main", platform="sleeper", league_id="1"),
+               League(name="sb", platform="sleeper", league_id="2")]
+    _r, _w, _t, grade, _sync, _s = app._register_callbacks(
+        _dash.Dash(__name__, suppress_callback_exceptions=True),
+        leagues, Tunables(), lambda lg: None)
+    assert grade(None, ["1"], ["2"], "sb") is _dash.no_update
+    grade(1, ["1"], None, "sb")
+    assert calls == [("sb", ["1"], [])]
+
+
+def test_grade_callback_reads_its_own_store_not_the_finders():
+    """A finder run replaces trades-content, trades-league store and all, so a
+    grade wired to that store breaks for anyone who ran the search first.
+    Checked on the REGISTERED wiring: calling the function directly, as the
+    test above does, passes the league in by hand and never sees the id."""
+    d = _dash.Dash(__name__, suppress_callback_exceptions=True)
+    app._register_callbacks(d, [League(name="s", platform="sleeper", league_id="1")],
+                            Tunables(), lambda lg: None)
+    [cb] = [v for k, v in d.callback_map.items() if k.startswith("grade-result.")]
+    assert {"id": "grade-league", "property": "data"} in cb["state"]

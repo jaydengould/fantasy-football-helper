@@ -120,6 +120,47 @@ closed them and the condition that would reopen them.
   player, FantasyPros/dynasty charts) is barred outright by non-negotiable
   #2 — a consensus ranking is PRICE, and folding it into the value axis is
   the blend that rule forbids, the same reason §18 closed ECR.
+- **Grading a received offer (2026-09-21, `/trades` "Grade an offer") is by
+  hand, and says Accept / Decline / Too close to call, never a letter.**
+  Sleeper's public API does not serve pending offers: `transactions/{week}`
+  for weeks 1-3 of both Sleeper leagues held only `waiver`/`free_agent` rows,
+  `complete` or `failed` — though with zero trades ever made, the absence of a
+  pending row is inferred from an unauthenticated endpoint rather than
+  observed. The private app API needs the user's token; not pursued. The
+  verdict bands are the finder's own floor (`close_call_points ×
+  √effective_weeks`), so it inherits TODO item 14's weakness in that 3.0 and
+  adds no cutoff of its own; A–F would need cutoffs nobody measured (#8).
+  Unlike the finder, MY roster can grow here (a 1-for-2 in my favour), so the
+  grade cuts back to `settings.rounds` on both sides. Checked once on the real
+  league: a forced cut chose a never-starting WR over a second DEF, because
+  `horizon_total` credits streaming the better DEF each week — the model every
+  season command already uses, not a grader defect.
+  **Asked for and declined: weighting a forced drop "heavily".** The drop's
+  projected cost is already inside the gain (the grade is scored AFTER the
+  cut); a multiplier on top would be #8's invented weight. What the model
+  cannot price is the cut as injury cover — no injury-rate model exists
+  (same gap as TODO 6/7) — so the page states the cost in points, and says
+  so when it is zero. **"Ask for fewer" was built, then REVERSED the same
+  day**: for a RECEIVED offer it can never beat accepting and cutting, because
+  the grade already cuts whoever is worth least, incoming players included.
+  Measured: 9,408 fixture subsets and 381 real-league subsets, none better
+  than the full offer beyond best_drop's 0.5 tie tolerance (max +0.14). As
+  built it only ever handed the counterparty points. **Replaced by
+  `keep_mine`:** offered only when the forced cut is one of MY players (131
+  of 200 random real 1-for-2 / 2-for-3 offers), it names the smaller ask that
+  keeps him and what that costs by projection. It exists for what projections
+  cannot see (injury cover); the reader prices that, the page does not. When
+  the cut is an incoming player the page says accept and cut. Real example:
+  Coker for Pickens + 49ers DEF cuts Addison (+36.7); keeping Addison means
+  leaving them the DEF, +26.3.
+  **A verdict near the band edge moves with Sleeper's projection revisions,
+  and that is the band working, not a defect.** Olave + Henderson for
+  G. Wilson + B. Hall + A. Jones went Accept -> Too close to call within an
+  afternoon: the gain is a difference of two ~1885-point season totals, so
+  half a point a week on one player over 16 weeks moves it ~8, across an
+  11.2 band. The current +5.99 was matched by an independent recomputation;
+  the earlier input was overwritten (TODO 18). One offer, one afternoon: the
+  mechanism is arithmetic, the specific cause is unobserved.
 - **Sleeper's picks endpoint is CDN-cached and the poll must defeat it.** It is
   served `public, s-maxage=86400, stale-while-revalidate=300` behind Cloudflare,
   so a plain poll is answered from the edge and never reaches origin. Measured on

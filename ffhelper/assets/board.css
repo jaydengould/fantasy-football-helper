@@ -345,7 +345,12 @@ button:active { transform: translateY(1px); }
 }
 
 .dash-dropdown { border-radius: 8px; }
-.dash-dropdown-content { border-radius: 8px; overflow: hidden; }
+/* `hidden auto`, never bare `hidden`: Dash makes THIS element the menu's
+   scroll container (`overflow-y: auto`), and a bare `hidden` turned every
+   list longer than the viewport into one that could only be searched --
+   unnoticed while the only dropdown was a four-league picker. x stays
+   hidden so option highlights clip to the rounded corners. */
+.dash-dropdown-content { border-radius: 8px; overflow: hidden auto; }
 .dash-dropdown-value { font-weight: 600; }
 
 /* ---------- type scale ----------
@@ -605,6 +610,38 @@ a:hover { text-decoration: underline; }
   width: 3rem;
   flex: none;
 }
+
+/* ---------- /trades: grade an offer ----------
+
+   The verdict is the one loud thing on the card. It spends --live and
+   --error on /trades, a second stated exception to the board rule above:
+   /draft never renders here, and the WORD carries the verdict, so the colour
+   is redundant, never the signal. "Too close to call" stays muted on purpose
+   -- it is a real answer, not a warning. */
+
+/* It sits above the finder's card; season pages have no grid to space them. */
+.grade { margin-bottom: var(--gap); }
+
+.grade__label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 14px 0 6px;
+}
+
+.verdict {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 18px 0 4px;
+  padding-left: 12px;
+  border-left: 4px solid var(--muted);
+}
+
+.verdict--accept { color: var(--live); border-color: var(--live); }
+.verdict--decline { color: var(--error); border-color: var(--error); }
+.verdict--too { color: var(--text); }
 
 /* ---------- homepage: the wire ----------
 
