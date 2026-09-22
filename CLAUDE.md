@@ -19,6 +19,7 @@ Read these when you need them, not before.
 | `docs/todo-archive.md` | Closed TODO sections, numbers preserved. |
 | `TODO.md` | The open queue only. |
 | `README.md` | User-facing. Short on purpose. |
+| `docs/usage.md`, `docs/development.md` | README overflow: config, draft/season command detail; tests and `scripts/`. |
 
 ## Working convention
 
