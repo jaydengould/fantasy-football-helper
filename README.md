@@ -1,62 +1,43 @@
 # fantasy-football-helper
 
-A live draft assistant that answers the question a printed cheat sheet cannot:
-**what will not survive until my next pick?**
+A fantasy football assistant for the draft and the season. It scores every player
+against your league's own rules and answers the questions a ranking list can't:
 
-Most draft tools rank players by value. This one ranks by *cost of waiting*. If
-three running backs of equal tier will still be available 19 picks from now and
-only one tight end will be, the board says take the tight end — even though the
-running backs score higher.
+- **On draft night:** who won't last until your next pick?
+- **In season:** which lineup, waiver claim, or trade actually improves your
+  starting lineup by more than projection noise?
+
+When nothing clears that bar it says so. An empty waiver board is an answer, not
+a failure.
 
 ## Status
 
-Draft mode is complete and has been exercised end to end against a full 180-pick
-live draft, which is where most of its bugs came from. Season mode's weekly
-lineup, waiver, and trade-finder commands all work end to end.
-
 | Capability | State |
 | --- | --- |
-| Projections scored against your league's real rules | working |
-| VBD, tiers, survival probability, VONA | working |
-| Optimal-lineup marginal value | working |
-| Live Sleeper draft feed | working |
-| Manual pick entry (any platform, no feed needed) | working |
-| Terminal board with auto-refresh | working |
-| Hand-typed picks survive a crash or restart | working |
-| Yahoo API feed | blocked on Yahoo developer approval |
-| Web app — draft board plus season pages (`python -m ffhelper.app`) | working |
-| Weekly start/sit lineup (`lineup`) | working |
-| Official practice report (nflverse) | working — the file appears once week 1 is played |
-| Opponent matchup context | working — a rank, not an adjustment: adjusting lost to plain projections on 2024 and 2025 |
-| Waivers (`waivers`) | working — Sleeper only: the pool needs every team's roster |
-| Trade finder (`trades`) | working — Sleeper only: the search needs every team's roster |
-| Grade a received offer (web `/trades`) | working — Sleeper only; entered by hand, as Sleeper's API does not serve pending offers |
+| Draft board, terminal and web, with live Sleeper feed or manual entry | working |
+| Weekly start/sit (`lineup`) | working |
+| Waivers (`waivers`) | working, Sleeper only |
+| Trade finder and offer grader (`trades`, web `/trades`) | working, Sleeper only |
+| Yahoo API | blocked on Yahoo developer approval; hand-entered settings work |
 
-## Requirements
+Waivers and trades need every team's roster, which only Sleeper's API serves.
 
-Python 3.12+. One runtime dependency does the work: `requests`. (`yfpy` is
-declared for the Yahoo feed, which is blocked on developer approval and imports
-nowhere yet.) Everything else is standard library — `tomllib` for config,
-`statistics` for the tier maths, `sqlite3` for season mode later.
-Adding a dependency needs a reason a few lines of stdlib cannot cover.
+## Install
+
+Python 3.12+.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"          # terminal board
-.venv/bin/pip install -e ".[web,dev]"      # ...and the web board
+.venv/bin/pip install -e ".[web,dev]"
 ```
 
-`dash` is deliberately optional. The terminal board is the fallback when the web
-board misbehaves, so it must start on a machine where `dash` is absent or broken.
+`web` adds `dash` for the browser app. It is optional: the terminal board runs
+without it.
 
-## Configuration
+## Configure
 
-Everything lives in `config.toml`. Copy the example league blocks and edit.
-
-### A league with a platform API (Sleeper)
-
-Settings sync automatically — scoring, roster slots, team count, and draft id are
-read from the platform.
+Settings live in `config.toml`. For a Sleeper league, scoring, roster slots, and
+team count sync from the platform:
 
 ```toml
 [[league]]
@@ -64,224 +45,30 @@ name = "my-sleeper-league"
 platform = "sleeper"
 league_id = "1234567890"      # the number in your league URL
 draft_slot = 3                 # your draft position, 1-indexed
+adp_source = "sleeper"
 ```
 
-`draft_slot` is deliberately manual. Draft order is often not final until the
-draft starts, and a wrong slot silently corrupts every survival number — so the
-tool never guesses it. Set it, then run `preflight` to confirm it took; a value
-left commented out fails silently in exactly the way this warning describes.
+`draft_slot` is manual on purpose: a wrong slot silently corrupts every survival
+number, so the tool never guesses it. For Yahoo, ESPN, or any league without an
+API, enter the settings by hand. See [docs/usage.md](docs/usage.md#configuration)
+for that, plus tunables and secrets.
 
-Optionally, choose which ADP the survival model believes:
-
-```toml
-adp_source = "sleeper"   # or "ffc" (the code default)
-```
-
-Survival calibration depends almost entirely on the accuracy of the ADP *mean*,
-so this matters more than it looks. **Measured across three 12-team mock drafts
-(540 picks), Sleeper's ADP predicted the room roughly twice as well as FFC's** —
-including in Yahoo rooms, where the obvious guess is the other way round. FFC's
-calibration spanned 24 points across its whole range and was not monotonic;
-Sleeper's spanned 47 and rose in every bucket.
-
-Don't take that on faith for your own league: `scripts/calibrate.py` settles it
-with a measurement (see [Scripts](#scripts)), and one config line reverts it.
-
-### A league without a platform API (Yahoo, ESPN, CBS, anywhere)
-
-Enter the settings by hand. **This is a first-class path, not a workaround** —
-Yahoo requires per-developer API approval that can be denied, ESPN has no official
-API, and most people will use the tool this way.
-
-```toml
-[[league]]
-name = "my-yahoo-league"
-platform = "yahoo"
-league_id = "123456"
-draft_slot = 4
-
-  [league.settings]
-  num_teams = 10
-  bench = 5
-  roster_slots = { QB = 1, RB = 2, WR = 2, TE = 1, FLEX = 2, K = 1, DEF = 1 }
-
-  [league.settings.scoring]
-  pass_cmp = 0.25
-  pass_yd  = 0.04
-  pass_td  = 6
-  pass_int = -2
-  rush_yd  = 0.1
-  rush_td  = 6
-  rec      = 0.5
-  rec_yd   = 0.1
-  rec_td   = 6
-  fum_lost = -2
-```
-
-Scoring keys follow Sleeper's stat naming. A platform API, where one exists, takes
-precedence over this block — so a league that later gains API access starts
-syncing with no config change.
-
-### Tunables
-
-```toml
-[tunables]
-tier_break_sigma = 1.0        # higher = fewer, coarser tiers
-divergence_flag_slots = 10    # WITHIN-POSITION rank gap that earns a flag
-close_call_points = 3.0       # how big a gain must be to print (lineup/waivers/trades)
-# playoff_weight = 1.5        # uncomment to weight playoff weeks UP instead of down
-
-[tunables.flex_share]         # how flex slots split across positions
-RB = 0.5
-WR = 0.5
-TE = 0.0
-
-[tunables.poll_seconds]       # floored at 1s to avoid API rate limiting
-sleeper = 5
-yahoo = 12
-```
-
-### Secrets
-
-Only credentials belong in `.env` — league ids are not secret and live in
-`config.toml`.
-
-```
-YAHOO_CONSUMER_KEY=...
-YAHOO_CONSUMER_SECRET=...
-```
-
-`.env` is gitignored. Do not commit it.
-
-## Usage
-
-### Before the draft
+## Use
 
 ```bash
-.venv/bin/python -m ffhelper.cli preflight --league my-sleeper-league
+.venv/bin/python -m ffhelper.cli preflight --league NAME   # check sources, joins, config
+.venv/bin/python -m ffhelper.cli lineup    --league NAME   # optimal lineup this week
+.venv/bin/python -m ffhelper.cli waivers   --league NAME   # add/drops worth making
+.venv/bin/python -m ffhelper.cli trades    --league NAME   # trades that help both sides
+.venv/bin/python -m ffhelper.cli run       --league NAME   # live draft board (terminal)
+.venv/bin/python -m ffhelper.app           --league NAME   # web app at 127.0.0.1:8050
 ```
 
-Fetches every source, validates all joins, reports unmatched players, confirms the
-feed is reachable, and warns if `draft_slot` is unset. **Run this the morning of
-your draft**, not five minutes before.
+The web app has a home page plus `/lineup`, `/waivers`, `/trades`, and `/draft`.
+The `lineup`, `waivers`, and `trades` commands take `--week N`; `trades` also
+takes `--player "name"` to search around one player.
 
-### During the draft
-
-```bash
-.venv/bin/python -m ffhelper.cli run --league my-sleeper-league
-```
-
-The board refreshes automatically. If the feed drops, it keeps rendering the last
-known state behind a `FEED STALE` banner rather than dying.
-
-### The web board
-
-```bash
-.venv/bin/python -m ffhelper.app --league my-sleeper-league
-```
-
-The same engine, in a browser at `http://127.0.0.1:8050/draft` (the root URL is
-the season homepage — league picker, status, headlines, trending; see below).
-Click a row to mark that
-player drafted; your own roster is derived from your `draft_slot` and the pick
-number rather than typed. On a league with no feed, a per-row override corrects
-attribution when entry has drifted — leagues that have a feed do not show it,
-since the feed's own pick data settles who drafted whom. Filter by position (or
-`FLEX` for everything RB/WR/TE-eligible), search by name, and read the `TIER`
-badge, which is coloured by position: rows sharing a colour and a number are
-close to interchangeable. A panel shows your starting lineup slot by slot, empty
-slots included, then your bench.
-
-**Run one board at a time _per league_.** Both read the same
-`.draft/<league>-<date>.jsonl` journal, but the terminal replays it only at
-startup, so a terminal board left running beside the web board will quietly show
-a stale pool. Stopping one and starting the other loses nothing, including your
-roster — measured at 0.48s from ctrl-C to a full terminal board. That is the
-fallback path, and it is rehearsed.
-
-Two leagues drafting at once is fine — the journals are keyed by league and the
-cache is written atomically. Give the second web board its own port:
-
-```bash
-.venv/bin/python -m ffhelper.app --league my-other-league --port 8051
-```
-
-### Manual entry
-
-For a league with no feed — or if a feed dies mid-draft — type into the running
-board:
-
-| Input | Effect |
-| --- | --- |
-| `gibbs` | mark Jahmyr Gibbs drafted by someone |
-| `me nacua` | mark Puka Nacua drafted **by you** (counts toward your roster) |
-| `-nacua` | take that mark back — he returns to the board |
-| `2` | choose the 2nd option when a name is ambiguous |
-| `u` | undo the last change, whatever it was |
-| `nacua, me chase, gibbs` | several at once — one line instead of one round trip each |
-
-Partial names work, accents and suffixes are handled (`pineiro` finds Eddy
-Piñeiro, `harrison` finds Marvin Harrison Jr.). **Ambiguous names always prompt** —
-typing `robinson` will not silently pick between Bijan and Brian.
-
-`me ` matters more than it looks: a plain mark only clears a player off the
-board, while `me ` also feeds your roster, which is what MARG is measured
-against. In a league with no feed, skipping it means every marginal-value number
-is computed against an empty roster.
-
-`-` searches only what *you* marked by hand, so `-robinson` resolves outright if
-only one Robinson was marked, and a feed-reported pick can never be un-drafted.
-Recording a pick and then realising it was yours needs no undo — just claim it:
-`nacua` followed by `me nacua`.
-
-`u` restores the exact prior state, including whether a mark was claimed as
-yours, and a no-op never consumes an undo.
-
-### If it crashes, you lose nothing
-
-Hand-typed marks are journalled to `.draft/<league>-<date>.jsonl` as they happen.
-Restart and the board picks up where it left off:
-
-```
-restored 87 mark(s) from /…/.draft/my-yahoo-league-2026-09-01.jsonl
-  -> 87 drafted, 9 yours. Delete that file to start fresh.
-```
-
-Undo history is rebuilt too, so `u` still works for picks typed before the crash.
-The filename is dated so a mock never replays into a real draft. If the log can't
-be written the draft carries on without it — persistence is insurance, never a
-dependency.
-
-### When the feed disagrees with you
-
-If you claim a player the feed then reports from another seat, the claim is
-dropped from your roster and says so:
-
-```
-CLAIM OVERRULED: the feed says Puka Nacua was taken from seat 4, not yours --
-dropped from your roster. Clear the stale claim with '-<name>'.
-```
-
-He stays off the board — he really was drafted, just not by you.
-
-### Weekly lineup (season mode)
-
-```bash
-.venv/bin/python -m ffhelper.cli lineup --league my-sleeper-league
-```
-
-Also at `/lineup` in the web app, as a table. Same builder, same numbers —
-and either surface records this week's snapshot row, since the projections
-behind a lineup are never served again.
-
-One-shot — no loop, no polling. Prints your optimal starting lineup for the
-current NFL week, scored against your league's real settings, then your bench.
-A player with no projection this week is shown separately rather than scored
-as zero, and a player who *cannot play* — Out, IR, PUP, suspended — is excluded
-from the lineup and listed under `CANNOT PLAY` with the projection he cannot
-reach. Questionable and Doubtful still start: they mean *might* play, and this
-tool will not turn "might" into a number. Add `--week 4` to check a different
-week.
+Real output, week 1:
 
 ```
 bros-fantasy  (jaydenpg)   week 1
@@ -301,133 +88,15 @@ practice report : unavailable (HTTPError) -- nflverse publishes injuries_2026.cs
 snapshot        : 120 players recorded for week 1 (15 on your roster, 105 startable pool)
 ```
 
-Once three games have been played, each row carries its matchup — a rank, never
-a number of points (real output, week 6 of 2025 replayed):
+Each run also records a snapshot of the week's projections to a local
+`season.db`, since the APIs never serve them again.
+[docs/usage.md](docs/usage.md) covers draft-night mechanics (manual entry, crash
+recovery), what each season command prints, and why.
 
-```
-  WR    Puka Nacua               WR  LAR   22.3  vs BAL soft 31/32  [Questionable]
-  TE    Trey McBride             TE  ARI   14.8  vs IND tough 11/32
-```
+## Reading the draft board
 
-That is where the opponent ranks in points allowed to that position this season,
-under your league's own scoring, 1 being the stingiest. Nothing reads it:
-adjusting a projection by that rank was measured on 2024 and 2025 and made the
-projection *worse*, so the tool shows what a defense has given up and leaves the
-call to you.
-
-The practice line is the official Wed-Fri injury report, which Sleeper does not
-carry for anybody; it joins on `gsis_id` and shows as `[Limited]` or `[DNP]`
-beside the player. The season's file does not exist until week 1 has been
-played, which is what the line above says.
-
-That last line is the run recording what every source claimed at the moment
-you decided, into `season.db` (gitignored, created on first use). It records
-your roster *and* every startable player at each position — the depth each
-league actually starts, so the record is wide enough to measure a per-position
-projection error from later, not just your own fifteen. The APIs
-serve current state only, so a week not recorded before it is played can never
-be scored afterwards. Re-running in the current week replaces that week — the
-record is your last look before kickoff. A run for a PAST week prints normally
-and deliberately writes nothing, rather than overwriting real inputs with
-today's projections.
-
-For a league with no API (Yahoo, ESPN, ...), write one player name per line
-into `.roster/<league>.txt` and the lineup is built from that file instead of
-a live roster. `preflight` reports the file's path, player count, and age.
-
-### Waivers (season mode)
-
-```bash
-.venv/bin/python -m ffhelper.cli waivers --league my-sleeper-league
-```
-
-Also at `/waivers` in the web app, as tables.
-
-Ranks the free-agent pool by what adding a player is actually worth: your roster
-is full, so an add is an add-and-drop, and the number is the gain to your
-*starting lineup* over a horizon — this week, and the rest of the season — after
-paying for it with the best available cut.
-
-Most weeks it prints nothing, and that is the point (real output, week 1):
-
-```
-WAIVERS -- bros-fantasy (jaydenpg) -- week 1
-  waiver priority 8 of 12 -- a successful claim sends you to 12th
-
-  nothing on the wire beats what you already have.
-  (a target must gain more than the weekly projection error to be listed.)
-```
-
-A target has to clear `close_call_points * sqrt(weeks)` to be listed. The bar
-grows with the horizon because a longer total carries more error, but only as
-its square root, because independent weekly errors partly cancel. On a healthy
-roster the best thing available is inside that noise, so an empty board is the
-honest answer rather than a failure.
-
-Sleeper only: the pool is every player minus the union of *every* roster, and a
-platform with no API cannot say who is owned. Trending adds are printed beside a
-target when Sleeper has a count, labelled as national — they say nothing about
-what your own leaguemates want.
-
-### Trade finder (season mode)
-
-```bash
-.venv/bin/python -m ffhelper.cli trades --league my-sleeper-league
-.venv/bin/python -m ffhelper.cli trades --league my-sleeper-league --player "some player"
-```
-
-Also at `/trades` in the web app, behind a button rather than on page load:
-the full sweep is eleven opponents by three shapes and takes about five
-minutes, so navigating there must not start one.
-
-The same page grades an offer someone sent you: pick the players you give and
-get (the first player picked sets the team), and it answers **Accept**,
-**Decline**, or **Too close to call** from your rest-of-season lineup gain,
-against the same floor the finder uses. It shows any player you would have to
-drop and what that costs. When the drop is one of your own players, it names
-the smaller ask that keeps him and what keeping him costs. There is no letter
-grade: A to F would need cutoffs nobody has measured.
-
-Searches every opponent's roster for the best 1-for-1, 2-for-1, and 2-for-2
-that clears a floor on **both sides** — a trade only you gain from is not a
-trade — and prints the best offer per opponent. `--player` pins the search to
-trades involving one player, either direction, which runs far faster.
-
-Real output against a live 12-team league, week 1 (~2.5 minutes to search
-every opponent). The opponent-names endpoint was disabled for this one
-capture so the sample doesn't print a leaguemate's real handle in a public
-repo — the tool's own documented degradation path (see `_trades`'s handling
-of `load_league_users`), not a hand edit; every gain, package, and the
-one-row result are exactly what the engine returned:
-
-```
-TRADES -- bros-fantasy (jaydenpg) -- week 1, 17 weeks scored
-  !! could not reach Sleeper's league users endpoint (...) -- opponent names are unavailable
-  best offer per opponent
-
-  roster 1         you + 29.1   them + 12.8   [2-for-2]
-                   give Khalil Shakir (WR) + Christian Watson (WR)
-                   get  George Pickens (WR) + Los Angeles Chargers (DEF)
-
-  it cannot tell you whether they will accept -- this league has never
-  made a trade, so there is no history to rank managers by.
-  preseason projections barely move week to week, so a September board is
-  close to a restatement of season-long consensus.
-```
-
-One row across the whole league is a real result, not a bug: most pairs of
-rosters have nothing to trade, and the board says so rather than manufacturing
-a marginal offer to fill space. It never estimates whether the other manager
-would say yes — acceptance depends on attention and stubbornness the data
-cannot see, and inventing a percentage would dress up a guess as a number.
-
-Sleeper only, for the same reason as `waivers`: the search needs every
-opponent's roster.
-
-## Reading the board
-
-A real board, 12-team full PPR, on the clock at pick 45, holding
-Henry / Etienne / Kyren Williams / Smith-Njigba:
+Most draft tools rank by value. This one ranks by the **cost of waiting**. A real
+board, 12-team full PPR, on the clock at pick 45:
 
 ```
 #   PLAYER                   POS     VONA     VBD    MARG TIER   SURV   DIV  FLAGS
@@ -441,197 +110,45 @@ Henry / Etienne / Kyren Williams / Smith-Njigba:
 
 | Column | Meaning |
 | --- | --- |
-| **VONA** | What you lose by waiting. **The board sorts by this.** Negative means waiting is strictly better. |
+| **VONA** | What you lose by waiting. **The board sorts by this.** |
 | **VBD** | Points above a replacement-level player at that position |
-| **MARG** | How much this player improves your *starting lineup* — a third RB is worth less than a first |
-| **TIER** | Players in a tier are roughly interchangeable. Fixed from the full preseason pool, so a tier number means the same thing at pick 160 as at pick 1 |
-| **SURV** | Probability of lasting to your next pick, **given he is on the board now** |
-| **DIV** | Projection rank minus market rank, **within position**. A flag, never blended into the score. `-` means the market never priced him — no opinion is not agreement. |
+| **MARG** | How much he improves your *starting lineup* |
+| **TIER** | Roughly interchangeable players, fixed from the full preseason pool |
+| **SURV** | Likelihood of lasting to your next pick. An ordering, not a calibrated probability: it reads about 25–35 points low |
+| **DIV** | Projection rank minus market rank, within position. A flag, never blended into the score |
 
-That board is the whole argument. **Swift has the highest VBD on screen (60.1)
-and is third.** He has a 67% chance of lasting to your next turn, so waiting
-costs you 4.8 points. Maye is worth half as much by VBD but only 27% likely to
-survive, so waiting costs 7.3.
+Swift has the highest VBD on screen and sits third: he is the likeliest to last,
+so waiting on him costs little. Maye and Burrow are both tier-2 quarterbacks, but
+Maye is far less likely to last, so he is the one to take now. Take the tier the
+board points at; the name within it is your call. Across 2021–2025, no
+position's preseason top 12 ranked better than about +0.35 correlation with the
+final order, so the gaps between tiers are real and the order within one is
+close to noise.
 
-Maye and Burrow show what `TIER` and `SURV` do together: both are tier 2
-quarterbacks, so the projections cannot confidently separate them — yet waiting
-costs 7.3 for one and 0.7 for the other, purely because one is 27% to last and
-the other 45%. Take the tier the board points at; which name inside it is your
-call.
+## Principles
 
-A value-ranked cheat sheet puts Swift first and is wrong. The question is never
-"who is best available", it is "who will not be here next time".
+- **Players join on integer IDs, never names.** Bijan and Brian Robinson are both
+  Atlanta running backs.
+- **Projection and market are never averaged.** A board that tracks consensus
+  produces consensus results; disagreement is shown as a flag.
+- **Degrade visibly, never fabricate.** A missing source, stale feed, or
+  ambiguous name produces a labelled gap, not a plausible guess.
+- **It advises; it never drafts.** No auto-pick.
 
-`FLAGS` carries injury status, bye week, and — where the model and the market
-disagree by more than `divergence_flag_slots` places within a position —
-`MODEL+n` or `MARKET+n`. A bye reads lowercase (`bye8`) until you already roster
-someone at that position on that week, when it becomes `BYE8 CLASH`: Montgomery
-flags above because the roster already holds Derrick Henry, also out in week 8. `MODEL+` means the projection likes him more than the
-room does. It is a prompt to look, never an instruction, and it is deliberately
-rare: about 6% of top-20 rows.
-
-VONA is rounded to the displayed tenth before sorting and floored at zero, so the
-board agrees with the numbers on screen and ties break on value. Without the
-floor, every negative VONA is comparable only within its own position, and at
-pick 1 — and on both sides of every snake turn — kickers sort above McCaffrey.
-
-Two banners replace the ranking when ranking would mislead:
-
-- **`STARTING LINEUP FULL`** — every starting slot is filled, so no available
-  player improves your lineup and there is nothing honest left to rank on. The
-  remaining order is bench value over league replacement, and the tool says
-  plainly that it has no model of upside or handcuffs.
-- **`MANUAL MODE`** / **`FEED STALE 23s`** — the board is running without a feed,
-  or the feed stopped answering. It keeps rendering the last known state rather
-  than dying, but it never pretends to be current.
-
-`TIER` deserves more weight than its width suggests. Measured across 2021–2025,
-no position's preseason top 12 was ordered better than about +0.35 rank
-correlation with what actually happened. The gaps *between* tiers are real; the
-order *within* one is close to noise.
+Settled design decisions and the measurements behind them are in
+[docs/decisions.md](docs/decisions.md). Tests, scripts, and contributor rules
+are in [docs/development.md](docs/development.md).
 
 ## Data sources
 
-- **Sleeper API** — player database, projections, ADP, live draft picks. Free, no
-  auth. Projection data is provided by Rotowire via Sleeper; it is fetched at
-  runtime and never redistributed with this repository.
-- **FantasyFootballCalculator ADP** — per-player ADP standard deviation, which no
-  other free source publishes and which the survival math depends on.
-  *ADP data courtesy of [Fantasy Football Calculator](https://fantasyfootballcalculator.com).*
-- **DynastyProcess player IDs** — cross-platform ID crosswalk. Required because
-  Sleeper's own `yahoo_id` is unpopulated for every rookie and most second-year
-  players.
+- **Sleeper API**: players, projections (Rotowire, via Sleeper), ADP, rosters,
+  live draft picks. Fetched at runtime and never redistributed with this repo.
+- **Fantasy Football Calculator**: bye weeks, and an alternative ADP source.
+- **DynastyProcess**: cross-platform player ID crosswalk.
+- **nflverse**: the official weekly practice report.
 
-**Deliberately single-source on projections.** ESPN was the obvious second
-opinion and was tested rather than assumed: on 2025, Rotowire beat it 66.5 to
-70.5 MAE overall and 75.3 to 93.2 at quarterback, and averaging the two never
-beat Rotowire alone. Run `scripts/backtest.py` to reproduce that. The remaining
-risk is real — every projection is poor in absolute terms — but the honest
-upgrade is a confidence interval on the board, not another opinion.
+## License
 
-## Design notes
-
-**Player identity joins on integer IDs, never names.** Bijan Robinson and Brian
-Robinson are both running backs on Atlanta; a name join silently merges them and
-every downstream number becomes quietly wrong. FFC is the one source with no
-cross-platform id, so it is confined to a final, non-load-bearing enrichment step
-that reports unmatched and ambiguous names instead of guessing.
-
-**Projection rank and market rank are never averaged.** A board that tracks
-consensus produces consensus results. The disagreement is surfaced as a flag for
-you to judge.
-
-**Degrade, never fabricate.** Unknown draft slot, unreachable feed, ambiguous
-name, missing settings, a claim the feed contradicts — each produces a visible,
-labelled degradation rather than a plausible guess. This extends to analysis:
-`scripts/backtest.py` refuses to score a projection source that cannot prove it
-was frozen before the season it predicts.
-
-**Replacement level is a property of the league, not of who is left.** Drawing it
-from the draining pool makes the baseline collapse as the draft runs down — at
-pick 164 of a test draft that gave a backup quarterback a VBD of +149 against a
-true −32.5, and produced a confident case for drafting a third one.
-
-**The tool advises; it never drafts.** There is no auto-pick and there will not
-be one.
-
-## Scripts
-
-Five tools that answer questions the board cannot.
-
-```bash
-.venv/bin/python scripts/backtest.py [season ...]     # is source X actually better?
-.venv/bin/python scripts/backtest_weekly.py [--league L] [--season Y]  # weekly, and matchup
-.venv/bin/python scripts/calibrate.py <draft_id> <slot>       # Sleeper draft
-.venv/bin/python scripts/calibrate.py <log.jsonl> [more.jsonl ...]   # pooled
-.venv/bin/python scripts/transcribe.py <league> [slot] [results.txt]
-.venv/bin/python scripts/mutate.py
-```
-
-**`backtest.py`** scores a projection source against what actually happened.
-Its real work is refusing to be fooled: both Sleeper and ESPN will serve a
-"season projection" for a season already played, and some of those numbers were
-revised *during* that season. A revised projection scores brilliantly and means
-nothing. So a source must prove it was frozen before week 1 — a preseason
-projection gives nearly everyone a full slate, because it cannot know who gets
-hurt — and a source that fails is named and skipped, never scored.
-
-**`backtest_weekly.py`** is its weekly sibling, and it is why there is no
-matchup column: scored on 2024 and 2025, adjusting a projection by what the
-opposing defense has allowed made it *worse* at every position and every
-shrinkage level. It also checks provenance, and finds a subtler failure than
-`backtest.py` does — the weekly projections served for a past season are
-filtered to the players who actually played, so absolute weekly accuracy from
-them cannot be quoted while a two-arm comparison on the same rows still can.
-
-Because an average error over every projected player-week is not the question a
-lineup asks, it scores the same data a third way: startable pairs at one
-position projected within N points, "did the higher one actually outscore the
-other". That is the gate any future lineup signal has to clear. The matchup
-adjustment does not clear it either — it loses at RB and WR in both seasons and
-swings sign at TE — though QB gains ~2 points of hit rate in both, which is
-logged as a hypothesis and not acted on.
-
-**`calibrate.py`** replays a completed draft and asks, at each of your turns,
-"will this player last to my next pick?", then buckets the answers by what the
-model predicted. A well-calibrated model reads 10/30/50/70/90 down the actual
-column. Flat means it has no discriminating power. This is how `adp_source` gets
-settled by measurement. Given `.draft/*.jsonl` journals instead of a Sleeper
-draft id it scores drafts entered by hand or transcribed, reconstructing pick
-order from the order marks were made. **Pass several and they are pooled into
-one table** — one draft is a hypothesis, not a finding. Your seat is read out of
-each journal and then proven against the snake; a log whose claimed picks don't
-land on a seat's snake positions is refused rather than scored, since a missing
-pick shifts every number after it.
-
-It also reports **room discipline** — the median rank, in ADP order, of the
-player each pick took. A room drafting straight down the list reads 1–2, which
-means the calibration below it is measuring that list against itself. Autodraft
-and CPU drafters do exactly this, so the number decides whether to believe the
-table.
-
-**`transcribe.py`** turns a finished draft's results page into a journal
-`calibrate.py` can score. Copy the results list, `pbpaste > .draft/results.txt`,
-and run it — the seat comes from the league's `draft_slot`. This is how a draft
-too fast to type into still yields a measurement.
-
-It reads rows like `(4) manager - Cook III, James (Buf - RB)`: surname-first
-names are put back in order (so suffix stripping lines them up with the pool),
-defenses join on their **team code** because "Los Angeles" names two of them,
-and rows are sorted by their reconstructed pick number rather than by where they
-appear — a snake's even rounds run right-to-left in the board view. It refuses
-to write if any row resolves to no player or two, or if the rows are not a
-complete `1..N` run, since a missing row shifts every pick after it.
-
-**`mutate.py`** breaks the engine on purpose, one line at a time, and checks the
-suite notices. It is the only mechanical check that a test does anything, and it
-has caught several tests that passed against deliberately broken code.
-
-## Development
-
-```bash
-.venv/bin/pytest          # 500 tests, no network, runs in ~1.7s
-```
-
-`ffhelper/value.py` is pure — no I/O, no network, no module state — so the entire
-ranking engine tests without a network.
-
-Two conventions worth knowing before contributing:
-
-- **A new test must be shown to fail before the fix.** `git stash push -u -- ffhelper
-  && pytest -k <name>`. A test written after a fix and never seen red is not
-  evidence that it works. The `-u` is not optional when the test covers a NEW
-  file: plain `git stash push` leaves untracked files on disk, so the module
-  stays present and the run proves nothing.
-- **Add a mutation to `scripts/mutate.py` alongside non-trivial logic.** It is one
-  line, and it is the only thing that distinguishes a test from a decoration.
-
-Neither is bureaucracy. Every serious defect this project has had was found by
-running the code against real data while a full green suite looked on.
-
-## License and attribution
-
-Personal project. ADP data courtesy of
-[Fantasy Football Calculator](https://fantasyfootballcalculator.com). Projections
-via Sleeper (Rotowire). Player ID crosswalk from
-[DynastyProcess](https://github.com/dynastyprocess/data).
+[MIT](LICENSE). Covers this code only, not the data it fetches. ADP data
+courtesy of [Fantasy Football Calculator](https://fantasyfootballcalculator.com).
+Player ID crosswalk from [DynastyProcess](https://github.com/dynastyprocess/data).
