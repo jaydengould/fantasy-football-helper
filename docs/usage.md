@@ -52,6 +52,14 @@ For season commands, write one player name per line into `.roster/<league>.txt`
 and the lineup is built from that file. `preflight` reports its path, player
 count, and age.
 
+Or maintain it from the web app: on `/lineup` for a non-Sleeper league, each
+player has a **Drop** button, and an **Add player** search appears while the
+roster is below `starters + bench`. Make the move on the platform first; this
+only updates the file. The app writes added players as `<sleeper_id>  <name>`
+(e.g. `8259  Cameron Dicker`): a line whose first word is a player ID is read by
+ID, because some full names match more than one player (`Ian Thomas` is inside
+`Brian Thomas`). Hand-typed name lines keep working.
+
 ### Tunables
 
 ```toml

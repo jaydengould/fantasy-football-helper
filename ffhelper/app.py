@@ -26,7 +26,8 @@ from ffhelper.board import (
 from ffhelper.cli import (
     DRAFT_LOG_DIR, DROP_CAVEAT, ROOT, ROSTER_DIR, SEASON, TRADE_CAVEAT, _draft_log_path,
     _matchup_note, _record_snapshot, _restore_marks, _select_feed, _status_note,
-    load_board_inputs, roster_file_age_days,
+    add_to_roster_file, load_board_inputs, read_roster_file, remove_from_roster_file,
+    resolve_settings, roster_entry_count, roster_file_age_days,
 )
 from ffhelper.config import League, Tunables, get_league, load_config
 from ffhelper.data import CACHE_DIR, Player, load_nfl_state, load_players, load_trending
@@ -829,7 +830,8 @@ def ineligible_player_rows(view) -> list[dict]:
 
 def simple_table(headers: list[str], rows: list[dict],
                  face_column: str | None = None,
-                 pos_columns: tuple[str, ...] = ()) -> html.Div:
+                 pos_columns: tuple[str, ...] = (),
+                 drop_section: str | None = None) -> html.Div:
     """A read-only `html.Table` from plain dicts.
 
     Not `dash_table.DataTable` -- these rows take no clicks, and DataTable's
@@ -852,8 +854,13 @@ def simple_table(headers: list[str], rows: list[dict],
     like is the drift this project keeps paying for. A value that is not a key
     -- FLEX, BN, the blank on a total row -- falls through uncoloured: FLEX is
     not a position, and inventing a colour for it would say it is.
+
+    `drop_section` adds a Drop button to every row with an id. The section is
+    part of the button's id because an unprojected starter is listed in two
+    tables, and two components sharing an id breaks the page.
     """
-    head = html.Tr([html.Th(h.upper(), style=_TABLE_HEADER) for h in headers])
+    head = html.Tr([html.Th(h.upper(), style=_TABLE_HEADER) for h in headers]
+                   + ([html.Th("", style=_TABLE_HEADER)] if drop_section else []))
     body = []
     for row in rows:
         cells = []
@@ -866,12 +873,18 @@ def simple_table(headers: list[str], rows: list[dict],
             if h == face_column and row.get("id"):
                 value = named(row["id"], row.get("pos", ""), value)
             cells.append(html.Td(value, style=style))
+        if drop_section:
+            cells.append(html.Td(html.Button(
+                "Drop", className="roster-drop",
+                id={"type": "roster-drop", "player": row["id"],
+                    "name": row.get("player", ""), "section": drop_section},
+            ) if row.get("id") else "", style=_TABLE_CELL))
         body.append(html.Tr(cells))
     table = html.Table([html.Thead(head), html.Tbody(body)], className="data-table")
     return html.Div(table, style={"overflowX": "auto"})
 
 
-def _lineup_children(view, snapshot_line: str = "") -> list:
+def _lineup_children(view, snapshot_line: str = "", editor: list | None = None) -> list:
     """Every `render_lineup` section as HTML: starters, bench, unprojected,
     close calls, notes. SPEC GAP ruling for task 7 -- the brief's
     `lineup_rows` covers only STARTERS and the total, but `render_lineup`
@@ -881,33 +894,38 @@ def _lineup_children(view, snapshot_line: str = "") -> list:
     builders above or reads the same view fields the text renderer does.
     """
     state = view.state
+    drop = editor is not None
     who = f"  ({view.owner})" if view.owner else ""
     children = [
         html.P(f"{view.league_name}{who}   week {view.week}",
               className="page-title"),
         simple_table(_LINEUP_HEADERS, lineup_rows(view), face_column="player",
-                     pos_columns=("slot", "pos")),
+                     pos_columns=("slot", "pos"),
+                     drop_section="starters" if drop else None),
     ]
 
     bench = bench_rows(view)
     if bench:
         children += [html.P("Bench", className="section-title"),
                      simple_table(_LINEUP_HEADERS, bench, face_column="player",
-                                  pos_columns=("slot", "pos"))]
+                                  pos_columns=("slot", "pos"),
+                     drop_section="bench" if drop else None)]
 
     unprojected = unprojected_player_rows(view)
     if unprojected:
         children += [html.P("No projection this week -- not started, and not a zero",
                             className="section-title"),
                      simple_table(_LINEUP_HEADERS, unprojected, face_column="player",
-                                  pos_columns=("slot", "pos"))]
+                                  pos_columns=("slot", "pos"),
+                     drop_section="unprojected" if drop else None)]
 
     cannot_play = ineligible_player_rows(view)
     if cannot_play:
         children += [html.P("Cannot play -- excluded from the lineup, "
                             "projection unreachable", className="section-title"),
                      simple_table(_LINEUP_HEADERS, cannot_play, face_column="player",
-                                  pos_columns=("slot", "pos"))]
+                                  pos_columns=("slot", "pos"),
+                     drop_section="ineligible" if drop else None)]
 
     if state.close_calls:
         children += [
@@ -936,7 +954,7 @@ def _lineup_children(view, snapshot_line: str = "") -> list:
     # caller, since it is a database write and this function renders.
     if snapshot_line:
         children.append(html.P(snapshot_line, className="note"))
-    return children
+    return children + (editor or [])
 
 
 _WAIVER_HEADERS = ["pos", "player", "gain", "drop", "starts", "trending"]
@@ -1285,7 +1303,94 @@ def trades_landing(league: str) -> html.Div:
     ], id="trades-content", className="card")
 
 
-def season_page_children(name: str, view, snapshot_line: str = ""):
+def roster_editor(league: str, capacity: int, path, players: dict) -> list:
+    """Drop confirm, reload target, and -- below capacity -- the Add card for a
+    hand-maintained (Yahoo) roster. The move is made in Yahoo first; this only
+    mirrors it into `.roster/<league>.txt`, and the page reload recomputes the
+    lineup from the file like any other visit."""
+    parts = [dcc.Store(id="roster-league", data={"league": league, "capacity": capacity}),
+             dcc.Store(id="roster-pending"),
+             dcc.ConfirmDialog(id="roster-confirm"),
+             dcc.Location(id="roster-reload", refresh=True),
+             html.P(id="roster-message", className="note")]
+    entries = roster_entry_count(path)
+    if entries >= capacity:
+        return parts
+    mine = {p.sleeper_id for p in read_roster_file(path, players)[0]}
+    # Teamless players are out: retirees and same-name duplicates, never a
+    # player a Yahoo add could produce this week.
+    options = [{"label": f"{p.name} ({p.position} {p.team})", "value": p.sleeper_id}
+               for p in sorted(players.values(), key=lambda p: (p.name, p.sleeper_id))
+               if p.team and p.sleeper_id not in mine]
+    parts.append(html.Div(className="roster-add", children=[
+        html.P("Add player", className="section-title"),
+        html.P(f"{entries} of {capacity} roster spots filled. Make the move in "
+               f"Yahoo first -- this only updates the app.", className="note"),
+        dcc.Dropdown(id="roster-add-player", options=options,
+                     placeholder="Search players"),
+        html.Button("Add", id="roster-add", style={"marginTop": "12px"}),
+    ]))
+    return parts
+
+
+def apply_roster_add(path, player_id: str | None, players: dict, capacity: int) -> str:
+    """'' on success, else the reason, for the page. Capacity is rechecked
+    here, not only by hiding the card: a second open tab still shows it."""
+    if not player_id:
+        return "pick a player first"
+    if roster_entry_count(path) >= capacity:
+        return f"roster is full ({capacity}) -- drop someone first"
+    try:
+        add_to_roster_file(path, players[player_id], players)
+    except (ValueError, OSError) as exc:
+        log.error("roster add failed: %s", exc)
+        return f"could not add: {exc}"
+    return ""
+
+
+def apply_roster_drop(path, player_id: str, players: dict) -> str:
+    try:
+        remove_from_roster_file(path, player_id, players)
+    except OSError as exc:
+        log.error("roster drop failed: %s", exc)
+        return f"could not drop: {exc}"
+    return ""
+
+
+def ask_drop(triggered_id, triggered: list, editor: dict):
+    """Drop button -> open the confirm. `triggered` value None is a button
+    being inserted into the page, not a click."""
+    if not triggered_id or not triggered or not triggered[0].get("value"):
+        return dash.no_update, dash.no_update, dash.no_update
+    return (True, f"Drop {triggered_id['name']} from {editor['league']}? "
+                  f"Make the move in Yahoo first -- this only updates the app.",
+            triggered_id["player"])
+
+
+def _roster_path(editor: dict):
+    return ROSTER_DIR / f"{editor['league']}.txt"
+
+
+def _reload_or_say(editor: dict, error: str):
+    return (dash.no_update, error) if error else (f"/lineup?league={editor['league']}", "")
+
+
+def confirm_drop(submitted, player_id: str | None, editor: dict):
+    if not submitted or not player_id:
+        return dash.no_update, dash.no_update
+    return _reload_or_say(editor, apply_roster_drop(
+        _roster_path(editor), player_id, load_players()))
+
+
+def add_player(n_clicks, player_id: str | None, editor: dict):
+    if not n_clicks:
+        return dash.no_update, dash.no_update
+    return _reload_or_say(editor, apply_roster_add(
+        _roster_path(editor), player_id, load_players(), editor["capacity"]))
+
+
+def season_page_children(name: str, view, snapshot_line: str = "",
+                         editor: list | None = None):
     """One season view as page content. /lineup, /waivers and /trades all
     render as HTML (tasks 7-9): `trades_children` carries `render_trades`'s
     header, notes, mode line, per-proposal blocks and TRADE_CAVEAT, exactly
@@ -1294,7 +1399,7 @@ def season_page_children(name: str, view, snapshot_line: str = ""):
     if view.error:
         return html.Div(view.error, style={"padding": "16px", "maxWidth": "60ch"})
     if name == "lineup":
-        return html.Div(_lineup_children(view, snapshot_line), className="card")
+        return html.Div(_lineup_children(view, snapshot_line, editor), className="card")
     elif name == "waivers":
         return html.Div(waivers_children(view), className="card")
     return html.Div(trades_children(view), className="card")
@@ -1338,8 +1443,17 @@ def _season_layout_for(name: str, league_names: list[str], default_league: str):
         snapshot_line = "" if view.error or name != "lineup" else _record_snapshot(
             lg, view.season_str, view.week, view.state_week, view.state,
             view.projected_ids, view.pool)
+        editor = None
+        # The branch `cli._resolve_my_roster` reads the file on: any league
+        # not on Sleeper is a hand-maintained roster.
+        if name == "lineup" and not view.error and lg.platform != "sleeper":
+            # ponytail: capacity is `rounds` (starters + bench), exact for a
+            # league with no IR (Bush-League, read off Yahoo 2026-09-23). An
+            # IR league needs an `ir` count carried into LeagueSettings.
+            editor = roster_editor(lg.name, resolve_settings(lg).rounds,
+                                   ROSTER_DIR / f"{lg.name}.txt", load_players())
         return shell(name, league, league_names,
-                     [season_page_children(name, view, snapshot_line)])
+                     [season_page_children(name, view, snapshot_line, editor)])
     return layout
 
 
@@ -1648,8 +1762,43 @@ def _register_callbacks(app, leagues, tunables, cache):
             return dash.no_update
         return f"?league={name}"
 
+    @app.callback(
+        Output("roster-confirm", "displayed"),
+        Output("roster-confirm", "message"),
+        Output("roster-pending", "data"),
+        Input({"type": "roster-drop", "player": dash.ALL, "name": dash.ALL,
+               "section": dash.ALL}, "n_clicks"),
+        dash.State("roster-league", "data"),
+        prevent_initial_call=True,
+    )
+    def _ask_drop(_clicks, editor):
+        return ask_drop(dash.ctx.triggered_id, dash.ctx.triggered, editor)
+
+    @app.callback(
+        Output("roster-reload", "href"),
+        Output("roster-message", "children"),
+        Input("roster-confirm", "submit_n_clicks"),
+        dash.State("roster-pending", "data"),
+        dash.State("roster-league", "data"),
+        prevent_initial_call=True,
+    )
+    def _confirm_drop(submitted, player_id, editor):
+        return confirm_drop(submitted, player_id, editor)
+
+    @app.callback(
+        Output("roster-reload", "href", allow_duplicate=True),
+        Output("roster-message", "children", allow_duplicate=True),
+        Input("roster-add", "n_clicks"),
+        dash.State("roster-add-player", "value"),
+        dash.State("roster-league", "data"),
+        prevent_initial_call=True,
+    )
+    def _add_player(n_clicks, player_id, editor):
+        return add_player(n_clicks, player_id, editor)
+
     # All four exposed for direct testing: a callback sealed inside this
     # function is code no test can reach, and untestable code is untested code.
+    # The roster callbacks are one-line calls into module functions instead.
     return _refresh, _write, _run_trades, _grade_offer, _sync_offer, _switch_league
 
 

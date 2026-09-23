@@ -1985,6 +1985,76 @@ def test_read_roster_file_resolves_names_and_reports_every_problem_line(tmp_path
     assert any("Nobody At All" in m for m in problems), problems
 
 
+def _thomas_pool():
+    # "ian thomas" is a substring of "brian thomas" -- the measured 2026-09-23
+    # case where a name written by the app cannot be read back.
+    return {
+        "10": Player("10", "Ian Thomas", "TE", "LV"),
+        "11": Player("11", "Brian Thomas Jr.", "WR", "JAX"),
+        "3": Player("3", "Josh Allen", "QB", "BUF"),
+    }
+
+
+def test_read_roster_file_resolves_an_id_line_where_the_name_is_ambiguous(tmp_path):
+    pool = _thomas_pool()
+    path = tmp_path / "r.txt"
+    path.write_text("Ian Thomas\n")
+    players, problems = cli.read_roster_file(path, pool)
+    assert players == [] and len(problems) == 1      # the fixture reproduces the failure
+
+    path.write_text("10  Ian Thomas\n")
+    players, problems = cli.read_roster_file(path, pool)
+    assert [p.sleeper_id for p in players] == ["10"] and problems == []
+
+
+def test_add_to_roster_file_appends_an_id_line_that_reads_back(tmp_path):
+    pool = _thomas_pool()
+    path = tmp_path / "r.txt"
+    path.write_text("# header\nJosh Allen")            # no trailing newline, like the real file
+    cli.add_to_roster_file(path, pool["10"], pool)
+    assert path.read_text() == "# header\nJosh Allen\n10  Ian Thomas\n"
+    players, problems = cli.read_roster_file(path, pool)
+    assert [p.sleeper_id for p in players] == ["3", "10"] and problems == []
+
+
+def test_add_to_roster_file_creates_a_missing_file(tmp_path):
+    pool = _thomas_pool()
+    path = tmp_path / "sub" / "r.txt"
+    cli.add_to_roster_file(path, pool["3"], pool)
+    assert path.read_text() == "3  Josh Allen\n"
+
+
+def test_add_to_roster_file_refuses_a_player_already_listed_by_name(tmp_path):
+    pool = _thomas_pool()
+    path = tmp_path / "r.txt"
+    path.write_text("Josh Allen\n")
+    with pytest.raises(ValueError):
+        cli.add_to_roster_file(path, pool["3"], pool)
+    assert path.read_text() == "Josh Allen\n"
+
+
+def test_remove_from_roster_file_drops_id_and_name_lines_and_keeps_the_rest(tmp_path):
+    pool = _thomas_pool()
+    path = tmp_path / "r.txt"
+    path.write_text("# header\nJosh Allen\n10  Ian Thomas\nthomas\n\n3  Josh Allen\nNobody")
+    cli.remove_from_roster_file(path, "3", pool)
+    # "thomas" is ambiguous, so it names nobody and stays; the blank line and
+    # the unknown line are the user's and stay too.
+    assert path.read_text() == "# header\n10  Ian Thomas\nthomas\n\nNobody\n"
+    cli.remove_from_roster_file(path, "10", pool)
+    assert path.read_text() == "# header\nthomas\n\nNobody\n"
+
+
+def test_roster_entry_count_counts_unresolved_lines_too(tmp_path):
+    """Capacity counts what the file lists: an ambiguous line is still a
+    player the user really rosters, so counting resolved players only would
+    offer a fifteenth."""
+    path = tmp_path / "r.txt"
+    path.write_text("# c\n\nJosh Allen\nthomas\n10  Ian Thomas\n")
+    assert cli.roster_entry_count(path) == 3
+    assert cli.roster_entry_count(tmp_path / "missing.txt") == 0
+
+
 def test_read_roster_file_is_empty_and_quiet_when_there_is_no_file(tmp_path):
     import ffhelper.cli as cli
     players, problems = cli.read_roster_file(tmp_path / "missing.txt", {})

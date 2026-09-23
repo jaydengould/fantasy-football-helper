@@ -2301,3 +2301,137 @@ def test_grade_callback_reads_its_own_store_not_the_finders():
                             Tunables(), lambda lg: None)
     [cb] = [v for k, v in d.callback_map.items() if k.startswith("grade-result.")]
     assert {"id": "grade-league", "property": "data"} in cb["state"]
+
+
+# --- Yahoo roster editor (spec 2026-09-23-yahoo-roster-editor-design.md) ---
+
+_YAHOO_SETTINGS = {"num_teams": 10, "bench": 1, "roster_slots": {"QB": 1},
+                   "scoring": {"pass_td": 4.0}}                 # capacity 2
+
+
+def _editor_players():
+    return {"3": Player("3", "Josh Allen", "QB", "BUF", proj_pts=20.0),
+            "10": Player("10", "Ian Thomas", "TE", "LV"),
+            "50": Player("50", "Retired Guy", "WR", None)}
+
+
+def _render_lineup_page(monkeypatch, tmp_path, platform, roster_text):
+    import dash
+    players = _editor_players()
+    lg = League(name="y", platform=platform, league_id="1", settings=_YAHOO_SETTINGS)
+    monkeypatch.setattr(app, "load_config", lambda path: ([lg], Tunables()))
+    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: players)
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    monkeypatch.setattr(app, "_record_snapshot", lambda *a, **k: "")
+    monkeypatch.setattr(pipeline, "build_lineup", lambda league, tunables, **kw:
+                        pipeline.LineupView(league_name="y", week=3, state=StartSit(
+                            lineup=[("QB", players["3"])], bench=[], close_calls=[],
+                            unprojected=[], ineligible=[])))
+    (tmp_path / "y.txt").write_text(roster_text)
+    app.build_app(["y"], "y", poll_ms=1000)
+    return str(dash.page_registry["lineup"]["layout"](league="y"))
+
+
+def test_roster_editor_appears_for_yahoo_and_never_for_sleeper(monkeypatch, tmp_path):
+    yahoo = _render_lineup_page(monkeypatch, tmp_path, "yahoo", "Josh Allen\n")
+    assert "roster-drop" in yahoo and "Add player" in yahoo
+    sleeper = _render_lineup_page(monkeypatch, tmp_path, "sleeper", "Josh Allen\n")
+    assert "roster-drop" not in sleeper and "Add player" not in sleeper
+
+
+def test_add_card_hides_at_capacity_counting_unresolved_lines(monkeypatch, tmp_path):
+    """Two entries, one unresolvable: still full. Counting resolved players
+    would offer a third spot the league does not have."""
+    page = _render_lineup_page(monkeypatch, tmp_path, "yahoo", "Josh Allen\nNobody At All\n")
+    assert "roster-drop" in page and "Add player" not in page
+
+
+def _walk(node):
+    yield node
+    children = getattr(node, "children", None)
+    if isinstance(children, (list, tuple)):
+        for c in children:
+            yield from _walk(c)
+    elif children is not None and not isinstance(children, str):
+        yield from _walk(children)
+
+
+def test_add_list_excludes_own_roster_and_teamless_players(tmp_path):
+    path = tmp_path / "y.txt"
+    path.write_text("Josh Allen\n")
+    [dropdown] = [n for c in app.roster_editor("y", 2, path, _editor_players())
+                  for n in _walk(c) if getattr(n, "id", None) == "roster-add-player"]
+    assert [o["value"] for o in dropdown.options] == ["10"]
+
+
+def test_drop_button_ids_stay_unique_when_a_starter_is_also_unprojected():
+    """An unprojected starter is listed under Starters AND No projection.
+    Two components with one id is an error Dash raises in the browser, not
+    in any test that only renders."""
+    p = Player("99", "Stash Guy", "TE", "CHI", proj_pts=0.0)
+    view = pipeline.LineupView(league_name="y", week=3, state=StartSit(
+        lineup=[("TE", p)], bench=[], close_calls=[], unprojected=[p], ineligible=[]))
+    ids = [n.id for c in app._lineup_children(view, editor=[]) for n in _walk(c)
+           if isinstance(getattr(n, "id", None), dict)]
+    assert len(ids) == 2 and len({tuple(sorted(i.items())) for i in ids}) == 2
+    assert all(i["player"] == "99" for i in ids)
+
+
+def test_apply_roster_add_refuses_when_full_and_writes_when_not(tmp_path):
+    players = _editor_players()
+    path = tmp_path / "y.txt"
+    path.write_text("Josh Allen\nNobody At All\n")
+    assert "full" in app.apply_roster_add(path, "10", players, capacity=2)
+    assert path.read_text() == "Josh Allen\nNobody At All\n"
+
+    path.write_text("Josh Allen\n")
+    assert app.apply_roster_add(path, "10", players, capacity=2) == ""
+    assert path.read_text() == "Josh Allen\n10  Ian Thomas\n"
+    assert "already" in app.apply_roster_add(path, "10", players, capacity=3)
+
+
+def test_apply_roster_drop_removes_the_player(tmp_path):
+    path = tmp_path / "y.txt"
+    path.write_text("# c\nJosh Allen\n10  Ian Thomas\n")
+    assert app.apply_roster_drop(path, "3", _editor_players()) == ""
+    assert path.read_text() == "# c\n10  Ian Thomas\n"
+
+
+_EDITOR = {"league": "y", "capacity": 2}
+_DROP_ID = {"type": "roster-drop", "player": "3", "name": "Josh Allen", "section": "bench"}
+
+
+def test_ask_drop_ignores_a_button_that_merely_appeared():
+    """Dash fires on a pattern-matched input when the button is inserted,
+    with n_clicks None. Opening the confirm then would pop it on page load."""
+    import dash
+    appeared = [{"prop_id": "x.n_clicks", "value": None}]
+    assert app.ask_drop(_DROP_ID, appeared, _EDITOR) == (dash.no_update,) * 3
+    displayed, message, pending = app.ask_drop(
+        _DROP_ID, [{"prop_id": "x.n_clicks", "value": 1}], _EDITOR)
+    assert displayed is True and "Josh Allen" in message and pending == "3"
+
+
+def test_confirm_drop_writes_and_reloads_only_when_submitted(monkeypatch, tmp_path):
+    import dash
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: _editor_players())
+    path = tmp_path / "y.txt"
+    path.write_text("Josh Allen\n10  Ian Thomas\n")
+    assert app.confirm_drop(None, "3", _EDITOR) == (dash.no_update, dash.no_update)
+    assert path.read_text() == "Josh Allen\n10  Ian Thomas\n"
+    assert app.confirm_drop(1, "3", _EDITOR) == ("/lineup?league=y", "")
+    assert path.read_text() == "10  Ian Thomas\n"
+
+
+def test_add_player_reloads_on_success_and_shows_the_reason_on_failure(monkeypatch, tmp_path):
+    import dash
+    monkeypatch.setattr(app, "ROSTER_DIR", tmp_path)
+    monkeypatch.setattr(app, "load_players", lambda cache_dir=None: _editor_players())
+    path = tmp_path / "y.txt"
+    path.write_text("Josh Allen\n")
+    assert app.add_player(None, "10", _EDITOR) == (dash.no_update, dash.no_update)
+    assert path.read_text() == "Josh Allen\n"
+    assert app.add_player(1, "10", _EDITOR) == ("/lineup?league=y", "")
+    href, message = app.add_player(1, "10", {**_EDITOR, "capacity": 3})
+    assert href is dash.no_update and "already" in message

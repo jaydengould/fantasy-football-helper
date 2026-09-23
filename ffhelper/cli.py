@@ -4,6 +4,7 @@ identical either way.
 import argparse
 import json
 import logging
+import os
 import queue
 import sys
 import threading
@@ -78,15 +79,13 @@ def read_roster_file(path: Path, pool: dict[str, Player]) -> tuple[list[Player],
     starts the wrong player every week. Anchored to ROOT, not cwd: the roster you
     read must not depend on which directory you launched from.
     """
-    if not path.exists():
-        return [], []
     players: list[Player] = []
     problems: list[str] = []
-    for line in path.read_text().splitlines():
-        name = line.strip()
-        if not name or name.startswith("#"):
+    for line in _roster_lines(path):
+        if not _is_roster_entry(line):
             continue
-        matches = find_players(pool, name)
+        name = line.strip()
+        matches = _resolve_roster_line(pool, line)
         if len(matches) == 1:
             players.append(matches[0])
         elif not matches:
@@ -95,6 +94,64 @@ def read_roster_file(path: Path, pool: dict[str, Player]) -> tuple[list[Player],
             shown = ", ".join(f"{p.name} ({p.position} {p.team})" for p in matches[:6])
             problems.append(f"{name!r} is ambiguous: {shown}")
     return players, problems
+
+
+def _roster_lines(path: Path) -> list[str]:
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def _is_roster_entry(line: str) -> bool:
+    s = line.strip()
+    return bool(s) and not s.startswith("#")
+
+
+def _resolve_roster_line(pool: dict[str, Player], line: str) -> list[Player]:
+    """`<player_id>  <label>` resolves by ID -- the app writes that form,
+    because a written name does not always read back ("ian thomas" is inside
+    "brian thomas"). Any other line is a hand-typed name."""
+    name = line.strip()
+    first = name.split(maxsplit=1)[0]
+    if first in pool:
+        return [pool[first]]
+    return find_players(pool, name)
+
+
+def _names_player(pool: dict[str, Player], line: str, player_id: str) -> bool:
+    if not _is_roster_entry(line):
+        return False
+    matches = _resolve_roster_line(pool, line)
+    return len(matches) == 1 and matches[0].sleeper_id == player_id
+
+
+def _write_roster_lines(path: Path, lines: list[str]) -> None:
+    # Temp file + os.replace: a crash mid-write must not leave half a roster.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("".join(f"{line}\n" for line in lines))
+    os.replace(tmp, path)
+
+
+def roster_entry_count(path: Path) -> int:
+    """Entries the file lists, resolved or not: an ambiguous line is still a
+    player the user rosters, and counting only resolved ones would offer an
+    extra spot."""
+    return sum(_is_roster_entry(line) for line in _roster_lines(path))
+
+
+def add_to_roster_file(path: Path, player: Player, pool: dict[str, Player]) -> None:
+    lines = _roster_lines(path)
+    if any(_names_player(pool, line, player.sleeper_id) for line in lines):
+        raise ValueError(f"{player.name} is already on this roster")
+    _write_roster_lines(path, lines + [f"{player.sleeper_id}  {player.name}"])
+
+
+def remove_from_roster_file(path: Path, player_id: str, pool: dict[str, Player]) -> None:
+    """Every line naming this one player goes, by ID or by name. Comments,
+    blanks, and lines that name nobody or several players are the user's and
+    stay verbatim."""
+    lines = _roster_lines(path)
+    _write_roster_lines(path, [line for line in lines
+                               if not _names_player(pool, line, player_id)])
 
 
 def cache_age_minutes(cache_key: str) -> int | None:

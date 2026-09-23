@@ -6,7 +6,40 @@ rather than a diary. Every durable lesson here has already been promoted into
 learned. **Nothing reads this file to decide anything** — it is evidence, not
 authority.
 
-Entries run 2026-08-24 (Phase 0) to 2026-09-21 (grading a received trade offer).
+Entries run 2026-08-24 (Phase 0) to 2026-09-23 (Yahoo roster editor).
+
+### 2026-09-23 — Yahoo roster editor on `/lineup`, and the name that would not read back.
+
+**State:** branch `yahoo-roster-editor`. **669 tests** (from 654), 15 new, each
+shown failing with `git stash push -u -- ffhelper`; 14 new mutations, all killed.
+
+Asked first whether the app could set the lineup in Yahoo itself. It cannot
+(no API, and a write scope would be a second approval), and the user meant
+something smaller: stop hand-editing `.roster/Bush-League.txt`. Built Drop
+buttons (native confirm) and an Add player search on `/lineup`, non-Sleeper
+leagues only. The user's first framing was "an open spot on the lineup or
+bench"; kept as ROSTER capacity instead, since slot choice would be a second
+lineup rule next to `optimal_lineup()`.
+
+**Measured before choosing a file format:** a writer that wrote names would
+re-resolve them through `find_players` on read. Over the whole pool, 37 names
+fail that round trip, 5 on NFL teams. Hence ID lines (`docs/decisions.md`).
+Also found `bench` is not carried into `LeagueSettings`; capacity uses
+`rounds`, which is derived from it, with a `ponytail:` note for IR.
+
+**Found by running it:**
+- The Chrome extension could not connect because Claude Code's native messaging
+  host file was never written. Restarting Chrome, and Reconnect, could not fix
+  it. `claude --chrome` wrote it.
+- Drop and re-add of the real kicker in Chrome worked end to end: K went EMPTY,
+  113.2 to 106.8, back to 113.2. The file diff was only the removed line. The
+  native confirm box blocks the extension, so `window.confirm` was stubbed; the
+  popup's own appearance is the one thing not seen.
+- A full page load logs 8 "ID not found in layout" errors. Stashed the change
+  and counted the baseline: 6, all the `/trades` grade form's ids. The change
+  adds 2 of the same class (`roster-add`, `roster-add-player`). Pre-existing and
+  harmless; `suppress_callback_exceptions` would silence all of them, left alone
+  as out of scope.
 
 ### 2026-09-21 — Grading a received trade offer, and a feature built as asked that could only help the other side.
 

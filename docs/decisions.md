@@ -336,6 +336,19 @@ closed them and the condition that would reopen them.
   (`test_the_web_lineup_route_records_the_same_snapshot_as_the_cli`) rather
   than by intention.
 
+- **The web app writes the Yahoo roster file as `<sleeper_id>  <name>` lines**
+  (2026-09-23, spec `2026-09-23-yahoo-roster-editor-design.md`). A name the
+  app writes does not always read back: over the full 3,232-player pool, 37 full
+  names resolve to more than one player through `find_players`, 5 of them on an
+  NFL team (Ian Thomas is inside Brian Thomas). A name-only writer would make
+  those un-addable, and a silently re-resolved name breaks non-negotiable #1. A
+  line whose first word is a pool key is read by ID; hand-typed names still
+  work. Rejected: moving the Yahoo roster into SQLite. It is the cleaner model,
+  but it moves hand-editing and the CLI read path too, and nothing needs that.
+  Capacity counts file ENTRIES, not resolved players, because an ambiguous line
+  is still a player the user rosters. The limit is `rounds`, exact only because
+  Bush-League has no IR (read off Yahoo's settings by the user, 2026-09-23).
+
 - **A lineup signal is gated on close calls, not on MAE — Test C** (2026-09-09).
   `backtest_weekly.py` rejected the matchup adjustment on MAE over ~6000
   projected player-weeks, but a lineup decision is a RANKING between two players
