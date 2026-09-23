@@ -14,7 +14,9 @@ Rewritten 2026-09-03. Ordered by what blocks what.
    before it is played can never be scored. Week 1 is recorded for both
    leagues.
 2. **`.roster/Bush-League.txt` must be updated after every Yahoo add/drop.** No
-   API. `lineup` and `preflight` both print its age for this reason.
+   API. `lineup` and `preflight` both print its age for this reason. The web
+   `/lineup` page's Drop and Add player controls do it without opening the file
+   (2026-09-23); the move still has to be made in Yahoo first.
 3. **Yahoo OAuth (Phase 0, §8) — blocked externally**, no reply since
    2026-08-24. `scripts/yahoo_auth.py` does not exist and is deliberately not
    written: an untested handshake against an unreachable API is speculative, and
