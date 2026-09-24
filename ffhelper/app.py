@@ -1436,9 +1436,9 @@ def _season_layout_for(name: str, league_names: list[str], default_league: str):
         # It was CLI-only, so a season run on the web app wrote nothing -- and
         # the inputs are not re-served, so that week was gone. Safe on render:
         # the season routes have no `dcc.Interval` (it lives in /draft's layout
-        # alone), so this fires once per navigation, and a repeat visit is
-        # idempotent within the week via INSERT OR REPLACE -- `taken_at` means
-        # "the last look before kickoff", which is what a second visit is.
+        # alone), so this fires once per navigation. A repeat visit APPENDS a
+        # later look and replaces nothing (store.py's schema comment) -- a
+        # post-kickoff visit once overwrote a week's pre-kickoff rows.
         # `_record_snapshot` carries its own two refusals; do not restate them.
         snapshot_line = "" if view.error or name != "lineup" else _record_snapshot(
             lg, view.season_str, view.week, view.state_week, view.state,

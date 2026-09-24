@@ -1276,9 +1276,9 @@ def _record_snapshot(
 
     - **No current week, no write.** With /state/nfl down there is nothing to
       confirm `--week N` against, and assuming it is live is a guess.
-    - **A past week is never overwritten.** Its inputs are not re-served, so
-      `--week 1` in December would replace week 1's real projections with
-      December's and destroy exactly what the table was built to keep.
+    - **A past week is never written.** Its inputs are not re-served, so
+      `--week 1` in December would file December's projections as week 1's --
+      appended beside the real ones, indistinguishable from a late look.
     """
     if not current_week:
         return ("snapshot        : not recorded -- no current week from /state/nfl "
@@ -1286,7 +1286,7 @@ def _record_snapshot(
     if week != current_week:
         return (f"snapshot        : not recorded -- week {week} is not the current week "
                 f"({current_week}); a past week's inputs are not re-served, so "
-                f"overwriting them would destroy the record")
+                f"today's would be filed as that week's")
     try:
         rows = season_mod.snapshot_rows(
             state_ss, projected_ids, datetime.now().isoformat(timespec="seconds"),
