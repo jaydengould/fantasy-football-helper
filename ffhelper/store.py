@@ -35,8 +35,16 @@ DB_PATH = ROOT / "season.db"
 # than one roster. Rows now cover every STARTABLE player at each position, not
 # just your 15 -- NULL means "not your player, so no start/sit advice was given",
 # which 0 would misstate as "advised against". `started IS NOT NULL` is your
-# roster; `SUM(started)` is still the lineup. Rostered rows are written first, so
-# a player who is both keeps his roster row.
+# roster; `SUM(started)` over one `taken_at` is the lineup. Rostered rows are
+# written first, so a player who is both keeps his roster row.
+#
+# `taken_at` is in the key: the table is APPEND-ONLY. One run writes every row
+# with one `taken_at`, so a `taken_at` identifies a run. Under the old key a
+# later run REPLACED an earlier one, and on 2026-09-21 a Monday `/lineup` render
+# replaced 125 of bros-fantasy's pre-kickoff week-2 rows with post-game ones --
+# unrecoverable, since the inputs are not re-served. Kickoff is per game, so no
+# write-time cutoff can be right for every player; the reader picks each
+# player's last look before HIS kickoff, and a mistake there can be re-run.
 #
 # Why wider: the roster-only table held ~44 rows a week across three leagues, of
 # which ~6 were quarterbacks -- far too thin to measure a per-position weekly
@@ -50,13 +58,16 @@ CREATE TABLE IF NOT EXISTS snapshot (
   matchup  REAL,                       -- the adjustment applied, NULL before 4b
   status   TEXT,                       -- injury/practice at decision time
   started  INTEGER,                    -- 1 start, 0 bench, NULL not your player
-  PRIMARY KEY (league, season, week, player_id)
+  PRIMARY KEY (league, season, week, player_id, taken_at)
 )
 """
 
-_INSERT = """
-INSERT OR REPLACE INTO snapshot
-  (league, season, week, player_id, taken_at, proj_pts, matchup, status, started)
+_COLS = "league, season, week, player_id, taken_at, proj_pts, matchup, status, started"
+
+# OR IGNORE: the same key twice is the same look twice (a reload inside one
+# second). A plain INSERT would raise and report the week as failed.
+_INSERT = f"""
+INSERT OR IGNORE INTO snapshot ({_COLS})
 VALUES
   (:league, :season, :week, :player_id, :taken_at, :proj_pts, :matchup, :status, :started)
 """
@@ -75,20 +86,38 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
     database -- untestable code is untested code.
     """
     conn = sqlite3.connect(DB_PATH if path is None else path)
+    _migrate_to_append_only(conn)
     conn.execute(_SCHEMA)
     conn.commit()
     return conn
 
 
+def _migrate_to_append_only(conn: sqlite3.Connection) -> None:
+    """Rebuild a table made under the old `(league, season, week, player_id)`
+    key. SQLite cannot alter a primary key, so it is copy-and-swap, in one
+    transaction: a failure part-way rolls back to the old table, never to an
+    empty one."""
+    key = {row[1] for row in conn.execute("PRAGMA table_info(snapshot)") if row[5]}
+    if not key or "taken_at" in key:
+        return
+    conn.executescript(f"""
+        BEGIN;
+        ALTER TABLE snapshot RENAME TO snapshot_old;
+        {_SCHEMA};
+        INSERT INTO snapshot ({_COLS}) SELECT {_COLS} FROM snapshot_old;
+        DROP TABLE snapshot_old;
+        COMMIT;
+    """)
+
+
 def write_snapshot(
     conn: sqlite3.Connection, league: str, season: str, week: int, rows: list[dict],
 ) -> int:
-    """Record one row per rostered player. Returns how many were written.
+    """Record one row per player for this run. Returns how many were given.
 
-    `INSERT OR REPLACE`, so re-running `lineup` in the same week overwrites that
-    week rather than raising on the primary key. That is the chosen semantics:
-    the record is the LAST look taken before kickoff, because late injury news
-    is exactly what moves a lineup. `taken_at` says when that look happened.
+    Appends: a second run in the same week adds a second look and replaces
+    nothing (see the schema comment). Late injury news still reaches the
+    record -- as a later `taken_at` -- without destroying the look before it.
 
     Named placeholders rather than positional ones -- nine columns of mostly
     strings is precisely where a positional tuple silently swaps two fields and

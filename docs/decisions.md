@@ -328,13 +328,27 @@ closed them and the condition that would reopen them.
   while the page that would have fixed it was one click away and did not.
   Render-time is safe here on a fact about the layout, not a hope: the
   `dcc.Interval` lives in `/draft`'s layout alone, so the season routes render
-  once per navigation rather than on a tick, and repeat visits are idempotent
-  within the week through `INSERT OR REPLACE` — `taken_at` already means "the
-  last look before kickoff", which is exactly what a second visit is. The write
+  once per navigation rather than on a tick. The write
   stays in the layout, not in the row builders, so `season.py` and the renderers
   keep their purity, and the two surfaces are held to the same rows by test
   (`test_the_web_lineup_route_records_the_same_snapshot_as_the_cli`) rather
   than by intention.
+
+- **The snapshot is append-only: `taken_at` is in the primary key**
+  (2026-09-24). Under `INSERT OR REPLACE` the entry above was wrong: a repeat
+  visit AFTER kickoff was not "the last look before kickoff". A Monday
+  2026-09-21 render replaced 125 of bros-fantasy's 138 pre-kickoff week-2
+  rows with post-game ones. The only guard, `week == /state/nfl week`, passed.
+  Most likely Sleeper still reported week 2 on Monday afternoon (it had flipped
+  by Monday 22:30 the week before). A stale-cache fallback (`stale_ok=True`)
+  is not ruled out, and append-only covers both. Unrecoverable. The 2026-09-03 web spec named
+  this failure and this fix. A write-time cutoff was rejected because kickoff
+  is per game: a whole-week cutoff blocks the Sunday-morning run that carries
+  late inactives, and a per-game one needs a schedule fetch whose failure
+  loses the week. With appends, the reader picks each player's last look
+  before HIS kickoff, and one run is one `taken_at`, so `SUM(started)` over a
+  `taken_at` is that run's lineup. Evidence: one week, one league. The
+  mechanism is in the code; the frequency is not measured.
 
 - **The web app writes the Yahoo roster file as `<sleeper_id>  <name>` lines**
   (2026-09-23, spec `2026-09-23-yahoo-roster-editor-design.md`). A name the

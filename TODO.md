@@ -66,7 +66,11 @@ Rewritten 2026-09-03. Ordered by what blocks what.
     a week across the three leagues against ~44, which takes QB-weeks after six
     weeks from ~36 to ~192. Still **blocked on item 1 actually running**: no
     schedule writes these rows, a `lineup` run does — CLI or web — and a week
-    not recorded before it is played is unrecoverable.
+    not recorded before it is played is unrecoverable. **The table is
+    append-only since 2026-09-24**, so the analysis must take each player's
+    last look before HIS game's kickoff, which needs game times (nflverse
+    schedule, same path as `load_nfl_injuries`). bros-fantasy week 2 is
+    post-game for 125 of its 138 rows and must be excluded.
 16. **Supplemental lineup signals — its own phase, not a bolt-on.** The lineup is
     argmax on Rotowire's weekly projections; everything else on the screen is
     context beside it. Two candidates are unexploited, and BOTH must clear

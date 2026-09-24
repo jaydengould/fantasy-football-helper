@@ -35,19 +35,63 @@ def test_write_snapshot_records_one_row_per_player_and_returns_the_count():
                    ("sleeper-main", "2026", 1, "11", 0)]
 
 
-def test_a_second_run_in_the_same_week_overwrites_and_keeps_the_newer_view():
-    """The chosen semantics: the record is the LAST look you took before
-    kickoff, because late injury news is exactly what moves a lineup. A
-    plain INSERT would raise on the primary key here instead."""
+def test_a_second_run_in_the_same_week_keeps_both_looks():
+    """Append-only. The Monday-after run of week 2 (2026-09-21) replaced 125
+    pre-kickoff rows with post-game ones under `INSERT OR REPLACE`, and the
+    originals are not re-served. Keeping every look lets the reader choose the
+    last one before each player's kickoff; replacing chooses for it, wrongly."""
     conn = connect(":memory:")
-    write_snapshot(conn, "sleeper-main", "2026", 1,
-                   [_row("10", proj_pts=12.5, taken_at="TUE", started=1)])
-    write_snapshot(conn, "sleeper-main", "2026", 1,
-                   [_row("10", proj_pts=3.0, taken_at="SUN", started=0)])
+    write_snapshot(conn, "sleeper-main", "2026", 2,
+                   [_row("10", proj_pts=12.5, taken_at="2026-09-20T09:00:00", started=1)])
+    write_snapshot(conn, "sleeper-main", "2026", 2,
+                   [_row("10", proj_pts=3.0, taken_at="2026-09-21T16:39:44", started=0)])
 
     got = conn.execute(
-        "SELECT taken_at, proj_pts, started FROM snapshot").fetchall()
-    assert got == [("SUN", 3.0, 0)]
+        "SELECT taken_at, proj_pts, started FROM snapshot ORDER BY taken_at").fetchall()
+    assert got == [("2026-09-20T09:00:00", 12.5, 1), ("2026-09-21T16:39:44", 3.0, 0)]
+
+
+def test_a_rerun_within_the_same_second_neither_raises_nor_duplicates():
+    """Same league, week, player and `taken_at` is the same look twice (a
+    `/lineup` reload landing inside one second). A plain INSERT would raise on
+    the key and report the week as failed."""
+    conn = connect(":memory:")
+    write_snapshot(conn, "sleeper-main", "2026", 2, [_row("10")])
+    write_snapshot(conn, "sleeper-main", "2026", 2, [_row("10")])
+    assert conn.execute("SELECT COUNT(*) FROM snapshot").fetchone()[0] == 1
+
+
+# The key as it shipped before 2026-09-24, copied literally: `season.db` files
+# made under it exist and must migrate without losing a row.
+_OLD_SCHEMA = """
+CREATE TABLE snapshot (
+  league TEXT, season TEXT, week INTEGER, player_id TEXT, taken_at TEXT,
+  proj_pts REAL, matchup REAL, status TEXT, started INTEGER,
+  PRIMARY KEY (league, season, week, player_id)
+)
+"""
+
+
+def test_an_old_keyed_table_migrates_keeping_its_rows_and_then_appends(tmp_path):
+    path = tmp_path / "season.db"
+    old = sqlite3.connect(path)
+    old.execute(_OLD_SCHEMA)
+    old.execute("INSERT INTO snapshot VALUES "
+                "('bros-fantasy', '2026', 2, '10', '2026-09-14T22:30:25', 12.5, NULL, 'Out', 1)")
+    old.commit()
+    old.close()
+
+    conn = connect(path)
+    write_snapshot(conn, "bros-fantasy", "2026", 2,
+                   [_row("10", proj_pts=3.0, taken_at="2026-09-21T16:39:44", started=0)])
+
+    got = conn.execute("SELECT * FROM snapshot ORDER BY taken_at").fetchall()
+    assert got == [
+        ("bros-fantasy", "2026", 2, "10", "2026-09-14T22:30:25", 12.5, None, "Out", 1),
+        ("bros-fantasy", "2026", 2, "10", "2026-09-21T16:39:44", 3.0, None, None, 0),
+    ]
+    assert {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")} == {"snapshot"}
 
 
 def test_the_same_player_in_two_leagues_is_two_rows_not_a_collision():
